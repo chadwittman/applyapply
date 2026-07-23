@@ -1,4 +1,30 @@
-const SERVER = 'http://localhost:3747';
+const DEFAULT_SERVER = 'http://localhost:3747';
+let SERVER = DEFAULT_SERVER;
+let API_KEY = '';
+
+// ── Boot: load server URL + key, then init ────────────────────────────────────
+chrome.storage.sync.get(['serverUrl', 'apiKey', 'profile'], ({ serverUrl, apiKey, profile }) => {
+  SERVER = serverUrl || DEFAULT_SERVER;
+  API_KEY = apiKey || '';
+
+  document.getElementById('serverUrl').value = SERVER !== DEFAULT_SERVER ? SERVER : '';
+  if (apiKey) document.getElementById('apiKey').value = apiKey;
+  if (profile) {
+    for (const field of PROFILE_FIELDS) {
+      const el = document.querySelector(`[data-field="${field}"]`);
+      if (el && profile[field]) el.value = profile[field];
+    }
+  }
+
+  document.getElementById('btn-audit').href = `${SERVER}/audit`;
+  checkHealth();
+});
+
+function apiFetch(path, opts = {}) {
+  const headers = { ...(opts.headers || {}) };
+  if (API_KEY) headers['x-api-key'] = API_KEY;
+  return fetch(`${SERVER}${path}`, { ...opts, headers });
+}
 
 // ── Force-inject sidebar on popup open ───────────────────────────────────────
 chrome.tabs.query({ active: true, currentWindow: true }, ([tab]) => {
@@ -14,14 +40,16 @@ chrome.tabs.query({ active: true, currentWindow: true }, ([tab]) => {
 const dot = document.getElementById('dot');
 const statusText = document.getElementById('status-text');
 
-fetch(`${SERVER}/health`).then(r => {
-  if (r.ok) { dot.className = 'dot ok'; statusText.textContent = 'ready'; }
-  else throw new Error();
-}).catch(() => {
-  dot.className = 'dot err';
-  statusText.textContent = 'server offline';
-  document.getElementById('btn-apply').disabled = true;
-});
+function checkHealth() {
+  apiFetch('/health').then(r => {
+    if (r.ok) { dot.className = 'dot ok'; statusText.textContent = 'ready'; }
+    else throw new Error();
+  }).catch(() => {
+    dot.className = 'dot err';
+    statusText.textContent = 'server offline';
+    document.getElementById('btn-apply').disabled = true;
+  });
+}
 
 // ── Apply to this page ────────────────────────────────────────────────────────
 const applyNote = document.getElementById('apply-note');
@@ -59,16 +87,12 @@ document.getElementById('btn-apply').addEventListener('click', () => {
 });
 
 // ── Source & audit ────────────────────────────────────────────────────────────
-// The audit link opens http://localhost:3747/audit directly (it's an <a> tag).
-// When clicked, also kick off a sourcing run if one isn't already active.
-document.getElementById('btn-audit').addEventListener('click', async () => {
+document.getElementById('btn-audit').addEventListener('click', async (e) => {
+  const href = e.currentTarget.href;
   try {
-    const status = await fetch(`${SERVER}/source/status`).then(r => r.json());
-    if (!status.active) {
-      await fetch(`${SERVER}/source/run`, { method: 'POST' });
-    }
+    const status = await apiFetch('/source/status').then(r => r.json());
+    if (!status.active) await apiFetch('/source/run', { method: 'POST' });
   } catch {}
-  // The href opens the audit page — let the default <a> behavior handle it
 });
 
 // ── Settings ──────────────────────────────────────────────────────────────────
@@ -77,29 +101,23 @@ const PROFILE_FIELDS = [
   'linkedin', 'location', 'work_authorization', 'salary',
 ];
 
-chrome.storage.sync.get(['apiKey', 'profile'], ({ apiKey, profile }) => {
-  if (apiKey) document.getElementById('apiKey').value = apiKey;
-  if (profile) {
-    for (const field of PROFILE_FIELDS) {
-      const el = document.querySelector(`[data-field="${field}"]`);
-      if (el && profile[field]) el.value = profile[field];
-    }
-  }
-});
-
 document.getElementById('toggleKey').addEventListener('click', () => {
   const input = document.getElementById('apiKey');
   input.type = input.type === 'password' ? 'text' : 'password';
 });
 
 document.getElementById('saveSettings').addEventListener('click', () => {
+  const serverUrl = document.getElementById('serverUrl').value.trim() || DEFAULT_SERVER;
   const apiKey = document.getElementById('apiKey').value.trim();
   const profile = {};
   for (const field of PROFILE_FIELDS) {
     const el = document.querySelector(`[data-field="${field}"]`);
     if (el?.value.trim()) profile[field] = el.value.trim();
   }
-  chrome.storage.sync.set({ apiKey, profile }, () => {
+  chrome.storage.sync.set({ serverUrl, apiKey, profile }, () => {
+    SERVER = serverUrl;
+    API_KEY = apiKey;
+    document.getElementById('btn-audit').href = `${SERVER}/audit`;
     const s = document.getElementById('save-status');
     s.textContent = 'Saved';
     setTimeout(() => { s.textContent = ''; }, 1800);
