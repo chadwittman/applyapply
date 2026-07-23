@@ -1,5 +1,18 @@
 // ── Offscreen voice recording ─────────────────────────────────────────────────
 
+let SERVER = 'http://localhost:3747';
+let API_KEY = '';
+chrome.storage.sync.get(['serverUrl', 'apiKey'], (s) => {
+  if (s.serverUrl) SERVER = s.serverUrl;
+  if (s.apiKey) API_KEY = s.apiKey;
+});
+
+function serverHeaders(extra = {}) {
+  const h = { 'Content-Type': 'application/json', ...extra };
+  if (API_KEY) h['x-api-key'] = API_KEY;
+  return h;
+}
+
 let voicePending = null; // { tabId, frameId, question }
 
 // Iframe form questions — keyed by tabId, set by iframe content script, read by main frame
@@ -22,9 +35,9 @@ async function cleanupVoice(transcript, question) {
   if (!transcript?.trim()) return '';
   let text = transcript;
   try {
-    const r = await fetch('http://localhost:3747/voice', {
+    const r = await fetch(`${SERVER}/voice`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: serverHeaders(),
       body: JSON.stringify({ transcript, question }),
     });
     if (r.ok) { const d = await r.json(); text = d.text || transcript; }
@@ -149,11 +162,11 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 });
 
 async function handleVoiceCleanup(transcript, question) {
-  // Try local server first (has richer context from app)
+  // Try server first (has richer context from app)
   try {
-    const r = await fetch('http://localhost:3747/voice', {
+    const r = await fetch(`${SERVER}/voice`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: serverHeaders(),
       body: JSON.stringify({ transcript, question }),
     });
     if (r.ok) return r.json();
@@ -193,7 +206,7 @@ chrome.runtime.onInstalled.addListener(() => {
 
 async function updateBadge() {
   try {
-    const r = await fetch('http://localhost:3747/status');
+    const r = await fetch(`${SERVER}/status`, { headers: API_KEY ? { 'x-api-key': API_KEY } : {} });
     if (!r.ok) { chrome.action.setBadgeText({ text: '' }); return; }
     const { new: n } = await r.json();
     if (n > 0) {

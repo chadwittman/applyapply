@@ -13,7 +13,7 @@
   <div class="actions">
     <button id="btn-apply" class="btn primary">Apply to this page</button>
     <div id="apply-note" class="note"></div>
-    <a id="btn-audit" class="btn secondary" href="http://localhost:3747/audit" target="_blank">Source &amp; audit ↗</a>
+    <a id="btn-audit" class="btn secondary" href="#" target="_blank">Source &amp; audit ↗</a>
   </div>
 
   <div class="settings-toggle">
@@ -23,9 +23,13 @@
   <div id="settings-panel" style="display:none">
     <div class="settings-body">
       <label class="field-row">
+        Server URL
+        <input type="url" id="serverUrl" class="field-input" placeholder="http://localhost:3747">
+      </label>
+      <label class="field-row">
         API key
         <div class="key-row">
-          <input type="password" id="apiKey" class="field-input" placeholder="sk-ant-…" autocomplete="off">
+          <input type="password" id="apiKey" class="field-input" placeholder="(not required for self-hosted)" autocomplete="off">
           <button id="toggleKey" class="icon-btn">👁</button>
         </div>
       </label>

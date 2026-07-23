@@ -1,6 +1,14 @@
-const SERVER = 'http://localhost:3747';
+let SERVER = 'http://localhost:3747';
+let API_KEY = '';
+chrome.storage.sync.get(['serverUrl', 'apiKey'], (s) => {
+  if (s.serverUrl) SERVER = s.serverUrl;
+  if (s.apiKey) API_KEY = s.apiKey;
+});
 
 function serverFetch(path, options = {}) {
+  const headers = { ...(options.headers || {}) };
+  if (API_KEY) headers['x-api-key'] = API_KEY;
+  const opts = { ...options, headers };
   // Try routing through background service worker first (needed for CORS on some pages)
   // Fall back to direct fetch if chrome.runtime is unavailable (e.g. after extension reload)
   if (chrome?.runtime?.sendMessage) {
@@ -8,22 +16,22 @@ function serverFetch(path, options = {}) {
       try {
         chrome.runtime.sendMessage(
           { type: 'SERVER_FETCH', url: SERVER + path, options: {
-              method: options.method || 'GET',
-              headers: options.headers || {},
-              body: options.body || null,
+              method: opts.method || 'GET',
+              headers: opts.headers || {},
+              body: opts.body || null,
           }},
           res => {
-            if (chrome.runtime.lastError) return directFetch(path, options).then(resolve).catch(reject);
+            if (chrome.runtime.lastError) return directFetch(path, opts).then(resolve).catch(reject);
             if (!res) return reject(new Error('No response from background'));
             resolve(res);
           }
         );
       } catch {
-        directFetch(path, options).then(resolve).catch(reject);
+        directFetch(path, opts).then(resolve).catch(reject);
       }
     });
   }
-  return directFetch(path, options);
+  return directFetch(path, opts);
 }
 
 function directFetch(path, options = {}) {
