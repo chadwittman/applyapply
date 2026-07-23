@@ -1,0 +1,19 @@
+node_modules/
+.DS_Store
+.env
+
+# Personal data — never commit
+applications/
+apply-kits/
+sourced-jobs.json
+applied-log.json
+data/credits.json
+data/issued-keys.json
+logs/
+
+# Scratch files
+hb-test.mjs
+reddit_scrape_tmp*.mjs
+reddit_single_tmp.mjs
+PROFILE.md
+TRACKER.md

@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div class="header">
+    <span class="wordmark">applyapply</span>
+    <div class="status"><span class="dot" id="dot"></span><span id="status-text">connecting</span></div>
+  </div>
+
+  <div class="actions">
+    <button id="btn-apply" class="btn primary">Apply to this page</button>
+    <div id="apply-note" class="note"></div>
+    <a id="btn-audit" class="btn secondary" href="http://localhost:3747/audit" target="_blank">Source &amp; audit ↗</a>
+  </div>
+
+  <div class="settings-toggle">
+    <button id="btn-settings-toggle">Settings</button>
+  </div>
+
+  <div id="settings-panel" style="display:none">
+    <div class="settings-body">
+      <label class="field-row">
+        API key
+        <div class="key-row">
+          <input type="password" id="apiKey" class="field-input" placeholder="sk-ant-…" autocomplete="off">
+          <button id="toggleKey" class="icon-btn">👁</button>
+        </div>
+      </label>
+      <div class="divider"></div>
+      <div class="field-row">Profile</div>
+      <div class="profile-grid">
+        <label>First<input type="text" class="field-input" data-field="first_name" placeholder="Chad"></label>
+        <label>Last<input type="text" class="field-input" data-field="last_name" placeholder="Wittman"></label>
+        <label>Email<input type="email" class="field-input" data-field="email"></label>
+        <label>Phone<input type="tel" class="field-input" data-field="phone"></label>
+        <label>LinkedIn<input type="url" class="field-input" data-field="linkedin"></label>
+        <label>Location<input type="text" class="field-input" data-field="location"></label>
+        <label>Auth<input type="text" class="field-input" data-field="work_authorization"></label>
+        <label>Salary<input type="text" class="field-input" data-field="salary"></label>
+      </div>
+      <button id="saveSettings" class="save-btn">Save</button>
+      <div id="save-status" class="save-status"></div>
+    </div>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>

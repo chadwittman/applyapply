@@ -1,0 +1,366 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>applyapply — source & audit</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #0a0a0a; color: #e2e8f0; font-size: 13px; min-height: 100vh; }
+
+/* ── Top bar ── */
+.topbar { display: flex; align-items: center; gap: 16px; padding: 16px 28px; border-bottom: 1px solid #1a1a1a; }
+.topbar-title { font-size: 15px; font-weight: 700; color: #fff; }
+.topbar-meta { font-size: 11px; color: #444; flex: 1; }
+.run-btn { padding: 7px 16px; background: #fff; color: #0a0a0a; border: none; border-radius: 6px; font-size: 12px; font-weight: 700; cursor: pointer; transition: opacity .12s; }
+.run-btn:hover { opacity: .85; }
+.run-btn:disabled { opacity: .35; cursor: default; }
+.status-dot { width: 8px; height: 8px; border-radius: 50%; background: #333; flex-shrink: 0; }
+.status-dot.active { background: #f59e0b; box-shadow: 0 0 0 3px rgba(245,158,11,.15); animation: pulse 1.4s infinite; }
+.status-dot.done { background: #34d399; }
+@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.4} }
+
+/* ── Live log ── */
+#log-panel { display: none; padding: 20px 28px; }
+#log-panel pre {
+  font-family: "SF Mono", Menlo, monospace;
+  font-size: 11px;
+  line-height: 1.6;
+  background: #0d0d0d;
+  border: 1px solid #1a1a1a;
+  border-radius: 8px;
+  padding: 16px;
+  white-space: pre-wrap;
+  color: #94a3b8;
+  max-height: 400px;
+  overflow-y: auto;
+}
+
+/* ── Audit table ── */
+#audit-panel { display: none; }
+.stats-row { display: flex; gap: 0; border-bottom: 1px solid #1a1a1a; }
+.stat { flex: 1; padding: 14px 20px; border-right: 1px solid #1a1a1a; }
+.stat:last-child { border-right: none; }
+.stat-n { font-size: 24px; font-weight: 700; color: #fff; }
+.stat-l { font-size: 10px; color: #444; text-transform: uppercase; letter-spacing: .08em; margin-top: 2px; }
+
+.sources { padding: 24px 28px; display: flex; flex-direction: column; gap: 24px; }
+.source-block { border: 1px solid #1a1a1a; border-radius: 8px; overflow: hidden; }
+.source-header { background: #111; padding: 11px 16px; display: flex; align-items: baseline; gap: 10px; }
+.source-name { font-weight: 700; color: #fff; }
+.source-meta { font-size: 11px; color: #444; flex: 1; }
+.source-query { font-size: 10px; color: #333; padding: 6px 16px 8px; background: #0d0d0d; border-bottom: 1px solid #111; font-family: monospace; word-break: break-all; }
+table { width: 100%; border-collapse: collapse; }
+th { font-size: 10px; text-transform: uppercase; letter-spacing: .07em; color: #444; font-weight: 600; padding: 8px 14px; text-align: left; background: #0d0d0d; border-bottom: 1px solid #111; }
+td { padding: 9px 14px; border-bottom: 1px solid #111; vertical-align: middle; }
+tr:last-child td { border-bottom: none; }
+tr:hover td { background: rgba(255,255,255,.02); }
+.co { font-weight: 600; color: #e2e8f0; }
+.role { color: #64748b; font-size: 12px; margin-top: 1px; }
+.score { font-size: 11px; font-weight: 700; color: #444; }
+.url a { color: #3b82f6; text-decoration: none; font-size: 10px; font-family: monospace; }
+.url a:hover { text-decoration: underline; }
+
+.badge { display: inline-block; padding: 2px 8px; border-radius: 99px; font-size: 10px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; }
+.b-added    { background: #052e16; color: #34d399; border: 1px solid #065f46; }
+.b-dupe     { background: #111; color: #444; border: 1px solid #1e1e1e; }
+.b-low_fit  { background: #111; color: #444; border: 1px solid #1e1e1e; }
+.b-cross_dupe { background: #111; color: #444; border: 1px solid #1e1e1e; }
+.b-url_dead { background: #1a0808; color: #f87171; border: 1px solid #7f1d1d; }
+.b-excluded { background: #1a0808; color: #f87171; border: 1px solid #7f1d1d; }
+.b-candidate{ background: #0f172a; color: #94a3b8; border: 1px solid #1e293b; }
+.b-unknown  { background: #111; color: #444; border: 1px solid #1e1e1e; }
+.reason { font-size: 10px; color: #333; margin-top: 2px; }
+
+/* Feedback */
+.fb { display: flex; gap: 5px; align-items: center; flex-wrap: wrap; }
+.fb-btn { background: none; border: 1px solid #1e1e1e; border-radius: 4px; color: #444; font-size: 10px; padding: 3px 8px; cursor: pointer; white-space: nowrap; }
+.fb-btn:hover { border-color: #444; color: #ccc; }
+.fb-btn.correct { border-color: #065f46; color: #34d399; background: #052e16; }
+.fb-btn.wrong   { border-color: #7f1d1d; color: #f87171; background: #1a0808; }
+.fb-note { font-size: 10px; color: #555; margin-top: 3px; }
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <span class="status-dot" id="status-dot"></span>
+  <span class="topbar-title">source &amp; audit</span>
+  <span class="topbar-meta" id="topbar-meta">loading</span>
+  <button class="run-btn" id="refresh-btn" style="background:#1a1a1a;color:#64748b;border:1px solid #333;margin-right:6px;" title="Reload results">↺</button>
+  <button class="run-btn" id="run-btn">Run sourcing</button>
+</div>
+
+<div id="log-panel">
+  <pre id="log-pre">Starting…</pre>
+</div>
+
+<div id="audit-panel">
+  <div class="stats-row">
+    <div class="stat"><div class="stat-n" id="s-added">—</div><div class="stat-l">added to queue</div></div>
+    <div class="stat"><div class="stat-n" id="s-dupe">—</div><div class="stat-l">already tracked</div></div>
+    <div class="stat"><div class="stat-n" id="s-low">—</div><div class="stat-l">low fit</div></div>
+    <div class="stat"><div class="stat-n" id="s-dead">—</div><div class="stat-l">url dead</div></div>
+    <div class="stat"><div class="stat-n" id="s-exc">—</div><div class="stat-l">excluded location</div></div>
+  </div>
+  <div class="sources" id="sources"></div>
+</div>
+
+<script>
+const BASE = 'http://localhost:3747';
+let polling = null;
+let idleInterval = null;
+let lastRunAt = null;
+let feedbackMap = {};
+
+// ── Run button ────────────────────────────────────────────────────────────────
+document.getElementById('run-btn').addEventListener('click', async () => {
+  const btn = document.getElementById('run-btn');
+  btn.disabled = true;
+  btn.textContent = 'Starting…';
+  try {
+    const r = await fetch(`${BASE}/source/run`, { method: 'POST' });
+    const d = await r.json();
+    if (d.status === 'already_running') {
+      btn.textContent = 'Already running';
+      setTimeout(() => { btn.disabled = false; btn.textContent = 'Run sourcing'; }, 2000);
+    } else {
+      startPolling();
+    }
+  } catch {
+    btn.disabled = false;
+    btn.textContent = 'Run sourcing';
+  }
+});
+
+// ── Refresh button ────────────────────────────────────────────────────────────
+document.getElementById('refresh-btn').addEventListener('click', () => loadAudit());
+
+// ── Polling ───────────────────────────────────────────────────────────────────
+function startPolling() {
+  stopIdlePoll();
+  if (polling) return;
+  showLog();
+  polling = setInterval(tick, 2000);
+  tick();
+}
+
+function startIdlePoll() {
+  if (idleInterval || polling) return;
+  idleInterval = setInterval(async () => {
+    try {
+      const dataRes = await fetch(`${BASE}/audit/data`);
+      if (!dataRes.ok) return;
+      const d = await dataRes.json();
+      if (d?.run_at && d.run_at !== lastRunAt) {
+        lastRunAt = d.run_at;
+        loadAudit();
+      }
+    } catch {}
+  }, 8000);
+}
+
+function stopIdlePoll() {
+  if (idleInterval) { clearInterval(idleInterval); idleInterval = null; }
+}
+
+async function tick() {
+  try {
+    const [statusRes, logRes] = await Promise.all([
+      fetch(`${BASE}/source/status`),
+      fetch(`${BASE}/source/log`),
+    ]);
+    const status = await statusRes.json();
+    const logText = logRes.ok ? await logRes.text() : '';
+
+    const dot = document.getElementById('status-dot');
+    const meta = document.getElementById('topbar-meta');
+    const pre = document.getElementById('log-pre');
+    const btn = document.getElementById('run-btn');
+
+    if (status.active) {
+      dot.className = 'status-dot active';
+      meta.textContent = 'sourcing in progress…';
+      btn.disabled = true;
+      btn.textContent = 'Running…';
+      if (logText) { pre.textContent = logText; pre.scrollTop = pre.scrollHeight; }
+    } else {
+      clearInterval(polling);
+      polling = null;
+      dot.className = 'status-dot done';
+      meta.textContent = status.last_sourced ? `last run: ${status.last_sourced} · ${status.counts?.new ?? 0} new` : 'ready';
+      btn.disabled = false;
+      btn.textContent = 'Run sourcing';
+      if (logText) { pre.textContent = logText; pre.scrollTop = pre.scrollHeight; }
+      setTimeout(() => loadAudit(), 1200);
+    }
+  } catch {}
+}
+
+function showLog() {
+  document.getElementById('log-panel').style.display = '';
+  document.getElementById('audit-panel').style.display = 'none';
+}
+
+// ── Audit table ───────────────────────────────────────────────────────────────
+async function loadAudit() {
+  let dataRes, fbRes, statusRes;
+  try {
+    [dataRes, fbRes, statusRes] = await Promise.all([
+      fetch(`${BASE}/audit/data`).catch(() => null),
+      fetch(`${BASE}/audit/feedback`).catch(() => null),
+      fetch(`${BASE}/source/status`).catch(() => null),
+    ]);
+  } catch (e) {
+    document.getElementById('topbar-meta').textContent = 'load error: ' + e.message;
+    return;
+  }
+
+  const dot = document.getElementById('status-dot');
+  const meta = document.getElementById('topbar-meta');
+  const btn = document.getElementById('run-btn');
+
+  if (statusRes?.ok) {
+    const status = await statusRes.json();
+    if (status.active) { startPolling(); return; }
+    dot.className = 'status-dot done';
+    meta.textContent = status.last_sourced ? `last run: ${status.last_sourced} · ${status.counts?.new ?? 0} new` : 'ready';
+    btn.disabled = false;
+    btn.textContent = 'Run sourcing';
+  }
+
+  if (!dataRes?.ok) {
+    const logRes2 = await fetch(`${BASE}/source/log`).catch(() => null);
+    const logText = logRes2?.ok ? await logRes2.text() : '';
+    if (logText && logText !== '(no log yet)') {
+      document.getElementById('log-pre').textContent = logText;
+      document.getElementById('log-panel').style.display = '';
+      document.getElementById('audit-panel').style.display = 'none';
+    } else {
+      document.getElementById('log-panel').style.display = 'none';
+      document.getElementById('audit-panel').style.display = '';
+      document.getElementById('sources').innerHTML = '<div style="padding:40px 28px;color:#333;text-align:center">No run data yet. Hit "Run sourcing" to start.</div>';
+    }
+    startIdlePoll();
+    return;
+  }
+
+  const data = await dataRes.json();
+
+  if (!data?.sources?.length) {
+    const logRes2 = await fetch(`${BASE}/source/log`).catch(() => null);
+    const logText = logRes2?.ok ? await logRes2.text() : '';
+    if (logText && logText !== '(no log yet)') {
+      document.getElementById('log-pre').textContent = logText;
+      document.getElementById('log-panel').style.display = '';
+      document.getElementById('audit-panel').style.display = 'none';
+    } else {
+      document.getElementById('log-panel').style.display = 'none';
+      document.getElementById('audit-panel').style.display = '';
+      document.getElementById('sources').innerHTML = '<div style="padding:40px 28px;color:#333;text-align:center">Run had no results — check the log.</div>';
+    }
+    startIdlePoll();
+    return;
+  }
+
+  const feedback = fbRes?.ok ? await fbRes.json() : [];
+  feedbackMap = Object.fromEntries(feedback.map(f => [f.url, f]));
+
+  const allJobs = (data.sources || []).flatMap(s => s.jobs || []);
+  const c = {};
+  for (const j of allJobs) c[j.outcome] = (c[j.outcome] || 0) + 1;
+  document.getElementById('s-added').textContent = c.added || 0;
+  document.getElementById('s-dupe').textContent  = (c.dupe || 0) + (c.cross_dupe || 0);
+  document.getElementById('s-low').textContent   = c.low_fit || 0;
+  document.getElementById('s-dead').textContent  = c.url_dead || 0;
+  document.getElementById('s-exc').textContent   = c.excluded || 0;
+
+  const container = document.getElementById('sources');
+  container.innerHTML = (data.sources || []).map(src => {
+    if (!src.jobs?.length) return `
+      <div class="source-block">
+        <div class="source-header"><span class="source-name">${src.name}</span><span class="source-meta">0 found</span></div>
+        ${src.searched ? `<div class="source-query">${src.searched}</div>` : ''}
+      </div>`;
+
+    const rows = src.jobs.map(j => {
+      const fb = feedbackMap[j.url];
+      const badgeCls = `b-${j.outcome}`;
+      const fbCell = fb
+        ? `<div class="fb"><span class="fb-btn ${fb.feedback}">${fb.feedback === 'correct' ? '✓ correct' : '✗ wrong'}</span></div>${fb.note ? `<div class="fb-note">${fb.note}</div>` : ''}`
+        : `<div class="fb">
+            <button class="fb-btn" data-url="${encodeURIComponent(j.url)}" data-co="${encodeURIComponent(j.company)}" data-role="${encodeURIComponent(j.role)}" data-outcome="${j.outcome}" data-action="correct">✓</button>
+            <button class="fb-btn" data-url="${encodeURIComponent(j.url)}" data-co="${encodeURIComponent(j.company)}" data-role="${encodeURIComponent(j.role)}" data-outcome="${j.outcome}" data-action="wrong">✗ wrong</button>
+           </div>`;
+
+      return `<tr>
+        <td><div class="co">${j.company}</div><div class="role">${j.role}</div></td>
+        <td class="score">${j.fit_score || '—'}</td>
+        <td><span class="badge ${badgeCls}">${j.outcome.replace('_',' ')}</span>${j.reason ? `<div class="reason">${j.reason}</div>` : ''}</td>
+        <td class="url"><a href="${j.url}" target="_blank">${j.url.replace(/^https?:\/\//,'').slice(0,55)}</a></td>
+        <td>${fbCell}</td>
+      </tr>`;
+    }).join('');
+
+    const nAdded = src.jobs.filter(j => j.outcome === 'added').length;
+    return `
+      <div class="source-block">
+        <div class="source-header">
+          <span class="source-name">${src.name}</span>
+          <span class="source-meta">${src.jobs.length} found${src.rawCount != null ? ` / ${src.rawCount} scanned` : ''} · ${nAdded} added</span>
+        </div>
+        ${src.searched ? `<div class="source-query">${src.searched}</div>` : ''}
+        <table>
+          <thead><tr><th>Job</th><th>Fit</th><th>Outcome</th><th>URL</th><th>Feedback</th></tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>`;
+  }).join('');
+
+  // Wire feedback buttons
+  container.querySelectorAll('.fb-btn[data-action]').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const { url, co, role, outcome, action } = btn.dataset;
+      const decodedUrl = decodeURIComponent(url);
+      let note = '';
+      if (action === 'wrong') {
+        note = prompt(`What should have happened?\n${decodeURIComponent(co)} — ${decodeURIComponent(role)}`) ?? '';
+        if (note === null) return;
+      }
+      await fetch(`${BASE}/audit/feedback`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url: decodedUrl, company: decodeURIComponent(co), role: decodeURIComponent(role), outcome_was: outcome, feedback: action === 'correct' ? 'correct' : 'wrong', note }),
+      });
+      const td = btn.closest('td');
+      td.innerHTML = `<div class="fb"><span class="fb-btn ${action === 'correct' ? 'correct' : 'wrong'}">${action === 'correct' ? '✓ correct' : '✗ wrong'}</span></div>${note ? `<div class="fb-note">${note}</div>` : ''}`;
+    });
+  });
+
+  if (data?.run_at) lastRunAt = data.run_at;
+  document.getElementById('log-panel').style.display = 'none';
+  document.getElementById('audit-panel').style.display = '';
+  startIdlePoll();
+}
+
+// ── Init ──────────────────────────────────────────────────────────────────────
+// Show the audit panel immediately (even empty) so the page is never blank
+document.getElementById('audit-panel').style.display = '';
+document.getElementById('sources').innerHTML = '<div style="padding:40px 28px;color:#333;text-align:center">Loading…</div>';
+
+(async () => {
+  try {
+    const status = await fetch(`${BASE}/source/status`).then(r => r.json());
+    if (status.active) {
+      startPolling();
+    } else {
+      await loadAudit();
+    }
+  } catch (e) {
+    document.getElementById('topbar-meta').textContent = 'server offline — is node server.js running?';
+    document.getElementById('sources').innerHTML = `<div style="padding:40px 28px;color:#f87171;text-align:center">Cannot reach server: ${e.message}</div>`;
+    document.getElementById('run-btn').disabled = true;
+  }
+})();
+</script>
+</body>
+</html>
