@@ -2,6 +2,11 @@ const DEFAULT_SERVER = 'http://localhost:3747';
 let SERVER = DEFAULT_SERVER;
 let API_KEY = '';
 
+const PROFILE_FIELDS = [
+  'first_name', 'last_name', 'email', 'phone',
+  'linkedin', 'location', 'work_authorization', 'salary',
+];
+
 // ── Boot: load server URL + key, then init ────────────────────────────────────
 chrome.storage.sync.get(['serverUrl', 'apiKey', 'profile'], ({ serverUrl, apiKey, profile }) => {
   SERVER = serverUrl || DEFAULT_SERVER;
@@ -96,10 +101,6 @@ document.getElementById('btn-audit').addEventListener('click', async (e) => {
 });
 
 // ── Settings ──────────────────────────────────────────────────────────────────
-const PROFILE_FIELDS = [
-  'first_name', 'last_name', 'email', 'phone',
-  'linkedin', 'location', 'work_authorization', 'salary',
-];
 
 document.getElementById('toggleKey').addEventListener('click', () => {
   const input = document.getElementById('apiKey');

@@ -300,9 +300,10 @@ h2{font-size:18px;font-weight:600;color:#fff;margin-bottom:8px}
   <div class="instructions">
     <b>Setup:</b><br>
     1. Install the applyapply Chrome extension<br>
-    2. Open the extension → Settings<br>
-    3. Paste your key and save<br>
-    4. Done — credits deduct automatically as you use it
+    2. Click the extension icon → click the <b>Settings</b> button at the bottom<br>
+    3. Set Server URL to <code style="color:#888">https://applyapplyapply.replit.app</code><br>
+    4. Paste your API key above and click Save<br>
+    5. Done — credits deduct automatically as you use it
   </div>
 </div>
 <script>
