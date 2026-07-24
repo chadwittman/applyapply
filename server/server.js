@@ -6,6 +6,7 @@ const cron = require('node-cron');
 
 const app = express();
 const PORT = process.env.PORT || 5000;
+const VERSION = '0.1.0';
 const APPS_DIR = path.join(__dirname, '../applications');
 fs.mkdirSync(APPS_DIR, { recursive: true });
 
@@ -465,7 +466,7 @@ async function callClaudeVision(content, maxTokens = 2048) {
 
 app.get('/health', (req, res) => {
   const count = fs.existsSync(APPS_DIR) ? fs.readdirSync(APPS_DIR).filter(f => f.endsWith('.json')).length : 0;
-  res.json({ status: 'ok', applications: count, ai: !!keys, provider: keys?.provider });
+  res.json({ status: 'ok', version: VERSION, applications: count, ai: !!keys, provider: keys?.provider });
 });
 
 // Lookup a previously generated application by job URL
@@ -1289,7 +1290,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;backgrou
 <body>
 <div class="topbar">
   <span class="sdot" id="sdot"></span>
-  <span class="topbar-title">source & audit</span>
+  <span class="topbar-title">source & audit</span><span style="font-size:10px;color:#2a2a2a;margin-left:4px">v${VERSION}</span>
   <span class="topbar-meta" id="topbar-meta">${runMeta}</span>
   <span class="topbar-sched" id="sched-label">${schedText}</span>
   <button class="run-btn" id="run-btn" onclick="runSourcing()">run sourcing</button>
