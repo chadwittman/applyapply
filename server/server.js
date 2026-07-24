@@ -1090,6 +1090,35 @@ app.get('/source/log', (req, res) => {
   } catch { res.status(500).send('error reading log'); }
 });
 
+app.get('/source/stream', (req, res) => {
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.flushHeaders();
+
+  let pos = 0;
+  const send = () => {
+    try {
+      if (!fs.existsSync(SOURCE_LOG_FILE)) return;
+      const stat = fs.statSync(SOURCE_LOG_FILE);
+      if (stat.size <= pos) return;
+      const buf = Buffer.alloc(stat.size - pos);
+      const fd = fs.openSync(SOURCE_LOG_FILE, 'r');
+      fs.readSync(fd, buf, 0, buf.length, pos);
+      fs.closeSync(fd);
+      pos = stat.size;
+      const lines = buf.toString().split('\n');
+      for (const line of lines) {
+        if (line.trim()) res.write(`data: ${JSON.stringify(line)}\n\n`);
+      }
+    } catch {}
+  };
+
+  const iv = setInterval(send, 400);
+  req.on('close', () => clearInterval(iv));
+});
+
 // ── Sourcing audit page ───────────────────────────────────────────────────────
 
 app.get('/audit', (req, res) => {
@@ -1234,8 +1263,27 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;backgrou
 .missed-input:focus{border-color:#333}
 .missed-btn{padding:6px 12px;background:none;color:#555;border:1px solid #2a2a2a;border-radius:4px;font-size:11px;cursor:pointer}
 .missed-btn:hover{color:#ccc;border-color:#444}
-#log-panel{display:none;padding:12px 24px 0}
-#log-panel pre{font-family:"SF Mono",Menlo,monospace;font-size:11px;line-height:1.6;background:#080808;border:1px solid #181818;border-radius:6px;padding:14px;white-space:pre-wrap;color:#555;max-height:320px;overflow-y:auto}
+#live-panel{display:none;padding:16px 24px 0;border-bottom:1px solid #111;margin-bottom:4px}
+.live-phases{display:flex;gap:0;margin-bottom:16px}
+.live-phase{font-size:10px;color:#2a2a2a;padding:4px 10px;border:1px solid #1a1a1a;border-right:none;letter-spacing:.04em}
+.live-phase:last-child{border-right:1px solid #1a1a1a}
+.live-phase.active{color:#f59e0b;border-color:#3a2a00;background:#0d0800}
+.live-phase.done{color:#4ade80;border-color:#1a2a1a;background:#080d08}
+.live-sources{display:flex;flex-direction:column;gap:10px;margin-bottom:16px}
+.live-src{display:flex;flex-direction:column;gap:3px}
+.live-src-head{display:flex;align-items:baseline;gap:8px}
+.live-src-name{font-size:11px;font-weight:600;color:#666}
+.live-src-status{font-size:10px;color:#333}
+.live-src-status.searching{color:#f59e0b}
+.live-src-status.done{color:#4ade80}
+.live-feed{display:flex;flex-direction:column;gap:2px;max-height:220px;overflow-y:auto}
+.live-line{font-size:11px;line-height:1.5;padding:1px 0}
+.live-line.step{color:#555;font-weight:600;margin-top:6px}
+.live-line.new{color:#4ade80}
+.live-line.skip{color:#2a2a2a}
+.live-line.check{color:#444;font-style:italic}
+.live-line.excl{color:#7f1d1d}
+.live-line.info{color:#333}
 </style>
 </head>
 <body>
@@ -1247,7 +1295,16 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;backgrou
   <button class="run-btn" id="run-btn" onclick="runSourcing()">run sourcing</button>
 </div>
 ${alertBanners.join('\n')}
-<div id="log-panel"><pre id="log-pre"></pre></div>
+<div id="live-panel">
+  <div class="live-phases" id="live-phases">
+    <div class="live-phase" id="ph1">1 · scraping</div>
+    <div class="live-phase" id="ph2">2 · validating</div>
+    <div class="live-phase" id="ph3">3 · location</div>
+    <div class="live-phase" id="ph4">4 · saving</div>
+  </div>
+  <div class="live-sources" id="live-sources"></div>
+  <div class="live-feed" id="live-feed"></div>
+</div>
 <div class="body">
 ${sourcesHtml}
 <div class="missed-section">
@@ -1260,8 +1317,101 @@ ${sourcesHtml}
 </div>
 </div>
 <script>
-const BASE='http://localhost:3747';
-let polling=null;
+const BASE=location.origin;
+let es=null,statusPoller=null;
+
+// Live run state
+const state={phase:0,sources:{},currentSrc:null};
+
+function setPhase(n){
+  state.phase=n;
+  for(let i=1;i<=4;i++){
+    const el=document.getElementById('ph'+i);
+    el.className='live-phase'+(i<n?' done':i===n?' active':'');
+  }
+}
+
+function getOrCreateSrc(name){
+  if(!state.sources[name]){
+    state.sources[name]={name,status:'searching',jobs:[]};
+    const el=document.createElement('div');
+    el.className='live-src';
+    el.id='src-'+name.replace(/[^a-z0-9]/gi,'_');
+    el.innerHTML=\`<div class="live-src-head"><span class="live-src-name">\${name}</span><span class="live-src-status searching" id="ss-\${el.id}">searching…</span></div>\`;
+    document.getElementById('live-sources').appendChild(el);
+  }
+  return state.sources[name];
+}
+
+function setSrcStatus(name,text,cls){
+  const src=state.sources[name];
+  if(!src)return;
+  const id='ss-src-'+name.replace(/[^a-z0-9]/gi,'_');
+  const el=document.querySelector(\`[id^="ss-src-"]\`);
+  // find by searching
+  const heads=document.querySelectorAll('.live-src-status');
+  const parent=document.getElementById('src-'+name.replace(/[^a-z0-9]/gi,'_'));
+  if(parent){const ss=parent.querySelector('.live-src-status');if(ss){ss.textContent=text;ss.className='live-src-status '+(cls||'');}}
+}
+
+function addFeedLine(text,cls){
+  const feed=document.getElementById('live-feed');
+  const div=document.createElement('div');
+  div.className='live-line '+(cls||'info');
+  div.textContent=text;
+  feed.appendChild(div);
+  feed.scrollTop=feed.scrollHeight;
+  // keep last 60 lines
+  while(feed.children.length>60)feed.removeChild(feed.firstChild);
+}
+
+function parseLine(raw){
+  const l=raw.trim();
+  if(!l)return;
+
+  // Phase markers
+  const phM=l.match(/Phase\s+(\d)/);
+  if(phM){setPhase(parseInt(phM[1]));return;}
+
+  // Section headers (══ Name ══)
+  const secM=l.match(/^[═─\s]*(.+?)[═─\s]*$/);
+  if(l.includes('══')){
+    const name=l.replace(/[═\s]+/g,'').trim();
+    if(name&&!name.match(/^Phase/)){
+      state.currentSrc=name;
+      getOrCreateSrc(name);
+    }
+    return;
+  }
+
+  const src=state.currentSrc;
+
+  // Found count
+  const foundM=l.match(/Role matches extracted:\s*(\d+)/);
+  if(foundM&&src){setSrcStatus(src,foundM[1]+' found','done');return;}
+
+  // Scanned
+  const scannedM=l.match(/Scanned:\s*(\d+)/);
+  if(scannedM&&src){setSrcStatus(src,'scanned '+scannedM[1]+'…','searching');return;}
+
+  // New job
+  if(l.match(/✓\s*NEW:/)){addFeedLine(l.replace(/^\s*[✓~–]\s*/,'+ ').trim(),'new');return;}
+
+  // Skip
+  if(l.match(/–\s*skip:/)){addFeedLine(l.replace(/^\s*[–~]\s*/,'').trim(),'skip');return;}
+
+  // Location check
+  if(l.match(/Checking .+?\.\.\./)){addFeedLine(l.trim(),'check');return;}
+
+  // Excluded
+  if(l.match(/EXCLUDED/)){addFeedLine(l.trim(),'excl');return;}
+
+  // Confirmed location
+  if(l.match(/✓.+Remote|✓.+Austin/)){addFeedLine(l.trim(),'new');return;}
+
+  // Misc info
+  if(l.match(/Saved|No new|Total pipeline|new leads/)){addFeedLine(l.trim(),'step');return;}
+}
 
 async function runSourcing(){
   const btn=document.getElementById('run-btn');
@@ -1269,34 +1419,37 @@ async function runSourcing(){
   try{
     const d=await fetch(BASE+'/source/run',{method:'POST'}).then(r=>r.json());
     if(d.status==='already_running'){btn.textContent='already running';setTimeout(()=>{btn.disabled=false;btn.textContent='run sourcing';},2000);}
-    else startPolling();
+    else startLive();
   }catch{btn.disabled=false;btn.textContent='run sourcing';}
 }
 
-function startPolling(){
-  if(polling)return;
-  document.getElementById('log-panel').style.display='';
+function startLive(){
+  document.getElementById('live-panel').style.display='';
   document.getElementById('sdot').className='sdot active';
   document.getElementById('topbar-meta').textContent='sourcing in progress…';
-  const btn=document.getElementById('run-btn');
-  btn.disabled=true; btn.textContent='running…';
-  polling=setInterval(tick,2000); tick();
-}
+  document.getElementById('run-btn').disabled=true;
+  document.getElementById('run-btn').textContent='running…';
+  setPhase(1);
 
-async function tick(){
-  try{
-    const[sr,lr]=await Promise.all([fetch(BASE+'/source/status'),fetch(BASE+'/source/log')]);
-    const st=await sr.json();
-    const log=lr.ok?await lr.text():'';
-    const pre=document.getElementById('log-pre');
-    if(log){pre.textContent=log;pre.scrollTop=pre.scrollHeight;}
-    if(!st.active){
-      clearInterval(polling);polling=null;
-      document.getElementById('sdot').className='sdot';
-      document.getElementById('topbar-meta').textContent='done — reloading…';
-      setTimeout(()=>location.reload(),1500);
-    }
-  }catch{}
+  // Stream log lines via SSE
+  es=new EventSource(BASE+'/source/stream');
+  es.onmessage=e=>{
+    try{parseLine(JSON.parse(e.data));}catch{}
+  };
+
+  // Poll status to detect completion
+  statusPoller=setInterval(async()=>{
+    try{
+      const st=await fetch(BASE+'/source/status').then(r=>r.json());
+      if(!st.active){
+        clearInterval(statusPoller);
+        if(es){es.close();es=null;}
+        document.getElementById('sdot').className='sdot';
+        document.getElementById('topbar-meta').textContent='done — reloading…';
+        setTimeout(()=>location.reload(),2000);
+      }
+    }catch{}
+  },3000);
 }
 
 async function doFb(btn, feedback, url, co, role, outcome){
