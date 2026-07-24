@@ -124,3 +124,9 @@ body { width: 260px; background: #0a0a0a; color: #e2e8f0; }
 .save-btn:hover { opacity: .85; }
 
 .save-status { font-size: 10px; color: #34d399; min-height: 14px; }
+
+.mode-toggle { display: flex; gap: 0; margin-top: 2px; }
+.mode-btn { flex: 1; padding: 5px 0; background: #111; border: 1px solid #222; color: #444; font-size: 11px; cursor: pointer; }
+.mode-btn:first-child { border-radius: 4px 0 0 4px; border-right: none; }
+.mode-btn:last-child { border-radius: 0 4px 4px 0; }
+.mode-btn.active { background: #fff; color: #0a0a0a; border-color: #fff; }

@@ -21,14 +21,17 @@
 
   <div id="settings-panel" style="display:none">
     <div class="settings-body">
-      <label class="field-row">
-        Server URL
-        <input type="url" id="serverUrl" class="field-input" placeholder="https://applyapplyapply.replit.app">
-      </label>
-      <label class="field-row">
+      <div class="field-row">
+        Mode
+        <div class="mode-toggle">
+          <button class="mode-btn" id="mode-cloud" onclick="setMode('cloud')">Cloud</button>
+          <button class="mode-btn" id="mode-local" onclick="setMode('local')">Local</button>
+        </div>
+      </div>
+      <label class="field-row" id="apikey-row">
         API key
         <div class="key-row">
-          <input type="password" id="apiKey" class="field-input" placeholder="(not required for self-hosted)" autocomplete="off">
+          <input type="password" id="apiKey" class="field-input" placeholder="from /buy page" autocomplete="off">
           <button id="toggleKey" class="icon-btn">👁</button>
         </div>
       </label>

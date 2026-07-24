@@ -1,18 +1,29 @@
-const DEFAULT_SERVER = 'https://applyapplyapply.replit.app';
-let SERVER = DEFAULT_SERVER;
+const CLOUD_URL = 'https://applyapplyapply.replit.app';
+const LOCAL_URL = 'http://localhost:5000';
+let SERVER = CLOUD_URL;
 let API_KEY = '';
+let MODE = 'cloud'; // 'cloud' | 'local'
+
+function setMode(mode) {
+  MODE = mode;
+  SERVER = mode === 'local' ? LOCAL_URL : CLOUD_URL;
+  document.getElementById('mode-cloud').className = 'mode-btn' + (mode === 'cloud' ? ' active' : '');
+  document.getElementById('mode-local').className = 'mode-btn' + (mode === 'local' ? ' active' : '');
+  document.getElementById('apikey-row').style.display = mode === 'local' ? 'none' : '';
+  document.getElementById('btn-audit').href = `${SERVER}/audit`;
+  checkHealth();
+}
 
 const PROFILE_FIELDS = [
   'first_name', 'last_name', 'email', 'phone',
   'linkedin', 'location', 'work_authorization', 'salary',
 ];
 
-// ── Boot: load server URL + key, then init ────────────────────────────────────
-chrome.storage.sync.get(['serverUrl', 'apiKey', 'profile'], ({ serverUrl, apiKey, profile }) => {
-  SERVER = serverUrl || DEFAULT_SERVER;
+// ── Boot: load mode + key, then init ─────────────────────────────────────────
+chrome.storage.sync.get(['mode', 'apiKey', 'profile'], ({ mode, apiKey, profile }) => {
   API_KEY = apiKey || '';
+  setMode(mode || 'cloud');
 
-  document.getElementById('serverUrl').value = SERVER !== DEFAULT_SERVER ? SERVER : '';
   if (apiKey) document.getElementById('apiKey').value = apiKey;
   if (profile) {
     for (const field of PROFILE_FIELDS) {
@@ -108,17 +119,14 @@ document.getElementById('toggleKey').addEventListener('click', () => {
 });
 
 document.getElementById('saveSettings').addEventListener('click', () => {
-  const serverUrl = document.getElementById('serverUrl').value.trim() || DEFAULT_SERVER;
   const apiKey = document.getElementById('apiKey').value.trim();
   const profile = {};
   for (const field of PROFILE_FIELDS) {
     const el = document.querySelector(`[data-field="${field}"]`);
     if (el?.value.trim()) profile[field] = el.value.trim();
   }
-  chrome.storage.sync.set({ serverUrl, apiKey, profile }, () => {
-    SERVER = serverUrl;
+  chrome.storage.sync.set({ mode: MODE, apiKey, profile }, () => {
     API_KEY = apiKey;
-    document.getElementById('btn-audit').href = `${SERVER}/audit`;
     const s = document.getElementById('save-status');
     s.textContent = 'Saved';
     setTimeout(() => { s.textContent = ''; }, 1800);
