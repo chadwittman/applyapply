@@ -1452,6 +1452,11 @@ function startLive(){
   },3000);
 }
 
+// On page load — auto-connect if a run is already in progress
+fetch(BASE+'/source/status').then(r=>r.json()).then(st=>{
+  if(st.active) startLive();
+}).catch(()=>{});
+
 async function doFb(btn, feedback, url, co, role, outcome){
   const u=decodeURIComponent(url);
   const c=decodeURIComponent(co);
