@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "applyapply",
-  "version": "1.6.2",
+  "version": "1.6.3",
   "description": "Auto-fill job applications with AI-generated apply kits",
   "permissions": ["activeTab", "storage", "clipboardWrite", "scripting", "tabs", "offscreen"],
   "host_permissions": [

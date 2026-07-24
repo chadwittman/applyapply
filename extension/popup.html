@@ -13,18 +13,17 @@
   <div class="actions">
     <button id="btn-apply" class="btn primary">Apply to this page</button>
     <div id="apply-note" class="note"></div>
-    <a id="btn-audit" class="btn secondary" href="#" target="_blank">Source &amp; audit ↗</a>
-  </div>
-
-  <div class="settings-toggle">
-    <button id="btn-settings-toggle">Settings</button>
+    <div class="btn-row">
+      <a id="btn-audit" class="btn secondary" href="#" target="_blank">Source</a>
+      <button id="btn-settings-toggle" class="btn secondary">Settings</button>
+    </div>
   </div>
 
   <div id="settings-panel" style="display:none">
     <div class="settings-body">
       <label class="field-row">
         Server URL
-        <input type="url" id="serverUrl" class="field-input" placeholder="http://localhost:3747">
+        <input type="url" id="serverUrl" class="field-input" placeholder="https://applyapplyapply.replit.app">
       </label>
       <label class="field-row">
         API key

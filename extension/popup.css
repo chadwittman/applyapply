@@ -41,6 +41,7 @@ body { width: 260px; background: #0a0a0a; color: #e2e8f0; }
 .btn:disabled { opacity: .35; cursor: default; }
 .btn.primary { background: #fff; color: #0a0a0a; }
 .btn.secondary { background: #161616; color: #94a3b8; border: 1px solid #222; }
+.btn.secondary.active { color: #fff; border-color: #444; }
 
 .note {
   font-size: 10px;
@@ -52,20 +53,11 @@ body { width: 260px; background: #0a0a0a; color: #e2e8f0; }
 .note.ok { color: #34d399; }
 .note.err { color: #f87171; }
 
-.settings-toggle {
-  padding: 6px 14px 12px;
-  text-align: right;
+.btn-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
 }
-.settings-toggle button {
-  background: none;
-  border: none;
-  color: #666;
-  font-size: 10px;
-  cursor: pointer;
-  letter-spacing: .04em;
-  text-transform: uppercase;
-}
-.settings-toggle button:hover { color: #aaa; }
 
 .settings-body {
   padding: 12px 14px 16px;

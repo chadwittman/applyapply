@@ -1,4 +1,4 @@
-const DEFAULT_SERVER = 'http://localhost:3747';
+const DEFAULT_SERVER = 'https://applyapplyapply.replit.app';
 let SERVER = DEFAULT_SERVER;
 let API_KEY = '';
 
@@ -130,4 +130,5 @@ document.getElementById('btn-settings-toggle').addEventListener('click', () => {
   const visible = panel.style.display !== 'none';
   panel.style.display = visible ? 'none' : '';
   document.getElementById('btn-settings-toggle').textContent = visible ? 'Settings' : 'Done';
+  document.getElementById('btn-settings-toggle').className = visible ? 'btn secondary' : 'btn secondary active';
 });
