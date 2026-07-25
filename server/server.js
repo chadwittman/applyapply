@@ -735,7 +735,7 @@ CHAD'S BACKGROUND:
 - Serial founder with exits: EdgeRank Checker (250K brands, sold to Socialbakers), Dolly (500K users, $10M ARR, sold to IKEA via TaskRabbit), Krause House ($5M crowdfund in 15 min, first DAO sports team bid)
 - Current: co-founder of ELDRICK, an AI golf fitting platform he built end-to-end — multi-stage recommendation engine, deterministic + probabilistic + expert-in-the-loop pipeline, fitted 12,000+ golfers
 - Also built Relay's founding editorial, social, and collection management pipelines from scratch
-- At Filmhub (a16z-backed, current day job): built an AI thumbnail pipeline that reversed declining YouTube performance and grew revenue 161% over 16 months. Meaningful execution at a small company.
+- At Filmhub (a16z-backed, current day job): built STASH, an end-to-end AI creative pipeline that generates and tests thumbnails, titles, and artwork autonomously. The pipeline drove 4.5x gross revenue per published title, even as YouTube CPMs fell 40%. The result came from the system he designed, not from headcount or budget.
 - Superpowers: AI systems in production, growth and GTM, 0-to-1 product and company building, experimentation, cross-functional leadership, speed
 - Video portfolio: https://youtu.be/lS140EUgOg4 — include this URL when referencing his AI or product work
 
@@ -803,7 +803,7 @@ Banned patterns:
 - Summary-recap endings: no "In conclusion", "Ultimately", "Overall" — end on the last concrete point
 - Fake-profound kickers: no metaphor or mic-drop final line — end on the clearest concrete sentence
 
-Concrete over abstract: "grew revenue 161% in 16 months" not "drove significant growth". Names, numbers, mechanisms beat adjectives. Use active voice. Verbs do the work — "decided" not "made a decision".`;
+Concrete over abstract: "built a pipeline that drove 4.5x revenue per title as CPMs fell 40%" not "drove significant growth". Names, numbers, mechanisms beat adjectives. Use active voice. Verbs do the work — "decided" not "made a decision".`;
 
   try {
     const raw = await callClaude(prompt, 4096, 'claude-sonnet-4-6');
