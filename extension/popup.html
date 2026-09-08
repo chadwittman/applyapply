@@ -28,27 +28,38 @@
           <button class="mode-btn" id="mode-local" onclick="setMode('local')">Local</button>
         </div>
       </div>
-      <label class="field-row" id="apikey-row">
-        API key
-        <div class="key-row">
-          <input type="password" id="apiKey" class="field-input" placeholder="from /buy page" autocomplete="off">
-          <button id="toggleKey" class="icon-btn">👁</button>
+
+      <!-- Auth state: signed in -->
+      <div id="auth-signed-in" style="display:none">
+        <div class="auth-row">
+          <span id="auth-email" class="auth-email"></span>
+          <span id="auth-credits" style="font-size:10px;color:#444;flex-shrink:0"></span>
+          <button id="btn-signout" class="signout-btn">Sign out</button>
         </div>
-      </label>
-      <div class="divider"></div>
-      <div class="field-row">Profile</div>
-      <div class="profile-grid">
-        <label>First<input type="text" class="field-input" data-field="first_name" placeholder="Chad"></label>
-        <label>Last<input type="text" class="field-input" data-field="last_name" placeholder="Wittman"></label>
-        <label>Email<input type="email" class="field-input" data-field="email"></label>
-        <label>Phone<input type="tel" class="field-input" data-field="phone"></label>
-        <label>LinkedIn<input type="url" class="field-input" data-field="linkedin"></label>
-        <label>Location<input type="text" class="field-input" data-field="location"></label>
-        <label>Auth<input type="text" class="field-input" data-field="work_authorization"></label>
-        <label>Salary<input type="text" class="field-input" data-field="salary"></label>
+        <div class="divider"></div>
+        <div class="field-row">Profile</div>
+        <div class="profile-grid">
+          <label>First<input type="text" class="field-input" data-field="first_name"></label>
+          <label>Last<input type="text" class="field-input" data-field="last_name"></label>
+          <label>Email<input type="email" class="field-input" data-field="email"></label>
+          <label>Phone<input type="tel" class="field-input" data-field="phone"></label>
+          <label>LinkedIn<input type="url" class="field-input" data-field="linkedin"></label>
+          <label>Location<input type="text" class="field-input" data-field="location"></label>
+          <label>Auth<input type="text" class="field-input" data-field="work_authorization"></label>
+          <label>Salary<input type="text" class="field-input" data-field="salary"></label>
+        </div>
+        <div class="save-row">
+          <button id="saveSettings" class="save-btn">Save</button>
+          <button id="btn-setup" class="setup-link">Full profile →</button>
+        </div>
+        <div id="save-status" class="save-status"></div>
       </div>
-      <button id="saveSettings" class="save-btn">Save</button>
-      <div id="save-status" class="save-status"></div>
+
+      <!-- Auth state: signed out -->
+      <div id="auth-signed-out">
+        <button id="btn-signin" class="btn primary" style="margin-top:4px">Sign in</button>
+        <div class="auth-hint">Opens a sign-in page in your browser</div>
+      </div>
     </div>
   </div>
 

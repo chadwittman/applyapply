@@ -1,10 +1,26 @@
 // ── Offscreen voice recording ─────────────────────────────────────────────────
 
-let SERVER = 'http://localhost:3747';
+const CLOUD_URL = 'https://applyapplyapply.replit.app';
+const LOCAL_URL = 'http://localhost:5000';
+let SERVER = LOCAL_URL;
 let API_KEY = '';
-chrome.storage.sync.get(['serverUrl', 'apiKey'], (s) => {
+chrome.storage.sync.get(['mode', 'serverUrl', 'apiKey'], (s) => {
   if (s.serverUrl) SERVER = s.serverUrl;
-  if (s.apiKey) API_KEY = s.apiKey;
+  // Match the popup and content script: cloud is the safe default for a
+  // fresh install, while localhost is an explicit development choice.
+  else SERVER = s.mode === 'local' ? LOCAL_URL : CLOUD_URL;
+  API_KEY = s.apiKey || '';
+});
+
+// Handle SET_SESSION from auth success page (externally connectable)
+chrome.runtime.onMessageExternal.addListener((msg, sender, sendResponse) => {
+  if (msg.type === 'SET_SESSION' && msg.token) {
+    chrome.storage.sync.set({ apiKey: msg.token }, () => {
+      API_KEY = msg.token;
+      sendResponse({ ok: true });
+    });
+    return true;
+  }
 });
 
 function serverHeaders(extra = {}) {
@@ -198,6 +214,7 @@ Rules:
   const data = await r.json();
   return { text: data.content?.[0]?.text?.trim() || transcript };
 }
+
 
 chrome.runtime.onInstalled.addListener(() => {
   console.log('applyapply installed');

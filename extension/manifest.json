@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "applyapply",
-  "version": "1.6.6",
+  "version": "1.9.1",
   "description": "Auto-fill job applications with AI-generated apply kits",
   "permissions": ["activeTab", "storage", "clipboardWrite", "scripting", "tabs", "offscreen"],
   "host_permissions": [
@@ -11,7 +11,7 @@
     "https://boards.greenhouse.io/*",
     "https://jobs.lever.co/*",
     "https://instacart.careers/*",
-    "http://localhost:3747/*",
+    "http://localhost:5000/*",
     "*://*/*"
   ],
   "background": {
@@ -42,5 +42,11 @@
   "action": {
     "default_popup": "popup.html",
     "default_title": "applyapply"
+  },
+  "externally_connectable": {
+    "matches": [
+      "http://localhost:5000/*",
+      "https://applyapplyapply.replit.app/*"
+    ]
   }
 }

@@ -1,8 +1,30 @@
-let SERVER = 'http://localhost:3747';
+const CLOUD_URL = 'https://applyapplyapply.replit.app';
+const LOCAL_URL = 'http://localhost:5000';
+let SERVER = LOCAL_URL;
 let API_KEY = '';
-chrome.storage.sync.get(['serverUrl', 'apiKey'], (s) => {
-  if (s.serverUrl) SERVER = s.serverUrl;
-  if (s.apiKey) API_KEY = s.apiKey;
+
+chrome.storage.sync.get(['mode', 'serverUrl', 'apiKey', 'profile'], (s) => {
+  if (s.serverUrl) SERVER = s.serverUrl; // legacy key
+  // Cloud is the normal extension mode. Only use localhost when it was
+  // explicitly selected; a fresh install has no `mode` value yet.
+  else SERVER = s.mode === 'local' ? LOCAL_URL : CLOUD_URL;
+  API_KEY = s.apiKey || '';
+  // Seed DEFAULTS from locally-stored profile (fast, no network)
+  if (s.profile) {
+    for (const [k, v] of Object.entries(s.profile)) {
+      if (v != null && v !== '' && k in DEFAULTS) DEFAULTS[k] = v;
+    }
+  }
+  // If API key set, also fetch full profile from server (bio + any server-set fields)
+  if (API_KEY) {
+    serverFetch('/profile').then(res => {
+      if (res.ok && res.data && typeof res.data === 'object') {
+        for (const [k, v] of Object.entries(res.data)) {
+          if (v != null && v !== '' && k in DEFAULTS) DEFAULTS[k] = v;
+        }
+      }
+    }).catch(() => {});
+  }
 });
 
 function serverFetch(path, options = {}) {
@@ -436,6 +458,7 @@ ${a.warm_path ? `<div class="sec">
 
 <a class="job-link" href="${a.url}" target="_blank">Open job posting ↗</a>
 
+${quickAnswerSection()}
 ${quickCopySection(a)}`;
 }
 
@@ -466,6 +489,21 @@ function noAppBody() {
 <div class="gen-wrap">
   ${locBadgeHTML}<button id="jaa-generate" class="gen-btn">Generate application</button>
   <div id="jaa-gen-status" class="gen-status"></div>
+</div>
+${quickAnswerSection()}`;
+}
+
+function quickAnswerSection() {
+  return `<div class="sec">
+  <div class="sec-hd" data-sec="quickanswer"><span class="sec-label">Quick answer</span><span class="chev">▾</span></div>
+  <div class="sec-body">
+    <div style="display:flex;align-items:center;gap:8px;padding:2px 0 6px;">
+      <button id="jaa-quick-mic" class="qa-mic" title="Speak the question — AI answers from your background">🎤</button>
+      <span style="font-size:11px;color:#555;">Speak the question</span>
+    </div>
+    <div id="jaa-quick-out" style="font-size:11px;color:#ccc;line-height:1.6;white-space:pre-wrap;display:none;"></div>
+    <button id="jaa-quick-copy" class="copy-btn" style="display:none;margin-top:8px;">Copy</button>
+  </div>
 </div>`;
 }
 
@@ -648,13 +686,14 @@ function bindEvents() {
           setTimeout(() => { btn.textContent = '🎤'; }, 2000);
         };
 
-        // Direct fetch to localhost — bypasses chrome.runtime entirely
-        fetch('http://localhost:3747/voice', {
+        // Route through the configured API so voice works in the distributed
+        // extension as well as local development.
+        serverFetch('/voice', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ transcript: raw, question, appId: currentApp?.id }),
         })
-          .then(r => r.ok ? r.json() : null)
+          .then(r => r.ok ? r.data : null)
           .then(data => applyAnswer(data?.text || raw))
           .catch(() => applyAnswer(raw));
       };
@@ -673,6 +712,58 @@ function bindEvents() {
       sr.start();
     });
   });
+
+  // Quick answer mic — speak a question, get an AI answer from Chad's background
+  const quickMic = shadow.getElementById('jaa-quick-mic');
+  const quickOut = shadow.getElementById('jaa-quick-out');
+  const quickCopy = shadow.getElementById('jaa-quick-copy');
+  if (quickMic) {
+    quickMic.addEventListener('click', e => {
+      e.stopPropagation();
+      if (voiceQaMicBtn === quickMic) { voiceQaSR?.stop(); quickMic.textContent = '⏳'; return; }
+      if (voiceQaMicBtn) { voiceQaSR?.stop(); voiceQaMicBtn.textContent = '🎤'; }
+      voiceQaSR = null;
+      const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+      if (!SR) { quickMic.title = 'Speech not supported'; return; }
+      voiceQaMicBtn = quickMic;
+      quickMic.textContent = '⏳';
+      const sr = new SR();
+      voiceQaSR = sr;
+      sr.continuous = true; sr.interimResults = false; sr.lang = 'en-US';
+      sr.onstart = () => { quickMic.textContent = '⏹'; };
+      sr.onresult = ev => {
+        const question = [...ev.results].map(r => r[0].transcript).join(' ').trim();
+        if (!question) return;
+        quickMic.textContent = '⏳';
+        voiceQaMicBtn = null; voiceQaSR = null;
+        if (quickOut) { quickOut.textContent = 'Thinking…'; quickOut.style.display = ''; }
+        if (quickCopy) quickCopy.style.display = 'none';
+        serverFetch('/quick-answer', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ question }),
+        })
+          .then(r => r.ok ? r.json() : null)
+          .then(data => {
+            const text = data?.text || question;
+            if (quickOut) quickOut.textContent = text;
+            if (quickCopy) {
+              quickCopy.style.display = '';
+              quickCopy.onclick = () => { navigator.clipboard.writeText(text); quickCopy.textContent = '✓'; setTimeout(() => { quickCopy.textContent = 'Copy'; }, 1500); };
+            }
+            quickMic.textContent = '✓';
+            setTimeout(() => { quickMic.textContent = '🎤'; }, 2000);
+          })
+          .catch(() => { if (quickOut) quickOut.textContent = 'Error — is server running?'; quickMic.textContent = '🎤'; });
+      };
+      sr.onerror = ev => {
+        quickMic.textContent = ev.error === 'not-allowed' ? '🔒' : '🎤';
+        voiceQaMicBtn = null; voiceQaSR = null;
+      };
+      sr.onend = () => { if (voiceQaMicBtn === quickMic) { quickMic.textContent = '🎤'; voiceQaMicBtn = null; } voiceQaSR = null; };
+      sr.start();
+    });
+  }
 
   shadow.querySelectorAll('.field[data-copy]').forEach(field => {
     field.addEventListener('click', () => {
@@ -699,31 +790,12 @@ function bindEvents() {
           body: JSON.stringify({ appId: currentApp.id }),
         });
         if (!res.ok) throw new Error('failed');
-        const text = res.data.text;
-        clOut.innerHTML = '';
-        const prose = document.createElement('div');
-        prose.className = 'cl-out';
-        prose.title = 'Click to copy';
-        prose.style.cursor = 'pointer';
-        prose.textContent = text;
-        const hint = document.createElement('div');
-        hint.style.cssText = 'font-size:9px;color:#bbb;padding:4px 14px 10px;letter-spacing:.06em;text-transform:uppercase;';
-        hint.textContent = 'click to copy';
-        prose.addEventListener('click', () => {
-          navigator.clipboard.writeText(text).then(() => {
-            hint.textContent = '✓ copied';
-            hint.style.color = '#16a34a';
-            setTimeout(() => { hint.textContent = 'click to copy'; hint.style.color = '#bbb'; }, 2000);
-          });
-        });
-        clOut.appendChild(prose);
-        clOut.appendChild(hint);
-        clOut.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        renderCoverLetter(res.data.text, clOut);
         genClBtn.textContent = 'Regenerate';
         genClBtn.disabled = false;
       } catch {
         clOut.textContent = 'Error — try again';
-        genClBtn.textContent = 'Generate cover letter';
+        genClBtn.textContent = 'Cover letter';
         genClBtn.disabled = false;
       }
     });
@@ -764,6 +836,10 @@ async function aiFill(app) {
     if (!m.value) { skipped++; continue; }
     if (m.type === 'radio') {
       clickRadioByGroupLabel(m.label, m.value) ? filled++ : skipped++;
+    } else if (m.type === 'select') {
+      const input = findByLabel(m.label);
+      const answer = binaryAnswerForLabel(m.label) || (/^\s*no\b/i.test(m.value) ? 'No' : /^\s*yes\b/i.test(m.value) ? 'Yes' : null);
+      if (answer && chooseGreenhouseCombobox(input, answer)) filled++; else skipped++;
     } else {
       const el = findByLabel(m.label);
       if (el) { setVal(el, m.value); filled++; } else skipped++;
@@ -795,7 +871,7 @@ function deterministicFill(app) {
     { test: l => /github/.test(l), value: p.github || '' },
     { test: l => /twitter|x\.com|@/.test(l), value: p.twitter || '' },
     { test: l => /portfolio|work\s*sample|sample\s*work|show\s*your\s*work/.test(l), value: p.website || '' },
-    { test: l => /website|personal\s*site|project\s*site|online\s*presence|portfolio\s*url|personal\s*url/.test(l), value: p.website || '' },
+    { test: l => /website|personal\s*site|project\s*site|online\s*presence|portfolio\s*url|personal\s*url|additional\s*link/.test(l), value: p.website || '' },
     { test: l => /salary|compensation/.test(l), value: p.salary || '' },
     { test: l => /cover letter|additional info|tell us|message/.test(l), value: t.cover_note || '', textarea: true },
     { test: l => /how did you hear|how did you find|referred by|referral source|where did you (hear|learn)|source of (hire|application)/.test(l), value: 'LinkedIn' },
@@ -809,6 +885,10 @@ function deterministicFill(app) {
 
   if (clickRadioByPattern(/authorized to work|legally authorized/, 'yes')) filled++; else skipped++;
   if (clickRadioByPattern(/sponsorship|visa/, 'no')) filled++; else skipped++;
+  // Greenhouse's current form uses React comboboxes for binary questions,
+  // rather than native radios. Select the actual Yes/No option—never paste
+  // the generated prose answer into its search input.
+  filled += fillGreenhouseBinaryQuestions();
 
   // Select dropdowns — phone country code and country fields
   for (const sel of document.querySelectorAll('select')) {
@@ -818,13 +898,26 @@ function deterministicFill(app) {
     const combined = attr + ' ' + labelTxt;
 
     // Phone country code — prefer "+1" (US dial code) over "United States"
-    if (/phone.*country|country.*code|dial.*code|calling.*code|phone.*prefix/.test(combined)) {
+    // Catches explicit labels AND Greenhouse's "Country" dropdown next to a phone input (name="phone_country")
+    const selName = (sel.name || '').toLowerCase();
+    const isPhoneCountry = /phone.*country|country.*code|dial.*code|calling.*code|phone.*prefix/.test(combined)
+      || selName.includes('phone_country')
+      || selName.includes('phone-country')
+      || (combined.trim() === 'country' && sel.closest('div,fieldset')?.querySelector('input[type="tel"], input[name*="phone"]'));
+    if (isPhoneCountry) {
       const plusOne = [...sel.options].find(o => o.text.trim() === '+1' || o.value === '+1' || o.value === '1');
       if (plusOne && sel.value !== plusOne.value) {
         sel.value = plusOne.value;
         sel.dispatchEvent(new Event('change', { bubbles: true }));
         filled++;
       }
+      continue;
+    }
+
+    // How did you hear — pick LinkedIn option
+    if (/how.*hear|how.*find|referral.*source|source.*hire|where.*hear|where.*learn|how.*learn/.test(combined)) {
+      const li = [...sel.options].find(o => /linkedin/i.test(o.text));
+      if (li) { sel.value = li.value; sel.dispatchEvent(new Event('change', { bubbles: true })); filled++; }
       continue;
     }
 
@@ -980,6 +1073,41 @@ function fireRadioClick(radio) {
   radio.dispatchEvent(new Event('input', { bubbles: true }));
 }
 
+function binaryAnswerForLabel(label) {
+  const text = label.toLowerCase();
+  if (/sponsor(ship)?|visa/.test(text)) return 'No';
+  if (/authorized|eligible.*work|right to work/.test(text)) return 'Yes';
+  if (/directly managed.*product marketing/.test(text)) return 'Yes';
+  if (/ai-native|ai\/?ml|marketing ai/.test(text)) return 'Yes';
+  if (/10\+.*product marketing/.test(text)) return 'Yes';
+  return null;
+}
+
+function chooseGreenhouseCombobox(input, answer) {
+  if (!input || input.getAttribute('role') !== 'combobox') return false;
+  input.focus();
+  input.click();
+  // Greenhouse's React Select displays Yes before No. Arrow navigation lets
+  // React own the state change and triggers its required-field validation.
+  setTimeout(() => {
+    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }));
+    if (answer === 'No') input.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }));
+    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+  }, 40);
+  return true;
+}
+
+function fillGreenhouseBinaryQuestions() {
+  if (detectATS() !== 'greenhouse') return 0;
+  let count = 0;
+  for (const input of document.querySelectorAll('input[role="combobox"][aria-labelledby]')) {
+    const label = document.getElementById(input.getAttribute('aria-labelledby'))?.textContent || '';
+    const answer = binaryAnswerForLabel(label);
+    if (answer && chooseGreenhouseCombobox(input, answer)) count++;
+  }
+  return count;
+}
+
 // ── Page scanner + helpers ───────────────────────────────────────────────────
 
 function scanPageFields() {
@@ -996,7 +1124,10 @@ function scanPageFields() {
   for (const label of document.querySelectorAll('label')) {
     const forId = label.getAttribute('for');
     const input = (forId && document.getElementById(forId)) || label.querySelector('input,textarea,select');
-    if (input) push(label.textContent, input);
+    if (input) {
+      const isBinaryCombobox = input.getAttribute?.('role') === 'combobox' && binaryAnswerForLabel(label.textContent);
+      push(label.textContent, isBinaryCombobox ? { type: 'select', name: input.id || '' } : input);
+    }
   }
 
   for (const input of document.querySelectorAll('input:not([type=hidden]):not([type=file]),textarea')) {
@@ -1008,6 +1139,16 @@ function scanPageFields() {
 
   for (const input of document.querySelectorAll('input[aria-label]:not([type=hidden]),textarea[aria-label]')) {
     push(input.getAttribute('aria-label'), input);
+  }
+
+  // Greenhouse represents Yes/No questions as React Select comboboxes. Mark
+  // them as choices so AI-fill uses the option selector, not text entry.
+  for (const input of document.querySelectorAll('input[role="combobox"][aria-labelledby]')) {
+    const labelEl = document.getElementById(input.getAttribute('aria-labelledby'));
+    const label = labelEl?.textContent || '';
+    if (binaryAnswerForLabel(label)) {
+      push(label, { type: 'select', name: input.id || '' });
+    }
   }
 
   for (const ta of document.querySelectorAll('textarea')) {
@@ -1125,11 +1266,113 @@ async function generateApp(btn) {
     // Open the sidebar to show results
     const sidebar = shadow?.getElementById('jaa-sidebar');
     if (sidebar) { isOpen = true; sidebar.classList.add('open'); }
+
+    // Auto-generate cover letter
+    autoGenerateCoverLetter();
   } catch (e) {
     btn.disabled = false;
     btn.textContent = 'Generate application';
     if (status) status.textContent = `Error: ${e.message}`;
   }
+}
+
+async function autoGenerateCoverLetter() {
+  const genClBtn = shadow?.getElementById('jaa-gen-cl');
+  const clOut = shadow?.getElementById('jaa-cl-out');
+  if (!clOut || !currentApp?.id) return;
+  if (genClBtn) { genClBtn.textContent = 'Generating…'; genClBtn.disabled = true; }
+  try {
+    const res = await serverFetch('/cover-letter', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ appId: currentApp.id }),
+    });
+    if (!res.ok) throw new Error('failed');
+    renderCoverLetter(res.data.text, clOut);
+    if (genClBtn) { genClBtn.textContent = 'Regenerate'; genClBtn.disabled = false; }
+  } catch {
+    if (genClBtn) { genClBtn.textContent = 'Cover letter'; genClBtn.disabled = false; }
+  }
+}
+
+function renderCoverLetter(text, clOut) {
+  clOut.innerHTML = '';
+
+  // Header row — collapsed by default
+  const hd = document.createElement('div');
+  hd.className = 'sec-hd';
+  hd.dataset.sec = 'cl';
+  hd.style.cssText = 'cursor:pointer';
+
+  const label = document.createElement('span');
+  label.className = 'sec-label';
+  label.textContent = 'Cover letter';
+
+  const actionsHd = document.createElement('div');
+  actionsHd.className = 'sec-actions';
+
+  const pdfBtn = document.createElement('button');
+  pdfBtn.textContent = 'PDF';
+  pdfBtn.style.cssText = 'font-size:9px;padding:2px 7px;background:none;border:1px solid #2a2a2a;color:#666;cursor:pointer;font-family:inherit;letter-spacing:.04em';
+  pdfBtn.addEventListener('click', e => { e.stopPropagation(); printCoverLetter(text); });
+
+  const chev = document.createElement('span');
+  chev.className = 'chev';
+  chev.textContent = '▸';
+
+  actionsHd.appendChild(pdfBtn);
+  actionsHd.appendChild(chev);
+  hd.appendChild(label);
+  hd.appendChild(actionsHd);
+
+  // Body — hidden until expanded
+  const body = document.createElement('div');
+  body.className = 'sec-body';
+  body.style.display = 'none';
+
+  const prose = document.createElement('div');
+  prose.className = 'prose';
+  prose.style.cssText = 'cursor:pointer;white-space:pre-wrap';
+  prose.title = 'Click to copy';
+  prose.textContent = text;
+
+  const hint = document.createElement('div');
+  hint.style.cssText = 'font-size:9px;color:#555;padding:4px 0 8px;letter-spacing:.06em;text-transform:uppercase';
+  hint.textContent = 'click to copy';
+
+  prose.addEventListener('click', () => {
+    navigator.clipboard.writeText(text).then(() => {
+      hint.textContent = '✓ copied'; hint.style.color = '#16a34a';
+      setTimeout(() => { hint.textContent = 'click to copy'; hint.style.color = '#555'; }, 2000);
+    });
+  });
+
+  body.appendChild(prose);
+  body.appendChild(hint);
+
+  hd.addEventListener('click', () => {
+    const open = body.style.display !== 'none';
+    body.style.display = open ? 'none' : '';
+    chev.textContent = open ? '▸' : '▾';
+  });
+
+  const sec = document.createElement('div');
+  sec.className = 'sec';
+  sec.appendChild(hd);
+  sec.appendChild(body);
+  clOut.appendChild(sec);
+}
+
+function printCoverLetter(text) {
+  const w = window.open('', '_blank');
+  if (!w) return;
+  const paragraphs = text.split(/\n\n+/).map(p => `<p>${p.replace(/\n/g, '<br>')}</p>`).join('');
+  w.document.write(`<!DOCTYPE html><html><head><title>Cover Letter</title>
+<style>body{font-family:Georgia,serif;font-size:12pt;line-height:1.7;max-width:680px;margin:72pt auto;color:#111}p{margin:0 0 1.2em}</style>
+</head><body>${paragraphs}</body></html>`);
+  w.document.close();
+  w.focus();
+  setTimeout(() => w.print(), 400);
 }
 
 function scrapeJobDetails() {
@@ -1195,7 +1438,7 @@ function getValueForField(label, name) {
   if (/github/.test(l)) return p.github || '';
   if (/twitter|x\.com/.test(l)) return p.twitter || '';
   if (/portfolio|work\s*sample|sample\s*work|show\s*your\s*work/.test(l)) return p.website || '';
-  if (/website|personal\s*site|project\s*site|online\s*presence|portfolio\s*url|personal\s*url/.test(l)) return p.website || '';
+  if (/website|personal\s*site|project\s*site|online\s*presence|portfolio\s*url|personal\s*url|additional\s*link/.test(l)) return p.website || '';
   if (/location|city|where.*based|based.in/.test(l)) return p.location || '';
   if (/salary|compensation|pay|expected/.test(l)) return p.salary ? `${Number(p.salary).toLocaleString()}` : '';
   if (/employer|company|current.*work|most recent/.test(l)) return p.current_employer || '';
@@ -1300,21 +1543,22 @@ function observeFields() {
   window.addEventListener('scroll', repositionCopyBtns, { passive: true, capture: true });
   window.addEventListener('resize', repositionCopyBtns, { passive: true });
 
-  // Alt+Enter (Option+Enter on Mac) fires the copy button for the focused field
+  // Alt+Enter (Option+Enter on Mac) fills the focused field and moves to the next
   document.addEventListener('keydown', e => {
     if (!e.altKey || e.key !== 'Enter') return;
     const active = document.activeElement;
     if (!active) return;
-    const btn = JAA_COPY_MAP.get(active);
-    if (btn) {
-      e.preventDefault();
-      e.stopPropagation();
-      btn.click();
-    } else {
-      // Also check textarea siblings (absolute-positioned copy buttons)
-      const sibling = active.parentElement?.querySelector('[data-jaa-copy]');
-      if (sibling) { e.preventDefault(); e.stopPropagation(); sibling.click(); }
-    }
+    const btn = JAA_COPY_MAP.get(active) || active.parentElement?.querySelector('[data-jaa-copy]');
+    if (!btn) return;
+    e.preventDefault();
+    e.stopPropagation();
+    btn.click();
+    setTimeout(() => {
+      const focusable = [...document.querySelectorAll('input, select, textarea')]
+        .filter(el => !el.disabled && !el.readOnly && el.offsetParent !== null);
+      const idx = focusable.indexOf(active);
+      if (idx >= 0 && focusable[idx + 1]) focusable[idx + 1].focus();
+    }, 80);
   }, true);
 }
 
@@ -1510,3 +1754,22 @@ if (!IN_FRAME) {
     }
   }).observe(document.body, { childList: true });
 }
+
+// ── Auto-generate when opened from pipeline ───────────────────────────────────
+
+(function checkPendingGenerate() {
+  if (IN_FRAME) return;
+  serverFetch('/sourced/pending-generate').then(res => {
+    if (!res.ok || !res.data?.url) return;
+    const pending = res.data.url.split('?')[0].split('#')[0];
+    const current = location.href.split('?')[0].split('#')[0];
+    if (pending !== current) return;
+    if (!document.getElementById('jaa-root')) init();
+    const tryGenerate = () => {
+      const btn = shadow?.getElementById('jaa-generate');
+      if (btn) { generateApp(btn); }
+      else setTimeout(tryGenerate, 400);
+    };
+    setTimeout(tryGenerate, 800);
+  }).catch(() => {});
+})();

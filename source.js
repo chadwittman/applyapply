@@ -4,6 +4,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const { insertRun, upsertJob, getSeenUrls, getProfileByUserEmail } = require('./server/db');
 
 const BASE = __dirname;
 const SOURCED_FILE = path.join(BASE, 'sourced-jobs.json');
@@ -12,20 +13,10 @@ const APPS_DIR = path.join(BASE, 'applications');
 const LOG_DIR = path.join(BASE, 'logs');
 
 function loadKey() {
-  try {
-    const env = fs.readFileSync(path.join(process.env.HOME, '.openclaw/.env'), 'utf-8');
-    const match = env.match(/ANTHROPIC_API_KEY=(.+)/);
-    if (match?.[1]) return match[1].trim();
-  } catch {}
   return process.env.ANTHROPIC_API_KEY || null;
 }
 
 function loadHBKey() {
-  try {
-    const env = fs.readFileSync(path.join(process.env.HOME, '.openclaw/.env'), 'utf-8');
-    const match = env.match(/HYPERBROWSER_API_KEY=(.+)/);
-    if (match?.[1]) return match[1].trim();
-  } catch {}
   return process.env.HYPERBROWSER_API_KEY || null;
 }
 
@@ -158,11 +149,12 @@ async function auditLocation(key, job, pageText) {
     pageText ? `Page content: ${pageText}` : null,
   ].filter(Boolean).join('\n\n') || 'No location data available';
 
+  const hybridCity = SOURCE_LOCATION;
   const prompt = `You are auditing a job posting for location eligibility.
 
-Chad Wittman is in Austin TX. He will only apply to:
+The candidate is in ${hybridCity}. They will only apply to:
 - Jobs that include ANY "Remote (US)" or "Remote US" or unqualified "Remote" option (even if other locations like HQ cities are also listed)
-- Hybrid jobs where the office is specifically in Austin TX
+- Hybrid jobs where the office is specifically in ${hybridCity}
 
 Job: ${job.role} at ${job.company}
 URL: ${job.url}
@@ -173,14 +165,14 @@ ${locationContext}
 Rules — read ALL listed locations, not just the first one:
 - If ANY location option says "Remote (US)", "Remote US", "Remote - US", "US Remote" → verdict: remote
 - If ANY location says unqualified "Remote" or "Fully Remote" or "100% Remote" with no country → verdict: remote (assume US unless explicitly restricted)
-- If ANY location says "Austin" with hybrid/in-office → verdict: austin-hybrid
+- If ANY location says "${hybridCity}" with hybrid/in-office → verdict: hybrid
 - If remote is qualified as ONLY non-US (e.g. "Remote (Canada)", "Remote (Europe)", "Remote - EMEA") with no US option → verdict: exclude
-- If the ONLY locations are specific non-Austin offices (SF, NYC, Boston, London, etc.) → verdict: exclude
+- If the ONLY locations are specific non-${hybridCity} offices → verdict: exclude
 - If location data is ambiguous or partially loaded, lean toward remote if the role is listed on a remote-friendly job board
 - Only exclude if you are confident the role is NOT available remote in the US
 
 Respond with JSON only:
-{"verdict":"remote"|"austin-hybrid"|"exclude","location_found":"exact text from data","reason":"one sentence"}`;
+{"verdict":"remote"|"hybrid"|"exclude","location_found":"exact text from data","reason":"one sentence"}`;
 
   try {
     const data = await callClaude(key, {
@@ -213,7 +205,11 @@ const HB_SOURCES = [
   {
     name: 'Sequoia job board',
     url: 'https://jobs.sequoiacap.com/jobs?remote=true',
-    waitMs: 5000,
+    waitMs: 2000,
+    apiMode: {
+      endpoint: '/api-boards/search-jobs',
+      body: { meta: { size: 200 }, board: { id: 'sequoia-capital', isParent: true }, query: { remoteOnly: true, promoteFeatured: true } },
+    },
   },
   {
     name: 'YC / Work at a Startup',
@@ -243,14 +239,87 @@ const HB_SOURCES = [
   {
     name: 'Greenhouse jobs (Google)',
     googleSearch: true,
-    query: 'site:greenhouse.io ("head of product" OR "head of growth" OR "founding pm" OR "vp product") remote ai startup',
+    query: 'site:greenhouse.io ("head of product" OR "head of growth" OR "founding pm" OR "vp product" OR "senior product manager" OR "director of product") remote',
   },
 ];
 
-const ROLE_RE = /head of product|head of growth|vp of product|vp of growth|director of product|director of growth|founding pm|founding product|growth pm|gtm lead|growth lead|product manager|senior product|staff product/i;
-const ROLE_TITLES = 'Head of Product, VP of Product, Director of Product, Head of Growth, VP of Growth, Director of Growth, Founding PM, Founding Head of Product, Founding Product Lead, Growth PM, GTM Lead, Growth Lead';
+// Resolved at runtime from profile — see buildSourceConfig()
+let ROLE_RE = /head of product|head of growth|vp of product|vp of growth|director of product|director of growth|founding pm|founding product|growth pm|gtm lead|growth lead|product manager|senior product|staff product/i;
+let ROLE_TITLES = 'Head of Product, VP of Product, Director of Product, Head of Growth, VP of Growth, Director of Growth, Founding PM, Founding Head of Product, Founding Product Lead, Growth PM, GTM Lead, Growth Lead';
+// JAA_TARGET_ROLES overrides profile roles (set by /source/run from the role picker UI)
+if (process.env.JAA_TARGET_ROLES) {
+  ROLE_TITLES = process.env.JAA_TARGET_ROLES;
+  const parts = ROLE_TITLES.split(',').map(t => t.trim().toLowerCase().replace(/[^a-z0-9 ]/g, '').trim()).filter(Boolean);
+  ROLE_RE = new RegExp(parts.join('|'), 'i');
+}
+let SOURCE_USER_EMAIL = process.env.JAA_USER_EMAIL || null;
+let SOURCE_LOCATION = 'Austin TX'; // user's city for hybrid-office check
+let SOURCE_LOCATION_PREF = 'remote'; // 'remote' | 'hybrid' | 'any'
+
+function buildHBSources() {
+  const roleParts = ROLE_TITLES.split(', ').map(t => `"${t.toLowerCase()}"`).join(' OR ');
+  const remoteQ = SOURCE_LOCATION_PREF === 'hybrid' ? '' : ' remote';
+  return [
+    {
+      name: 'a16z job board',
+      url: 'https://jobs.a16z.com/jobs?remoteOnly=true&postedSince=P2D',
+      waitMs: 2000,
+      apiMode: {
+        endpoint: '/api-boards/search-jobs',
+        body: { meta: { size: 200 }, board: { id: 'andreessen-horowitz', isParent: true }, query: { remoteOnly: true, postedSince: 'P2D', promoteFeatured: true } },
+      },
+    },
+    {
+      name: 'Sequoia job board',
+      url: 'https://jobs.sequoiacap.com/jobs?remote=true',
+      waitMs: 2000,
+      apiMode: {
+        endpoint: '/api-boards/search-jobs',
+        body: { meta: { size: 200 }, board: { id: 'sequoia-capital', isParent: true }, query: { remoteOnly: true, promoteFeatured: true } },
+      },
+    },
+    {
+      name: 'YC / Work at a Startup',
+      googleSearch: true,
+      query: `site:workatastartup.com (${roleParts})${remoteQ}`,
+    },
+    {
+      name: 'Wellfound',
+      googleSearch: true,
+      query: `site:wellfound.com (${roleParts})${remoteQ}`,
+    },
+    {
+      name: 'Builtin remote product',
+      googleSearch: true,
+      query: `site:builtin.com (${roleParts})${remoteQ}`,
+    },
+    {
+      name: 'Ashby jobs (Google)',
+      googleSearch: true,
+      query: `site:jobs.ashbyhq.com (${roleParts})${remoteQ}`,
+    },
+    {
+      name: 'Lever jobs (Google)',
+      googleSearch: true,
+      query: `site:jobs.lever.co (${roleParts})${remoteQ}`,
+    },
+    {
+      name: 'Greenhouse jobs (Google)',
+      googleSearch: true,
+      query: `site:greenhouse.io (${roleParts})${remoteQ} ai startup`,
+    },
+  ];
+}
 
 async function runBrowserSources(claudeKey, hbKey) {
+  let HB_SOURCES = buildHBSources();
+  if (process.env.JAA_ENABLED_SOURCES) {
+    try {
+      const enabled = new Set(JSON.parse(process.env.JAA_ENABLED_SOURCES));
+      HB_SOURCES = HB_SOURCES.filter(s => enabled.has(s.name));
+      log(`   Running ${HB_SOURCES.length} of ${buildHBSources().length} sources`);
+    } catch {}
+  }
   const sess = await createHBSession(hbKey);
   log(`   HB session: ${sess.id}`);
   const { chromium } = await import('/Users/chaztyler/node_modules/playwright/index.mjs');
@@ -443,36 +512,45 @@ async function main() {
   const key = loadKey();
   if (!key) { log('No Anthropic API key found'); process.exit(1); }
 
+  // Load profile config for this user
+  if (SOURCE_USER_EMAIL) {
+    const profile = await getProfileByUserEmail(SOURCE_USER_EMAIL);
+    if (profile) {
+      if (profile.target_roles) {
+        ROLE_TITLES = profile.target_roles;
+        const parts = ROLE_TITLES.split(',').map(t => t.trim().toLowerCase().replace(/[^a-z0-9 ]/g, '').trim()).filter(Boolean);
+        ROLE_RE = new RegExp(parts.join('|'), 'i');
+      }
+      if (profile.location) {
+        const city = profile.location.split(',')[0].trim();
+        if (city) SOURCE_LOCATION = city;
+      }
+      if (profile.location_pref) SOURCE_LOCATION_PREF = profile.location_pref;
+      log(`Profile loaded for ${SOURCE_USER_EMAIL}: roles="${ROLE_TITLES}" location="${SOURCE_LOCATION}" pref="${SOURCE_LOCATION_PREF}"`);
+    }
+  }
+
   const today = new Date().toISOString().slice(0, 10);
   log(`\napplyapply sourcing agent — ${today}`);
 
   const existing = loadJSON(SOURCED_FILE);
-  const applied = loadJSON(APPLIED_FILE);
-
-  // Dedup against apps/ cache too
-  const appUrls = fs.existsSync(APPS_DIR)
-    ? fs.readdirSync(APPS_DIR).filter(f => f.endsWith('.json')).map(f => {
-        try { return JSON.parse(fs.readFileSync(path.join(APPS_DIR, f), 'utf-8')).url; } catch { return null; }
-      }).filter(Boolean)
-    : [];
-
-  const seenUrls = new Set([...existing.map(j => j.url), ...applied.map(j => j.url), ...appUrls]);
+  const seenUrls = await getSeenUrls(SOURCE_USER_EMAIL);
   log(`Already tracking ${seenUrls.size} URLs\n`);
+  const runId = `${today}-${Date.now()}`;
 
   // ── PHASE 1: BROWSER SCRAPING ────────────────────────────────────────────────
   step('Phase 1 — Browser scraping (Hyperbrowser + vision)');
 
   const allCandidates = [];
   const sourceReport = [];
-  // jobOutcomes tracks every URL found → what happened to it (updated through phases)
-  const jobOutcomes = new Map(); // url → { company, role, url, fit_score, source, outcome, reason }
+  const jobOutcomes = new Map();
   let hbResultsRaw = [];
 
   const hbKey = loadHBKey();
-  if (hbKey) {
-    try {
-      hbResultsRaw = await runBrowserSources(key, hbKey);
-      for (const { source: srcName, searched, rawCount, jobs, allScanned } of hbResultsRaw) {
+  if (!hbKey) { log('   No HYPERBROWSER_API_KEY — skipping browser sources'); }
+  else try {
+    hbResultsRaw = await runBrowserSources(key, hbKey);
+    for (const { source: srcName, searched, rawCount, jobs, allScanned } of hbResultsRaw) {
         const dupes = jobs.filter(j => seenUrls.has(j.url));
         const lowFit = jobs.filter(j => !seenUrls.has(j.url) && (j.fit_score || 5) < 6);
         const fresh = jobs.filter(j => !seenUrls.has(j.url) && (j.fit_score || 5) >= 6).map(j => ({ ...j, source: srcName }));
@@ -517,11 +595,8 @@ async function main() {
           d.reason = 'found by another source this run';
         }
       }
-    } catch (e) {
-      log(`   HB error: ${e.message}`);
-    }
-  } else {
-    log('   No HYPERBROWSER_API_KEY — skipping browser sources');
+  } catch (e) {
+    log(`   HB error: ${e.message}`);
   }
 
   log('');
@@ -622,7 +697,7 @@ async function main() {
     const pageText = await fetchPageText(job.url);
     const audit = await auditLocation(key, job, pageText);
 
-    if (audit.verdict === 'remote' || audit.verdict === 'austin-hybrid') {
+    if (audit.verdict === 'remote' || audit.verdict === 'hybrid') {
       item('✓', `${job.company} — ${audit.location_found || audit.verdict}`);
       remoteConfirmed.push({ ...job, location: audit.location_found || job.location });
       if (jobOutcomes.has(job.url)) { jobOutcomes.get(job.url).location = audit.location_found || job.location; }
@@ -642,17 +717,20 @@ async function main() {
   // ── PHASE 4: SAVE ────────────────────────────────────────────────────────────
   step('Phase 4 — Saving results');
 
+  const runStart = Date.now();
   const newJobs = remoteConfirmed.map(j => ({
     id: `${slugify(j.company)}-${slugify(j.role)}-${today}`,
     company: j.company,
     role: j.role,
     url: j.url,
     ats: j.ats || 'other',
+    source: j.source || null,
+    run_id: runId,
+    found_at: today,
     fit_score: j.fit_score || 7,
     tier: j.tier || (j.fit_score >= 9 ? 1 : j.fit_score >= 7 ? 2 : 3),
     location: j.location || 'Remote',
     notes: j.notes || '',
-    sourced_date: today,
     status: 'new',
   }));
 
@@ -661,10 +739,26 @@ async function main() {
     if (jobOutcomes.has(j.url)) { jobOutcomes.get(j.url).outcome = 'added'; }
   }
 
+  // Write to DB
+  await insertRun({
+    id: runId,
+    date: today,
+    run_at: new Date().toISOString(),
+    sources: hbResultsRaw.length,
+    found: allCandidates.length,
+    added: newJobs.length,
+    excluded: excluded.length,
+    duration_ms: Date.now() - runStart,
+    user_email: SOURCE_USER_EMAIL,
+  });
+  for (const j of newJobs) await upsertJob({ ...j, user_email: SOURCE_USER_EMAIL });
+
+  // Keep flat JSON in sync for backward compat
+  if (newJobs.length) saveJSON(SOURCED_FILE, [...existing, ...newJobs.map(j => ({ ...j, sourced_date: today }))]);
+
   if (!newJobs.length) {
     log('\n   No new remote-confirmed leads today.');
   } else {
-    saveJSON(SOURCED_FILE, [...existing, ...newJobs]);
     log(`\n   Saved ${newJobs.length} new lead${newJobs.length !== 1 ? 's' : ''}:\n`);
     newJobs.forEach(j => {
       log(`   [T${j.tier}] ${j.company} — ${j.role} (${j.fit_score}/10)`);
@@ -676,10 +770,10 @@ async function main() {
   saveJSON(path.join(LOG_DIR, 'last-run-detail.json'), buildRunDetail(newJobs.length, excluded.length));
 
   const runLog = loadJSON(path.join(LOG_DIR, 'source-runs.json'));
-  runLog.push({ date: today, new_leads: newJobs.length, total: existing.length + newJobs.length, excluded: excluded.length });
+  runLog.push({ date: today, new_leads: newJobs.length, total: seenUrls.size + newJobs.length, excluded: excluded.length });
   saveJSON(path.join(LOG_DIR, 'source-runs.json'), runLog);
 
-  log(`\nTotal pipeline: ${existing.length + newJobs.length} leads tracked\n`);
+  log(`\nTotal pipeline: ${seenUrls.size + newJobs.length} leads tracked\n`);
 }
 
 main().catch(e => { log(`\nFatal: ${e.message}`); process.exit(1); });
