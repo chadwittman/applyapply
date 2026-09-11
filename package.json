@@ -1,0 +1,11 @@
+{
+  "name": "applyapply-deployment",
+  "private": true,
+  "engines": {
+    "node": ">=20 <23"
+  },
+  "scripts": {
+    "build": "npm --prefix server install --omit=dev",
+    "start": "npm --prefix server start"
+  }
+}
