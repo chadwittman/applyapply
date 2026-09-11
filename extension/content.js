@@ -1,4 +1,4 @@
-const CLOUD_URL = 'https://applyapplyapply.replit.app';
+const CLOUD_URL = 'https://applyapply-production.up.railway.app';
 const LOCAL_URL = 'http://localhost:5000';
 let SERVER = LOCAL_URL;
 let API_KEY = '';
