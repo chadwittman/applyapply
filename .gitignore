@@ -1,6 +1,7 @@
 node_modules/
 .DS_Store
 .env
+railway-secrets.local
 
 # Personal data — never commit
 applications/
