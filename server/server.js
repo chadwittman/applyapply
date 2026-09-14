@@ -1228,10 +1228,14 @@ app.post('/resume/parse', apiLimiter, async (req, res) => {
   "website": "",
   "current_employer": "Current company name",
   "school": "University Name — Degree",
-  "bio": "2-4 paragraphs first-person bio"
+  "bio": "2-4 paragraphs first-person bio",
+  "career_type": "one of: product, growth, engineering, design, marketing, operations, sales, data",
+  "target_roles": "4-6 comma-separated job titles this person is qualified for and would plausibly target next, ranged from their exact current-level title down a notch, e.g. 'Head of Product, VP of Product, Director of Product, Founding PM'"
 }
 
 For the bio field: write in first person. Keep every number, company name, and concrete outcome. No em dashes. No filler words. Short sentences mixed with longer ones.
+
+For target_roles: infer from career trajectory and seniority shown in the resume, not just the most recent title verbatim. Favor titles a recruiter would actually post, not invented ones.
 
 RESUME:
 ${text.slice(0, 6000)}`;
@@ -1239,12 +1243,17 @@ ${text.slice(0, 6000)}`;
     const r = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
       headers: { 'x-api-key': keys.key, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
-      body: JSON.stringify({ model: 'claude-haiku-4-5-20251001', max_tokens: 1500, messages: [{ role: 'user', content: prompt }] }),
+      body: JSON.stringify({ model: 'claude-haiku-4-5-20251001', max_tokens: 2500, messages: [{ role: 'user', content: prompt }] }),
     });
     if (!r.ok) return res.json({ text });
     const raw = (await r.json()).content[0].text.trim();
+    const jsonMatch = raw.replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/, '').trim();
+    const braceMatch = jsonMatch.match(/\{[\s\S]*\}/);
     let parsed = {};
-    try { parsed = JSON.parse(raw); } catch { parsed = { bio: raw }; }
+    try { parsed = JSON.parse(braceMatch ? braceMatch[0] : jsonMatch); } catch (e) {
+      console.error('Resume JSON parse failed:', e.message, '| raw:', raw.slice(0, 500));
+      parsed = {};
+    }
     res.json({ text, ...parsed });
   } catch (e) {
     console.error('Resume parse error:', e.message);
@@ -1453,10 +1462,11 @@ async function uploadResume(file){
     const r=await fetch('/resume/parse',{method:'POST',headers:h,body:fd});
     const j=await r.json();
     if(!r.ok){rs.textContent=j.error||'Parse failed';rs.style.color='#f87171';return;}
-    const fillable=['first_name','last_name','email','phone','location','linkedin','github','twitter','website','current_employer','school','bio'];
+    const fillable=['first_name','last_name','email','phone','location','linkedin','github','twitter','website','current_employer','school','bio','career_type','target_roles'];
     let filled=0;
     for(const f of fillable){if(j[f]){setField(f,j[f]);filled++;}}
-    rs.textContent=filled+' fields filled. Review and save.';rs.style.color='#4ade80';
+    rs.textContent=filled?filled+' fields filled — career type and target roles are AI guesses, worth a look before you save.':'Could not extract structured fields — check the values above, or try again.';
+    rs.style.color=filled?'#4ade80':'#f87171';
   }catch(e){rs.textContent='Error: '+e.message;rs.style.color='#f87171';}
 }
 
