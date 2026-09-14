@@ -893,6 +893,16 @@ app.post('/admin/credits/add', requireAdmin, (req, res) => {
   res.json({ ok: true, balance: users[apiKey].balance });
 });
 
+app.post('/admin/credits/add-by-email', requireAdmin, async (req, res) => {
+  const { email, credits } = req.body;
+  if (!email || !credits) return res.status(400).json({ error: 'email and credits required' });
+  const normalized = email.toLowerCase();
+  await getOrCreateUser(normalized);
+  await addUserCredits(normalized, credits);
+  const user = await getUser(normalized);
+  res.json({ ok: true, email: normalized, balance: user?.credits });
+});
+
 app.get('/admin/users', requireAdmin, (req, res) => {
   const users = loadUsers();
   res.json(Object.entries(users).map(([key, u]) => ({ apiKey: key.slice(0, 8) + '…', email: u.email, balance: u.balance, total_purchased: u.total_purchased, created: u.created, last_used: u.last_used })));
