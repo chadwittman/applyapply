@@ -2501,7 +2501,16 @@ app.get('/sourcing', async (req, res) => {
 
   const alertBanners = [];
   const sourcesHtml = !data?.sources?.length
-    ? '<p class="empty">No run data yet. Hit run sourcing.</p>'
+    ? `<div class="onboard">
+        <div class="onboard-title">This page finds jobs for you automatically.</div>
+        <p class="onboard-body">Sourcing searches the job boards below for titles matching your profile
+          (right now: ${savedRoles.length ? savedRoles.map(esc).join(', ') : 'set your target roles in <a href="/setup">profile</a> first'}),
+          scores each result against your background, and drops the good ones here — ranked, deduped, ready to open.
+          Each source costs a few credits per run; you'll see the total before confirming.</p>
+        <button class="btn onboard-cta" onclick="toggleSourcePanel()">Choose roles &amp; sources → run sourcing</button>
+        <p class="onboard-alt">Already have a specific posting? Skip sourcing — use the Chrome extension on the job page,
+          or put this site's domain in front of the job URL in your address bar to generate a kit directly.</p>
+      </div>`
     : data.sources.map(src => {
         const jobs = src.jobs || [];
         const fitJobs = jobs.filter(j => j.outcome === 'added');
@@ -2622,6 +2631,14 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;backgrou
 .other-link{color:#333;font-size:11px;text-decoration:none}
 .other-link:hover{color:#888}
 .empty{padding:48px 0;color:#333;font-size:13px}
+.onboard{padding:40px 0 48px;max-width:480px}
+.onboard-title{font-size:16px;font-weight:700;letter-spacing:-.02em;color:#fff;margin-bottom:10px}
+.onboard-body{font-size:13px;line-height:1.7;color:#888;margin-bottom:20px}
+.onboard-body a{color:#fff;text-decoration:underline}
+.onboard-cta{padding:9px 18px;background:#fff;color:#000;font-size:12px;font-weight:700;border:none;cursor:pointer;font-family:inherit;letter-spacing:-.01em;margin-bottom:18px}
+.onboard-cta:hover{background:#e0e0e0}
+.onboard-alt{font-size:11px;color:#444;line-height:1.6}
+.onboard-alt a{color:#666;text-decoration:underline}
 .missed-section{border-top:1px solid #111;padding:24px 0 0;margin-top:8px}
 .missed-label{font-size:11px;color:#555;margin-bottom:8px}
 .missed-row{display:flex;gap:8px}
