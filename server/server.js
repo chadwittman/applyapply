@@ -1995,6 +1995,14 @@ app.post('/generate', apiLimiter, requireCredits('generate'), async (req, res) =
     const cached = findApplicationByUrl(url, userEmail);
     if (cached) {
       console.log(`Cache hit: ${cached.company} — ${cached.role}`);
+      // Backfill the pipeline row for kits generated before this existed, or
+      // generated directly (extension, URL-prepend) with no sourcing row.
+      db.upsertJob({
+        id: cached.id, url, company: cached.company, role: cached.role,
+        ats: cached.ats || null, source: 'direct', found_at: new Date().toISOString(),
+        status: 'new', tier: cached.tier || null, fit_score: cached.fit_score || null,
+        location: cached.profile?.location || null, user_email: userEmail || null,
+      }).catch(e => console.error('[pipeline backfill]', e.message));
       return res.json(cached);
     }
   } else {
@@ -2105,6 +2113,24 @@ Concrete over abstract: "built a pipeline that drove 4.5x revenue per title as C
     // Save to applications/
     if (userEmail) generated.user_email = userEmail;
     fs.writeFileSync(path.join(APPS_DIR, `${generated.id}.json`), JSON.stringify(generated, null, 2));
+
+    // Ensure a pipeline row exists for this URL — kits generated directly
+    // (extension, URL-prepend) never went through sourcing, so without this
+    // they're invisible on /pipeline and kit_generated_at never sets.
+    await db.upsertJob({
+      id: generated.id,
+      url,
+      company: generated.company,
+      role: generated.role,
+      ats: generated.ats || ats || null,
+      source: 'direct',
+      found_at: new Date().toISOString(),
+      status: 'new',
+      tier: generated.tier || null,
+      fit_score: generated.fit_score || null,
+      location: generated.profile?.location || null,
+      user_email: userEmail || null,
+    });
     await db.setKitGenerated(url);
 
     console.log(`Generated: ${generated.company} — ${generated.role}`);
