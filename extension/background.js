@@ -98,6 +98,38 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     return true;
   }
 
+  if (msg.type === 'INJECT_SUBMIT_HOOK') {
+    if (!sender.tab?.id) return;
+    chrome.scripting.executeScript({
+      target: { tabId: sender.tab.id, allFrames: false },
+      world: 'MAIN',
+      func: () => {
+        if (window.__jaaHookedMain) return;
+        window.__jaaHookedMain = true;
+        const _fetch = window.fetch;
+        window.fetch = function (...a) {
+          const url = typeof a[0] === 'string' ? a[0] : (a[0]?.url || '');
+          const method = (a[1]?.method || 'GET').toUpperCase();
+          const p = _fetch.apply(this, a);
+          if (method === 'POST' && /application|submit|apply/i.test(url)) {
+            p.then(r => { if (r.ok) document.dispatchEvent(new CustomEvent('jaa-submitted')); return r; }).catch(() => {});
+          }
+          return p;
+        };
+        const _open = XMLHttpRequest.prototype.open;
+        const _send = XMLHttpRequest.prototype.send;
+        XMLHttpRequest.prototype.open = function (m, u) { this._jaaMethod = m; this._jaaUrl = u; return _open.apply(this, arguments); };
+        XMLHttpRequest.prototype.send = function () {
+          if ((this._jaaMethod || '').toUpperCase() === 'POST' && /application|submit|apply/i.test(this._jaaUrl || '')) {
+            this.addEventListener('load', () => { if (this.status >= 200 && this.status < 300) document.dispatchEvent(new CustomEvent('jaa-submitted')); });
+          }
+          return _send.apply(this, arguments);
+        };
+      },
+    }).catch(() => {});
+    return;
+  }
+
   if (msg.type === 'SERVER_FETCH') {
     fetch(msg.url, {
       method: msg.options?.method || 'GET',
