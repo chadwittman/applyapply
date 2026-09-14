@@ -8,7 +8,7 @@ const pdfParse = require('pdf-parse');
 const jwt = require('jsonwebtoken');
 const crypto = require('crypto');
 const rateLimit = require('express-rate-limit');
-const { getProfile, getProfileByUserEmail, setProfile, getUser, getOrCreateUser, addUserCredits, deductUserCredits, createMagicLink, getMagicLink, useMagicLink, PROFILE_FIELDS: DB_PROFILE_FIELDS } = require('./db');
+const { getProfileByUserEmail, setProfile, getUser, getOrCreateUser, addUserCredits, deductUserCredits, createMagicLink, getMagicLink, useMagicLink, PROFILE_FIELDS: DB_PROFILE_FIELDS } = require('./db');
 const db = require('./db');
 
 process.on('unhandledRejection', (reason, promise) => {
@@ -92,9 +92,6 @@ const apiLimiter = rateLimit({
 
 // ── Credits ───────────────────────────────────────────────────────────────────
 
-const CREDITS_FILE = path.join(__dirname, '../data/credits.json');
-fs.mkdirSync(path.join(__dirname, '../data'), { recursive: true });
-
 const PRESET_ROLES = [
   'Head of Product','VP of Product','Director of Product',
   'Head of Growth','VP of Growth','Director of Growth',
@@ -136,14 +133,6 @@ const SOURCE_CATALOG = [
   { name: 'Lever jobs (Google)',      credits: calcSourceCredits(_h*0.10, 0.5), on: true,  desc: 'Lever ATS boards — Google search + Haiku extract',      type: 'google' },
   { name: 'Greenhouse jobs (Google)', credits: calcSourceCredits(_h*0.10, 0.5), on: true,  desc: 'Greenhouse ATS — Google search + Haiku extract',        type: 'google' },
 ];
-
-function loadUsers() {
-  try { return JSON.parse(fs.readFileSync(CREDITS_FILE, 'utf-8')); } catch { return {}; }
-}
-
-function saveUsers(u) {
-  fs.writeFileSync(CREDITS_FILE, JSON.stringify(u, null, 2));
-}
 
 function isLocalRequest(req) {
   if (IS_PRODUCTION || process.env.ALLOW_LOCAL_BYPASS !== 'true') return false;
@@ -231,21 +220,6 @@ function requireCredits(action) {
         });
       }
       req.userEmail = payload.email;
-      return next();
-    }
-
-    // Legacy API key
-    const apiKey = req.headers['x-api-key'];
-    if (apiKey) {
-      const users = loadUsers();
-      const user = users[apiKey];
-      if (!user) return res.status(401).json({ error: 'Invalid API key' });
-      if (user.balance < cost) return res.status(402).json({ error: 'Insufficient credits', balance: user.balance, required: cost });
-      user.balance -= cost;
-      user.last_used = new Date().toISOString().slice(0, 10);
-      saveUsers(users);
-      req.apiKey = apiKey;
-      req.creditUser = user;
       return next();
     }
 
@@ -681,14 +655,6 @@ app.get('/credits', async (req, res) => {
     const user = await getUser(payload.email);
     return res.json({ balance: user?.credits ?? 0, email: payload.email, costs: CREDIT_COSTS });
   }
-  // Legacy API key
-  const apiKey = req.headers['x-api-key'];
-  if (apiKey) {
-    const users = loadUsers();
-    const user = users[apiKey];
-    if (!user) return res.status(401).json({ error: 'Invalid API key' });
-    return res.json({ balance: user.balance, email: user.email, costs: CREDIT_COSTS });
-  }
   if (isLocalRequest(req)) return res.json({ mode: 'self_hosted', balance: null });
   res.status(401).json({ error: 'Sign in required' });
 });
@@ -871,27 +837,6 @@ app.get('/auth/me', async (req, res) => {
   res.json({ email: payload.email, credits: user?.credits ?? 0 });
 });
 
-app.post('/admin/keys', requireAdmin, (req, res) => {
-  const { email, credits } = req.body;
-  if (!email) return res.status(400).json({ error: 'email required' });
-  const users = loadUsers();
-  const apiKey = require('crypto').randomBytes(16).toString('hex');
-  users[apiKey] = { email, balance: credits || 0, total_purchased: credits || 0, created: new Date().toISOString().slice(0, 10) };
-  saveUsers(users);
-  res.json({ ok: true, apiKey, email, balance: users[apiKey].balance });
-});
-
-app.post('/admin/credits/add', requireAdmin, (req, res) => {
-  const { apiKey, credits } = req.body;
-  if (!apiKey || !credits) return res.status(400).json({ error: 'apiKey and credits required' });
-  const users = loadUsers();
-  if (!users[apiKey]) return res.status(404).json({ error: 'Key not found' });
-  users[apiKey].balance += credits;
-  users[apiKey].total_purchased = (users[apiKey].total_purchased || 0) + credits;
-  saveUsers(users);
-  res.json({ ok: true, balance: users[apiKey].balance });
-});
-
 app.post('/admin/credits/add-by-email', requireAdmin, async (req, res) => {
   const { email, credits } = req.body;
   if (!email || !credits) return res.status(400).json({ error: 'email and credits required' });
@@ -900,11 +845,6 @@ app.post('/admin/credits/add-by-email', requireAdmin, async (req, res) => {
   await addUserCredits(normalized, credits);
   const user = await getUser(normalized);
   res.json({ ok: true, email: normalized, balance: user?.credits });
-});
-
-app.get('/admin/users', requireAdmin, (req, res) => {
-  const users = loadUsers();
-  res.json(Object.entries(users).map(([key, u]) => ({ apiKey: key.slice(0, 8) + '…', email: u.email, balance: u.balance, total_purchased: u.total_purchased, created: u.created, last_used: u.last_used })));
 });
 
 // ── Stripe ────────────────────────────────────────────────────────────────────
@@ -920,32 +860,6 @@ function loadStripeWebhookSecret() {
   return process.env.STRIPE_WEBHOOK_SECRET || null;
 }
 
-function issueKey(email, credits, stripeSessionId) {
-  const apiKey = require('crypto').randomBytes(20).toString('hex');
-  const users = loadUsers();
-  users[apiKey] = {
-    email,
-    balance: credits,
-    total_purchased: credits,
-    created: new Date().toISOString().slice(0, 10),
-    stripe_session: stripeSessionId || null,
-  };
-  saveUsers(users);
-
-  const issuedFile = path.join(__dirname, '../data/issued-keys.json');
-  let issued = [];
-  try { issued = JSON.parse(fs.readFileSync(issuedFile, 'utf-8')); } catch {}
-  issued.push({ email, apiKey, credits, date: new Date().toISOString(), stripe_session: stripeSessionId });
-  fs.writeFileSync(issuedFile, JSON.stringify(issued, null, 2));
-
-  console.log('\n' + '='.repeat(60));
-  console.log(`[STRIPE] Key issued: ${email}`);
-  console.log(`[STRIPE] Credits: ${credits}`);
-  console.log(`[STRIPE] API Key: ${apiKey}`);
-  console.log('='.repeat(60) + '\n');
-
-  return apiKey;
-}
 
 // GET /buy — simple purchase page
 app.get('/buy', (req, res) => {
@@ -1156,11 +1070,6 @@ async function resolveProfile(req) {
     const p = await getProfileByUserEmail(req.userEmail);
     if (p) return merge(p);
   }
-  const apiKey = req.apiKey || req.headers['x-api-key'];
-  if (apiKey && !apiKey.startsWith('eyJ')) {
-    const p = await getProfile(apiKey);
-    if (p) return merge(p);
-  }
   return PROFILE;
 }
 
@@ -1173,11 +1082,6 @@ function authFromRequest(req) {
     const payload = verifySession(bearer);
     return payload ? { type: 'jwt', email: payload.email } : null;
   }
-  const apiKey = req.headers['x-api-key'];
-  if (apiKey) {
-    const users = loadUsers();
-    if (users[apiKey]) return { type: 'apikey', apiKey };
-  }
   if (isLocalRequest(req)) return { type: 'local' };
   return null;
 }
@@ -1186,8 +1090,7 @@ app.get('/profile', async (req, res) => {
   const auth = authFromRequest(req);
   if (!auth) return res.status(401).json({ error: 'Sign in required' });
   if (auth.type === 'local') return res.json(PROFILE);
-  if (auth.type === 'jwt') return res.json(await getProfileByUserEmail(auth.email) || {});
-  res.json(await getProfile(auth.apiKey) || {});
+  res.json(await getProfileByUserEmail(auth.email) || {});
 });
 
 app.post('/profile', async (req, res) => {
@@ -1199,8 +1102,7 @@ app.post('/profile', async (req, res) => {
   // out bio/resume_text/target_roles just because it doesn't know about them.
   const data = {};
   for (const f of DB_PROFILE_FIELDS) if (req.body[f] !== undefined) data[f] = req.body[f];
-  if (auth.type === 'jwt') await setProfile(auth.email, data, true);
-  else await setProfile(auth.apiKey, data);
+  await setProfile(auth.email, data, true);
   res.json({ ok: true });
 });
 
@@ -1212,7 +1114,6 @@ app.post('/resume/parse', apiLimiter, async (req, res) => {
   const auth = authFromRequest(req);
   if (!auth) return res.status(401).json({ error: 'Sign in required' });
   if (auth.type === 'jwt') req.userEmail = auth.email;
-  if (auth.type === 'apikey') req.apiKey = auth.apiKey;
   upload.single('resume')(req, res, async (uploadError) => {
     if (uploadError) return res.status(400).json({ error: uploadError.message });
   if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
@@ -1553,98 +1454,83 @@ async function loadKit(id, userEmail) {
   return kit;
 }
 
+// Standard fields come back with stable names; custom questions get opaque
+// question_<id> names, so anything worth skipping there must match on label.
+const GH_SKIP_FIELDS = new Set(['first_name','last_name','preferred_name','email','phone','resume','cover_letter','location','linkedin_profile','website']);
+const GH_SKIP_LABELS = new Set(['linkedin profile','linkedin','website','portfolio','resume/cv','resume','cover letter','github']);
+const ASHBY_SKIP_LABELS = new Set(['First Name','Last Name','Email','Phone','Resume','LinkedIn Profile','Website','Cover Letter','Location','City','Country']);
+const ATS_UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36';
+
+async function greenhouseQuestions(board, jobId) {
+  // ?questions=true is required — without it the API omits `questions`
+  // entirely, which silently produced kits with no screening answers at all.
+  const r = await fetch(`https://boards-api.greenhouse.io/v1/boards/${board}/jobs/${jobId}?questions=true`, { signal: AbortSignal.timeout(8000) });
+  if (!r.ok) return null;
+  const data = await r.json();
+  if (!Array.isArray(data.questions)) return null;
+  return data.questions
+    .filter(q => q.label
+      && !GH_SKIP_FIELDS.has(q.fields?.[0]?.name)
+      && !GH_SKIP_LABELS.has(q.label.trim().toLowerCase()))
+    .map(q => q.label.trim());
+}
+
+async function leverQuestions(company, postingId) {
+  const r = await fetch(`https://api.lever.co/v0/postings/${company}/${postingId}?mode=json`, { signal: AbortSignal.timeout(8000) });
+  if (!r.ok) return null;
+  const data = await r.json();
+  const questions = [];
+  if (data.additionalPlain) {
+    data.additionalPlain.split('\n').forEach(l => { l = l.trim(); if (l.endsWith('?') && l.length > 10) questions.push(l); });
+  }
+  return questions;
+}
+
+async function ashbyQuestions(applicationUrl) {
+  const r = await fetch(applicationUrl, { signal: AbortSignal.timeout(8000), headers: { 'User-Agent': ATS_UA } });
+  if (!r.ok) return null;
+  const html = await r.text();
+  const found = [];
+  let m, re = /<label[^>]*>([^<]{8,300})<\/label>/gi;
+  while ((m = re.exec(html)) !== null) {
+    const label = m[1].replace(/\s+/g, ' ').replace(/<[^>]+>/g, '').trim().replace(/\s*\*\s*$/, '');
+    if (label && !ASHBY_SKIP_LABELS.has(label) && found.length < 12) found.push(label);
+  }
+  return found;
+}
+
+// Returns the application form's real questions, or null if we can't tell.
+// Each ATS is reachable two ways: hosted on the ATS's own domain, or embedded
+// on the company's careers site with the job id in a query param.
 async function fetchATSFormQuestions(url) {
   try {
     const u = new URL(url);
     const host = u.hostname;
     const parts = u.pathname.split('/').filter(Boolean);
-    // Best-effort board-token guess for ATS widgets embedded on a company's own
-    // careers domain (e.g. databricks.com/...?gh_jid=123) — usually matches.
-    const guessSlug = () => host.replace(/^www\./, '').split('.')[0].toLowerCase();
+    const qp = u.searchParams;
+    // For an embed, the board token is usually the company's own domain name.
+    const slug = host.replace(/^www\./, '').split('.')[0].toLowerCase();
 
-    // Greenhouse: job-boards.greenhouse.io/<company>/jobs/<id>, or an embed
-    // widget on the company's own domain carrying ?gh_jid=<id>
     if (host.includes('greenhouse.io')) {
-      const jobIdx = parts.indexOf('jobs');
-      if (jobIdx !== -1 && parts[0] && parts[jobIdx + 1]) {
-        const r = await fetch(`https://boards-api.greenhouse.io/v1/boards/${parts[0]}/jobs/${parts[jobIdx + 1]}`, { signal: AbortSignal.timeout(8000) });
-        if (r.ok) {
-          const data = await r.json();
-          const skip = new Set(['first_name','last_name','email','phone','resume','cover_letter','location','linkedin_profile','website']);
-          return (data.questions || [])
-            .filter(q => q.label && !skip.has(q.fields?.[0]?.name))
-            .map(q => q.label);
-        }
-      }
-    } else if (u.searchParams.has('gh_jid')) {
-      const r = await fetch(`https://boards-api.greenhouse.io/v1/boards/${guessSlug()}/jobs/${u.searchParams.get('gh_jid')}`, { signal: AbortSignal.timeout(8000) });
-      if (r.ok) {
-        const data = await r.json();
-        const skip = new Set(['first_name','last_name','email','phone','resume','cover_letter','location','linkedin_profile','website']);
-        return (data.questions || [])
-          .filter(q => q.label && !skip.has(q.fields?.[0]?.name))
-          .map(q => q.label);
-      }
+      const i = parts.indexOf('jobs');
+      if (i !== -1 && parts[0] && parts[i + 1]) return await greenhouseQuestions(parts[0], parts[i + 1]);
+    } else if (qp.has('gh_jid')) {
+      const q = await greenhouseQuestions(slug, qp.get('gh_jid'));
+      if (q) return q;
     }
 
-    // Lever: jobs.lever.co/<company>/<id>, or an embed carrying ?lever_job_id=<id>
     if (host.includes('lever.co') && parts.length >= 2) {
-      const r = await fetch(`https://api.lever.co/v0/postings/${parts[0]}/${parts[1]}?mode=json`, { signal: AbortSignal.timeout(8000) });
-      if (r.ok) {
-        const data = await r.json();
-        const questions = [];
-        if (data.additionalPlain) {
-          data.additionalPlain.split('\n').forEach(function(l) { l = l.trim(); if (l.endsWith('?') && l.length > 10) questions.push(l); });
-        }
-        return questions;
-      }
-    } else if (u.searchParams.has('lever_job_id')) {
-      const r = await fetch(`https://api.lever.co/v0/postings/${guessSlug()}/${u.searchParams.get('lever_job_id')}?mode=json`, { signal: AbortSignal.timeout(8000) });
-      if (r.ok) {
-        const data = await r.json();
-        const questions = [];
-        if (data.additionalPlain) {
-          data.additionalPlain.split('\n').forEach(function(l) { l = l.trim(); if (l.endsWith('?') && l.length > 10) questions.push(l); });
-        }
-        return questions;
-      }
+      return await leverQuestions(parts[0], parts[1]);
+    } else if (qp.has('lever_job_id')) {
+      const q = await leverQuestions(slug, qp.get('lever_job_id'));
+      if (q) return q;
     }
 
-    // Ashby: try scraping the /application page for form labels, or an embed
-    // carrying ?ashby_jid=<id> on the company's own domain
     if (host.includes('ashbyhq.com') && parts.length >= 2) {
-      const base = url.split('?')[0].replace(/\/application$/, '');
-      const r = await fetch(base + '/application', {
-        signal: AbortSignal.timeout(8000),
-        headers: { 'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36' },
-      });
-      if (r.ok) {
-        const html = await r.text();
-        const skip = new Set(['First Name','Last Name','Email','Phone','Resume','LinkedIn Profile','Website','Cover Letter','Location','City','Country']);
-        const found = [];
-        let m, re = /<label[^>]*>([^<]{8,300})<\/label>/gi;
-        while ((m = re.exec(html)) !== null) {
-          const label = m[1].replace(/\s+/g, ' ').replace(/<[^>]+>/g, '').trim().replace(/\s*\*\s*$/, '');
-          if (label && !skip.has(label) && found.length < 12) found.push(label);
-        }
-        return found;
-      }
-    } else if (u.searchParams.has('ashby_jid')) {
-      const r = await fetch(`https://jobs.ashbyhq.com/${guessSlug()}/${u.searchParams.get('ashby_jid')}/application`, {
-        signal: AbortSignal.timeout(8000),
-        headers: { 'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36' },
-      });
-      if (r.ok) {
-        const html = await r.text();
-        const skip = new Set(['First Name','Last Name','Email','Phone','Resume','LinkedIn Profile','Website','Cover Letter','Location','City','Country']);
-        const found = [];
-        let m, re = /<label[^>]*>([^<]{8,300})<\/label>/gi;
-        while ((m = re.exec(html)) !== null) {
-          const label = m[1].replace(/\s+/g, ' ').replace(/<[^>]+>/g, '').trim().replace(/\s*\*\s*$/, '');
-          if (label && !skip.has(label) && found.length < 12) found.push(label);
-        }
-        return found;
-      }
+      return await ashbyQuestions(url.split('?')[0].replace(/\/application$/, '') + '/application');
+    } else if (qp.has('ashby_jid')) {
+      const q = await ashbyQuestions(`https://jobs.ashbyhq.com/${slug}/${qp.get('ashby_jid')}/application`);
+      if (q) return q;
     }
   } catch {}
   return null; // null = unknown (let generate decide); [] = confirmed no extra questions
@@ -2487,13 +2373,6 @@ app.post('/source/run', apiLimiter, async (req, res) => {
     if (!user) return res.status(401).json({ error: 'user not found' });
     if (user.credits < totalCredits) return res.status(402).json({ error: 'Insufficient credits', balance: user.credits, required: totalCredits });
     await db.deductUserCredits(auth.email, totalCredits);
-  } else if (auth.type === 'apikey') {
-    const users = loadUsers();
-    const user = users[auth.apiKey];
-    if (!user) return res.status(401).json({ error: 'invalid key' });
-    if (user.balance < totalCredits) return res.status(402).json({ error: 'Insufficient credits', balance: user.balance, required: totalCredits });
-    user.balance -= totalCredits;
-    saveUsers(users);
   }
   // local mode: no credit check
 
