@@ -1753,7 +1753,10 @@ app.get('/application/:id', async (req, res) => {
 
 app.get('/applications', async (req, res) => {
   try {
+    // Without an identity loadApps returns every user's kits — which companies
+    // and roles someone is applying to is exactly what must not leak.
     const userEmail = reqUserEmail(req);
+    if (!userEmail) return res.status(401).json({ error: 'Sign in required' });
     const apps = await loadApps(userEmail);
     res.json(apps.map(({ id, company, role, url, tier, fit_score, sourced_date, applied_at }) => ({
       id, company, role, url, tier, fit_score, sourced_date, applied_at
