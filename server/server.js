@@ -2020,10 +2020,14 @@ ${form_questions.map((q, i) => `${i + 1}. ${q}`).join('\n')}`
 
   const noteInstruction = note ? `\n\nSPECIAL DIRECTION FOR THIS GENERATION: ${note}` : '';
 
+  const salaryAsk = profile.salary ? String(profile.salary).replace(/[^0-9]/g, '') : '';
+
   const prompt = `Generate a job application for ${candidateName} applying to this role.${noteInstruction}
 
 CANDIDATE BACKGROUND:
 ${bio}
+
+CANDIDATE'S STATED SALARY EXPECTATION: ${salaryAsk || 'not specified — infer a reasonable ask from the role level and any range in the posting'}
 
 JOB DETAILS:
 Company: ${company || 'Unknown'}
@@ -2053,7 +2057,7 @@ Return ONLY valid JSON, no markdown, no explanation. Use this exact structure:
     "linkedin": ${JSON.stringify(profile.linkedin || '')},
     "location": ${JSON.stringify(profile.location || '')},
     "work_authorization": ${JSON.stringify(profile.work_authorization || '')},
-    "salary": "<appropriate number as string, no $ or commas>",
+    "salary": "<plain number string, no $ or commas. Use the candidate's stated salary expectation (${salaryAsk || 'none given'}) as-is if it falls at or below any range posted in the job description. If it exceeds the top of a posted range, use the top of that range instead — don't undercut the candidate's ask with a number from lower in the range. If the candidate gave no number, pick a value at or above the midpoint of any posted range, or a reasonable level-appropriate figure if no range is posted.>",
     "website": ${JSON.stringify(profile.website || '')},
     "current_employer": ${JSON.stringify(profile.current_employer || '')},
     "github": ${JSON.stringify(profile.github || '')},
