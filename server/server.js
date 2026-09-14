@@ -175,11 +175,15 @@ function loadResendKey() {
 async function sendEmail(to, subject, html, text) {
   const resendKey = loadResendKey();
   if (!resendKey) { console.log(`[email] ${to} — ${subject}`); return; }
-  await fetch('https://api.resend.com/emails', {
+  const r = await fetch('https://api.resend.com/emails', {
     method: 'POST',
     headers: { Authorization: `Bearer ${resendKey}`, 'content-type': 'application/json' },
     body: JSON.stringify({ from: 'applyapply <noreply@applyapply.xyz>', to: [to], subject, html, text }),
   });
+  if (!r.ok) {
+    const body = await r.text().catch(() => '');
+    throw new Error(`Resend ${r.status}: ${body.slice(0, 300)}`);
+  }
 }
 
 async function sendMagicLinkEmail(email, link) {
@@ -756,18 +760,19 @@ app.post('/auth/request', authLimiter, async (req, res) => {
   }
   const token = crypto.randomBytes(32).toString('hex');
   const expiresAt = new Date(Date.now() + 15 * 60 * 1000).toISOString();
-  await createMagicLink(email.toLowerCase(), token, expiresAt);
-
-  const origin = `${req.protocol}://${req.get('host')}`;
-  const extParam = ext ? `&ext=${encodeURIComponent(ext)}` : '';
-  const link = `${origin}/auth/verify?token=${token}${extParam}`;
 
   try {
+    await createMagicLink(email.toLowerCase(), token, expiresAt);
+
+    const origin = `${req.protocol}://${req.get('host')}`;
+    const extParam = ext ? `&ext=${encodeURIComponent(ext)}` : '';
+    const link = `${origin}/auth/verify?token=${token}${extParam}`;
+
     await sendMagicLinkEmail(email.toLowerCase(), link);
     res.json({ ok: true });
   } catch (e) {
-    console.error('Email error:', e.message);
-    res.status(500).json({ error: 'Failed to send email' });
+    console.error('Magic link error:', e.message);
+    res.status(500).json({ error: 'Failed to send sign-in email' });
   }
 });
 
@@ -3882,13 +3887,18 @@ app.use((error, _req, res, _next) => {
 });
 
 if (require.main === module) {
-  app.listen(PORT, () => {
-    console.log(`\nJob Apply Server — http://localhost:${PORT}`);
-    const count = fs.existsSync(APPS_DIR) ? fs.readdirSync(APPS_DIR).filter(f => f.endsWith('.json')).length : 0;
-    console.log(`${count} applications loaded`);
-    console.log(`AI: ${keys ? `enabled via ${keys.provider} (haiku)` : 'disabled — no API key found'}\n`);
-    startCron();
-  });
+  db.initSchema()
+    .then(() => console.log('DB schema ready'))
+    .catch(e => { console.error('DB schema init failed:', e.message); process.exit(1); })
+    .then(() => {
+      app.listen(PORT, () => {
+        console.log(`\nJob Apply Server — http://localhost:${PORT}`);
+        const count = fs.existsSync(APPS_DIR) ? fs.readdirSync(APPS_DIR).filter(f => f.endsWith('.json')).length : 0;
+        console.log(`${count} applications loaded`);
+        console.log(`AI: ${keys ? `enabled via ${keys.provider} (haiku)` : 'disabled — no API key found'}\n`);
+        startCron();
+      });
+    });
 }
 
 module.exports = { app };

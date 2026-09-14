@@ -15,6 +15,91 @@ async function q1(sql, params = []) {
   return rows[0] || null;
 }
 
+// ── Schema ────────────────────────────────────────────────────────────────────
+// Idempotent: safe to run on every boot against a fresh or existing database.
+
+async function initSchema() {
+  await q(`
+    CREATE TABLE IF NOT EXISTS users (
+      email TEXT PRIMARY KEY,
+      credits INTEGER NOT NULL DEFAULT 0,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
+
+  await q(`
+    CREATE TABLE IF NOT EXISTS profiles (
+      api_key TEXT PRIMARY KEY,
+      user_email TEXT,
+      first_name TEXT, last_name TEXT, email TEXT, phone TEXT,
+      linkedin TEXT, github TEXT, twitter TEXT, website TEXT,
+      location TEXT, work_authorization TEXT, salary TEXT,
+      current_employer TEXT, school TEXT, bio TEXT,
+      career_type TEXT, target_roles TEXT, location_pref TEXT,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
+  await q(`CREATE INDEX IF NOT EXISTS idx_profiles_user_email ON profiles (user_email)`);
+
+  await q(`
+    CREATE TABLE IF NOT EXISTS runs (
+      id TEXT PRIMARY KEY,
+      date TEXT,
+      run_at TIMESTAMPTZ,
+      sources INTEGER DEFAULT 0,
+      found INTEGER DEFAULT 0,
+      added INTEGER DEFAULT 0,
+      excluded INTEGER DEFAULT 0,
+      duration_ms INTEGER DEFAULT 0,
+      user_email TEXT
+    )
+  `);
+
+  await q(`
+    CREATE TABLE IF NOT EXISTS jobs (
+      id TEXT PRIMARY KEY,
+      url TEXT UNIQUE NOT NULL,
+      company TEXT, role TEXT, ats TEXT, source TEXT, run_id TEXT,
+      found_at TIMESTAMPTZ,
+      status TEXT NOT NULL DEFAULT 'new',
+      tier INTEGER, fit_score INTEGER, location TEXT, notes TEXT,
+      user_email TEXT,
+      applied_at TIMESTAMPTZ,
+      kit_generated_at TIMESTAMPTZ,
+      updated_at TIMESTAMPTZ,
+      status_updated_at TIMESTAMPTZ
+    )
+  `);
+
+  await q(`
+    CREATE TABLE IF NOT EXISTS decisions (
+      id SERIAL PRIMARY KEY,
+      job_id TEXT,
+      user_email TEXT,
+      action TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
+
+  await q(`
+    CREATE TABLE IF NOT EXISTS magic_links (
+      token TEXT PRIMARY KEY,
+      email TEXT NOT NULL,
+      expires_at TIMESTAMPTZ NOT NULL,
+      used INTEGER NOT NULL DEFAULT 0
+    )
+  `);
+
+  await q(`
+    CREATE TABLE IF NOT EXISTS stripe_events (
+      event_id TEXT PRIMARY KEY,
+      email TEXT NOT NULL,
+      credits INTEGER NOT NULL,
+      processed_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
+}
+
 // ── Runs ──────────────────────────────────────────────────────────────────────
 
 async function insertRun(run) {
@@ -245,6 +330,7 @@ async function getProfiledUsers() {
 
 module.exports = {
   pool,
+  initSchema,
   insertRun, getRuns, getRun,
   insertJob, upsertJob, setJobStatus, setKitGenerated, getJobByUrl, getJobs, getJobsForRun, getSeenUrls, getStatusCounts,
   recordDecision, getDecisionSummary,
