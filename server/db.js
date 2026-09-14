@@ -35,10 +35,13 @@ async function initSchema() {
       linkedin TEXT, github TEXT, twitter TEXT, website TEXT,
       location TEXT, work_authorization TEXT, salary TEXT,
       current_employer TEXT, school TEXT, bio TEXT,
-      career_type TEXT, target_roles TEXT, location_pref TEXT,
+      career_type TEXT, target_roles TEXT, location_pref TEXT, resume_text TEXT,
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )
   `);
+  // profiles already existed before resume_text was added — CREATE TABLE IF
+  // NOT EXISTS above is a no-op against it, so add the column explicitly too.
+  await q(`ALTER TABLE profiles ADD COLUMN IF NOT EXISTS resume_text TEXT`);
   await q(`CREATE INDEX IF NOT EXISTS idx_profiles_user_email ON profiles (user_email)`);
 
   await q(`
@@ -215,7 +218,7 @@ async function getDecisionSummary(userEmail) {
 // ── Profiles ──────────────────────────────────────────────────────────────────
 
 const PROFILE_FIELDS = ['first_name','last_name','email','phone','linkedin','github','twitter','website',
-  'location','work_authorization','salary','current_employer','school','bio','career_type','target_roles','location_pref'];
+  'location','work_authorization','salary','current_employer','school','bio','career_type','target_roles','location_pref','resume_text'];
 
 async function getProfile(apiKey) {
   return q1(`SELECT * FROM profiles WHERE api_key = $1`, [apiKey]);

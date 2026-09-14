@@ -108,6 +108,7 @@ const PRESET_ROLES = [
 const CREDIT_COSTS = {
   generate: 10,
   cover_letter: 8,
+  resume: 8,
   analyze: 3,
   voice: 2,
 };
@@ -1337,6 +1338,7 @@ textarea{min-height:200px;resize:vertical;line-height:1.65}
   <div class="sec-label">Resume</div>
   <div class="resume-drop" id="resumeDrop">
     <input type="file" id="resumeFile" accept=".pdf" style="display:none"/>
+    <textarea id="resume_text" style="display:none"></textarea>
     <div class="resume-drop-label">Drop your resume PDF here, or <span class="resume-drop-browse" onclick="document.getElementById('resumeFile').click()">browse</span></div>
     <div id="resumeStatus"></div>
   </div>
@@ -1440,7 +1442,7 @@ Numbers beat adjectives. Name the companies."></textarea>
 </div>
 
 <script>
-const FIELDS=['first_name','last_name','email','phone','location','work_authorization','linkedin','github','twitter','website','current_employer','school','salary','bio','career_type','target_roles','location_pref'];
+const FIELDS=['first_name','last_name','email','phone','location','work_authorization','linkedin','github','twitter','website','current_employer','school','salary','bio','career_type','target_roles','location_pref','resume_text'];
 
 function getKey(){
   const params=new URLSearchParams(location.search);
@@ -1475,6 +1477,7 @@ async function uploadResume(file){
     const fillable=['first_name','last_name','email','phone','location','linkedin','github','twitter','website','current_employer','school','bio','career_type','target_roles'];
     let filled=0;
     for(const f of fillable){if(j[f]){setField(f,j[f]);filled++;}}
+    if(j.text)document.getElementById('resume_text').value=j.text;
     rs.textContent=filled?filled+' fields filled — career type and target roles are AI guesses, worth a look before you save.':'Could not extract structured fields — check the values above, or try again.';
     rs.style.color=filled?'#4ade80':'#f87171';
   }catch(e){rs.textContent='Error: '+e.message;rs.style.color='#f87171';}
@@ -2194,6 +2197,62 @@ Banned patterns:
     text = text.replace(/\s*—\s*/g, '. ').replace(/\.\s*\.\s*/g, '. ').trim();
     res.json({ text });
   } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Generate a job-specific tailored resume from the candidate's real uploaded
+// resume text — reorders and reweights existing bullets, never invents facts.
+app.post('/resume-tailor', requireCredits('resume'), async (req, res) => {
+  const { appId, kitId } = req.body;
+  const id = appId || kitId;
+  if (!id) return res.status(400).json({ error: 'appId required' });
+  if (!keys) return res.status(503).json({ error: 'No API key' });
+
+  const resumeKit = loadKit(id, reqUserEmail(req));
+  if (!resumeKit) return res.status(404).json({ error: 'Application not found' });
+  if (resumeKit === 'forbidden') return res.status(403).json({ error: 'Forbidden' });
+  const appData = resumeKit;
+
+  const profile = await resolveProfile(req);
+  if (!profile.resume_text) {
+    return res.status(422).json({ error: 'No resume on file — upload a PDF at /setup first, then try again.' });
+  }
+
+  const t = appData.tailored || {};
+  const resumeName = `${appData.profile?.first_name || profile.first_name || ''} ${appData.profile?.last_name || profile.last_name || ''}`.trim();
+
+  const prompt = `Rewrite this candidate's resume experience for ${appData.role} at ${appData.company}.
+
+ORIGINAL RESUME — the only source of real facts (companies, titles, dates, numbers). Do not invent, merge, or drop any role. Do not invent a number, metric, or outcome not present here:
+${profile.resume_text.slice(0, 6000)}
+
+WHY THIS ROLE / WHAT TO EMPHASIZE (from an earlier pass on this same application):
+${t.why_role || t.headline || 'No additional context — use judgment based on the role title.'}
+
+Rules:
+- Every company, title, and date range in your output must match the original resume exactly.
+- You may reorder bullets within a role and reword them for clarity and to mirror relevant language from "WHY THIS ROLE" — but every fact must trace back to the original resume.
+- Cut bullets irrelevant to this role if the original has many; keep the strongest 3-5 per role.
+- Do not add a role, company, or credential that isn't in the original resume.
+
+Return ONLY valid JSON, no markdown:
+{
+  "summary": "<2-3 sentence resume summary tailored to this specific role, first person voice matching a resume header, not a cover letter>",
+  "experience": [
+    {"company": "<exact>", "title": "<exact>", "dates": "<exact>", "bullets": ["<bullet>", "..."]}
+  ],
+  "skills": ["<skill pulled from the original resume, ordered by relevance to this role>"]
+}`;
+
+  try {
+    const raw = await callClaude(prompt, 2500, 'claude-sonnet-4-6');
+    const match = raw.match(/\{[\s\S]*\}/);
+    if (!match) throw new Error('No JSON in response');
+    const tailoredResume = cleanEmDashes(JSON.parse(match[0]));
+    res.json({ name: resumeName, company: appData.company, role: appData.role, ...tailoredResume });
+  } catch (e) {
+    console.error('Resume tailor error:', e.message);
+    res.status(500).json({ error: e.message });
+  }
 });
 
 // Clean up voice transcript
@@ -3626,6 +3685,11 @@ a{text-decoration:none;color:inherit}
       <div class="section-hd"><span class="section-label">Your answers</span></div>
       <div id="genFields"></div>
     </div>
+
+    <div class="section">
+      <div class="section-hd"><span class="section-label">Resume for this role</span></div>
+      <div id="resumeSection"></div>
+    </div>
   </div>
 
 </div>
@@ -3650,6 +3714,7 @@ a{text-decoration:none;color:inherit}
 <script>
 var JOB_URL = ${JSON.stringify(jobUrl)};
 var kitData = null;
+var resumeData = null;
 var activeRecorder = null;
 
 function getSession() { try { return localStorage.getItem('aa_session') || ''; } catch { return ''; } }
@@ -3806,6 +3871,9 @@ function renderKit(kit) {
     gen.appendChild(makeGenBlock('qa' + i, item.q, item.a));
   });
 
+  resumeData = null;
+  renderResumeSection();
+
   document.getElementById('kit').style.display = 'block';
   document.getElementById('kitActions').style.display = 'flex';
 }
@@ -3840,6 +3908,101 @@ function downloadCoverLetterPDF() {
     });
     var slug = ((kitData.company || '') + '-' + (kitData.role || '')).toLowerCase().replace(/[^a-z0-9]+/g, '-');
     doc.save(slug + '-cover-letter.pdf');
+  }
+  if (window.jspdf) { generate(); return; }
+  var s = document.createElement('script');
+  s.src = 'https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js';
+  s.onload = generate;
+  document.head.appendChild(s);
+}
+
+// ── tailored resume ──────────────────────────────────────────────────────────
+function renderResumeSection() {
+  var el = document.getElementById('resumeSection');
+  if (resumeData) {
+    var exp = (resumeData.experience || []).map(function(e) {
+      return '<div style="margin-bottom:14px">' +
+        '<div style="font-weight:600;font-size:13px;color:#fff">' + esc(e.company || '') + ' — ' + esc(e.title || '') + '</div>' +
+        '<div style="font-size:11px;color:#555;margin-bottom:6px">' + esc(e.dates || '') + '</div>' +
+        '<ul style="margin:0 0 0 18px;padding:0;font-size:12px;line-height:1.7;color:#ccc">' +
+        (e.bullets || []).map(function(b) { return '<li>' + esc(b) + '</li>'; }).join('') +
+        '</ul></div>';
+    }).join('');
+    el.innerHTML =
+      '<div class="gen-block">' +
+        '<div style="font-size:12px;color:#ccc;line-height:1.6;margin-bottom:16px">' + esc(resumeData.summary || '') + '</div>' +
+        exp +
+        (resumeData.skills && resumeData.skills.length ? '<div style="font-size:11px;color:#888;margin-top:4px"><b style="color:#fff">Skills:</b> ' + esc(resumeData.skills.join(', ')) + '</div>' : '') +
+        '<div class="gen-actions" style="margin-top:14px">' +
+          '<button class="icon-btn" onclick="generateResume(true)">Regenerate</button>' +
+          '<button class="icon-btn" onclick="downloadResumePDF()">Download PDF</button>' +
+        '</div>' +
+      '</div>';
+  } else {
+    el.innerHTML = '<button class="btn-primary" style="padding:9px 18px;font-size:12px" onclick="generateResume(false)">Generate tailored resume — 8 credits</button>';
+  }
+}
+
+function generateResume(force) {
+  if (!kitData) return;
+  var el = document.getElementById('resumeSection');
+  el.innerHTML = '<div style="font-size:12px;color:#888">Rewriting your resume for this role…</div>';
+  fetch('/resume-tailor', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + getSession() },
+    body: JSON.stringify({ appId: kitData.id }),
+  })
+  .then(function(r) {
+    if (r.status === 402) { el.innerHTML = '<div style="font-size:12px;color:#f87171">Out of credits. <a href="/buy" style="color:#ef4444;text-decoration:underline">Top up →</a></div>'; return null; }
+    if (r.status === 422) { return r.json().then(function(e) { el.innerHTML = '<div style="font-size:12px;color:#f87171">' + esc(e.error) + '</div>'; return null; }); }
+    if (!r.ok) return r.json().then(function(e) { el.innerHTML = '<div style="font-size:12px;color:#f87171">' + esc(e.error || 'Failed') + '</div>'; return null; });
+    return r.json();
+  })
+  .then(function(d) { if (d) { resumeData = d; renderResumeSection(); } })
+  .catch(function() { el.innerHTML = '<div style="font-size:12px;color:#f87171">Network error.</div>'; });
+}
+
+function downloadResumePDF() {
+  if (!resumeData) return;
+  function generate() {
+    var doc = new window.jspdf.jsPDF();
+    var margin = 20;
+    var pageW = doc.internal.pageSize.getWidth() - margin * 2;
+    var y = 24;
+    doc.setFontSize(15); doc.setFont(undefined, 'bold');
+    doc.text(resumeData.name || '', margin, y); y += 8;
+    doc.setFontSize(10); doc.setFont(undefined, 'normal');
+    if (resumeData.summary) {
+      var sLines = doc.splitTextToSize(resumeData.summary, pageW);
+      sLines.forEach(function(line) { doc.text(line, margin, y); y += 5; });
+      y += 4;
+    }
+    (resumeData.experience || []).forEach(function(e) {
+      if (y > 265) { doc.addPage(); y = 22; }
+      doc.setFontSize(11); doc.setFont(undefined, 'bold');
+      doc.text((e.company || '') + ' — ' + (e.title || ''), margin, y); y += 5;
+      doc.setFontSize(9); doc.setFont(undefined, 'italic');
+      doc.text(e.dates || '', margin, y); y += 6;
+      doc.setFont(undefined, 'normal'); doc.setFontSize(10);
+      (e.bullets || []).forEach(function(b) {
+        var bLines = doc.splitTextToSize('• ' + b, pageW - 4);
+        bLines.forEach(function(line) {
+          if (y > 272) { doc.addPage(); y = 22; }
+          doc.text(line, margin + 2, y); y += 5;
+        });
+      });
+      y += 4;
+    });
+    if (resumeData.skills && resumeData.skills.length) {
+      if (y > 265) { doc.addPage(); y = 22; }
+      doc.setFontSize(10); doc.setFont(undefined, 'bold');
+      doc.text('Skills', margin, y); y += 5;
+      doc.setFont(undefined, 'normal');
+      var skLines = doc.splitTextToSize(resumeData.skills.join(', '), pageW);
+      skLines.forEach(function(line) { doc.text(line, margin, y); y += 5; });
+    }
+    var slug = ((resumeData.company || '') + '-' + (resumeData.role || '')).toLowerCase().replace(/[^a-z0-9]+/g, '-');
+    doc.save(slug + '-resume.pdf');
   }
   if (window.jspdf) { generate(); return; }
   var s = document.createElement('script');
