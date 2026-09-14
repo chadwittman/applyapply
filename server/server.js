@@ -8,7 +8,7 @@ const pdfParse = require('pdf-parse');
 const jwt = require('jsonwebtoken');
 const crypto = require('crypto');
 const rateLimit = require('express-rate-limit');
-const { getProfile, getProfileByUserEmail, setProfile, getUser, getOrCreateUser, addUserCredits, deductUserCredits, createMagicLink, getMagicLink, useMagicLink } = require('./db');
+const { getProfile, getProfileByUserEmail, setProfile, getUser, getOrCreateUser, addUserCredits, deductUserCredits, createMagicLink, getMagicLink, useMagicLink, PROFILE_FIELDS: DB_PROFILE_FIELDS } = require('./db');
 const db = require('./db');
 
 process.on('unhandledRejection', (reason, promise) => {
@@ -1196,9 +1196,11 @@ app.post('/profile', async (req, res) => {
   const auth = authFromRequest(req);
   if (!auth) return res.status(401).json({ error: 'Sign in required' });
   if (auth.type === 'local') return res.json({ ok: true, note: 'local mode' });
-  const allowed = ['first_name','last_name','email','phone','linkedin','github','twitter','website','location','work_authorization','salary','current_employer','school','bio'];
+  // Use the DB layer's own field list so this can't drift out of sync again —
+  // it silently dropped career_type/target_roles/location_pref/resume_text
+  // before, since setProfile's UPDATE writes null for every field not present.
   const data = {};
-  for (const f of allowed) data[f] = req.body[f] || null;
+  for (const f of DB_PROFILE_FIELDS) data[f] = req.body[f] || null;
   if (auth.type === 'jwt') await setProfile(auth.email, data, true);
   else await setProfile(auth.apiKey, data);
   res.json({ ok: true });

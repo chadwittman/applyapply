@@ -334,6 +334,7 @@ async function getProfiledUsers() {
 module.exports = {
   pool,
   initSchema,
+  PROFILE_FIELDS,
   insertRun, getRuns, getRun,
   insertJob, upsertJob, setJobStatus, setKitGenerated, getJobByUrl, getJobs, getJobsForRun, getSeenUrls, getStatusCounts,
   recordDecision, getDecisionSummary,
