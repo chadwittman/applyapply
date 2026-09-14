@@ -3831,7 +3831,7 @@ function downloadKit() {
     lines.push('A: ' + item.a);
     lines.push('');
   });
-  var blob = new Blob([lines.join('\n')], { type: 'text/plain' });
+  var blob = new Blob([lines.join('\\n')], { type: 'text/plain' });
   var a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
   a.download = ((kitData.company || 'kit') + '-' + (kitData.role || 'application')).toLowerCase().replace(/[^a-z0-9]+/g, '-') + '.txt';
