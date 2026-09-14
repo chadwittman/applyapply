@@ -1554,8 +1554,12 @@ async function fetchATSFormQuestions(url) {
     const u = new URL(url);
     const host = u.hostname;
     const parts = u.pathname.split('/').filter(Boolean);
+    // Best-effort board-token guess for ATS widgets embedded on a company's own
+    // careers domain (e.g. databricks.com/...?gh_jid=123) — usually matches.
+    const guessSlug = () => host.replace(/^www\./, '').split('.')[0].toLowerCase();
 
-    // Greenhouse: job-boards.greenhouse.io/<company>/jobs/<id>
+    // Greenhouse: job-boards.greenhouse.io/<company>/jobs/<id>, or an embed
+    // widget on the company's own domain carrying ?gh_jid=<id>
     if (host.includes('greenhouse.io')) {
       const jobIdx = parts.indexOf('jobs');
       if (jobIdx !== -1 && parts[0] && parts[jobIdx + 1]) {
@@ -1568,9 +1572,18 @@ async function fetchATSFormQuestions(url) {
             .map(q => q.label);
         }
       }
+    } else if (u.searchParams.has('gh_jid')) {
+      const r = await fetch(`https://boards-api.greenhouse.io/v1/boards/${guessSlug()}/jobs/${u.searchParams.get('gh_jid')}`, { signal: AbortSignal.timeout(8000) });
+      if (r.ok) {
+        const data = await r.json();
+        const skip = new Set(['first_name','last_name','email','phone','resume','cover_letter','location','linkedin_profile','website']);
+        return (data.questions || [])
+          .filter(q => q.label && !skip.has(q.fields?.[0]?.name))
+          .map(q => q.label);
+      }
     }
 
-    // Lever: jobs.lever.co/<company>/<id>
+    // Lever: jobs.lever.co/<company>/<id>, or an embed carrying ?lever_job_id=<id>
     if (host.includes('lever.co') && parts.length >= 2) {
       const r = await fetch(`https://api.lever.co/v0/postings/${parts[0]}/${parts[1]}?mode=json`, { signal: AbortSignal.timeout(8000) });
       if (r.ok) {
@@ -1581,12 +1594,39 @@ async function fetchATSFormQuestions(url) {
         }
         return questions;
       }
+    } else if (u.searchParams.has('lever_job_id')) {
+      const r = await fetch(`https://api.lever.co/v0/postings/${guessSlug()}/${u.searchParams.get('lever_job_id')}?mode=json`, { signal: AbortSignal.timeout(8000) });
+      if (r.ok) {
+        const data = await r.json();
+        const questions = [];
+        if (data.additionalPlain) {
+          data.additionalPlain.split('\n').forEach(function(l) { l = l.trim(); if (l.endsWith('?') && l.length > 10) questions.push(l); });
+        }
+        return questions;
+      }
     }
 
-    // Ashby: try scraping the /application page for form labels
+    // Ashby: try scraping the /application page for form labels, or an embed
+    // carrying ?ashby_jid=<id> on the company's own domain
     if (host.includes('ashbyhq.com') && parts.length >= 2) {
       const base = url.split('?')[0].replace(/\/application$/, '');
       const r = await fetch(base + '/application', {
+        signal: AbortSignal.timeout(8000),
+        headers: { 'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36' },
+      });
+      if (r.ok) {
+        const html = await r.text();
+        const skip = new Set(['First Name','Last Name','Email','Phone','Resume','LinkedIn Profile','Website','Cover Letter','Location','City','Country']);
+        const found = [];
+        let m, re = /<label[^>]*>([^<]{8,300})<\/label>/gi;
+        while ((m = re.exec(html)) !== null) {
+          const label = m[1].replace(/\s+/g, ' ').replace(/<[^>]+>/g, '').trim().replace(/\s*\*\s*$/, '');
+          if (label && !skip.has(label) && found.length < 12) found.push(label);
+        }
+        return found;
+      }
+    } else if (u.searchParams.has('ashby_jid')) {
+      const r = await fetch(`https://jobs.ashbyhq.com/${guessSlug()}/${u.searchParams.get('ashby_jid')}/application`, {
         signal: AbortSignal.timeout(8000),
         headers: { 'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36' },
       });
