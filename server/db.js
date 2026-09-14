@@ -84,6 +84,21 @@ async function initSchema() {
     )
   `);
 
+  // Generated apply kits. Previously flat JSON files on the container's local
+  // disk, which Railway wipes on every deploy — taking paid-for kits with it.
+  await q(`
+    CREATE TABLE IF NOT EXISTS kits (
+      id TEXT PRIMARY KEY,
+      url TEXT,
+      user_email TEXT,
+      data JSONB NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
+  await q(`CREATE INDEX IF NOT EXISTS idx_kits_user_email ON kits (user_email)`);
+  await q(`CREATE INDEX IF NOT EXISTS idx_kits_url ON kits (url)`);
+
   await q(`
     CREATE TABLE IF NOT EXISTS magic_links (
       token TEXT PRIMARY KEY,
@@ -228,23 +243,30 @@ async function getProfileByUserEmail(userEmail) {
   return q1(`SELECT * FROM profiles WHERE user_email = $1`, [userEmail]);
 }
 
+// Partial update: only writes fields actually supplied. Different clients post
+// different subsets (the setup page sends everything, the extension popup sends
+// 8 contact fields), so an absent field must mean "leave alone" — writing null
+// for it let the extension's save silently wipe bio, resume_text, target_roles…
 async function setProfile(key, data, isEmail = false) {
-  const vals = PROFILE_FIELDS.map(f => data[f] ?? null);
+  const fields = PROFILE_FIELDS.filter(f => data[f] !== undefined);
+  if (!fields.length) return;
+  const vals = fields.map(f => data[f]);
+
   if (isEmail) {
     const existing = await q1(`SELECT api_key FROM profiles WHERE user_email = $1`, [key]);
     if (existing) {
-      const sets = PROFILE_FIELDS.map((f, i) => `${f} = $${i + 2}`).join(', ');
+      const sets = fields.map((f, i) => `${f} = $${i + 2}`).join(', ');
       await q(`UPDATE profiles SET ${sets}, updated_at = NOW() WHERE user_email = $1`, [key, ...vals]);
     } else {
-      const cols = ['api_key', 'user_email', ...PROFILE_FIELDS].join(', ');
-      const placeholders = ['api_key', 'user_email', ...PROFILE_FIELDS].map((_, i) => `$${i + 1}`).join(', ');
+      const cols = ['api_key', 'user_email', ...fields].join(', ');
+      const placeholders = ['api_key', 'user_email', ...fields].map((_, i) => `$${i + 1}`).join(', ');
       await q(`INSERT INTO profiles (${cols}) VALUES (${placeholders})`,
         [`email:${key}`, key, ...vals]);
     }
   } else {
-    const cols = ['api_key', ...PROFILE_FIELDS].join(', ');
-    const placeholders = ['api_key', ...PROFILE_FIELDS].map((_, i) => `$${i + 1}`).join(', ');
-    const updates = PROFILE_FIELDS.map((f, i) => `${f} = $${i + 2}`).join(', ');
+    const cols = ['api_key', ...fields].join(', ');
+    const placeholders = ['api_key', ...fields].map((_, i) => `$${i + 1}`).join(', ');
+    const updates = fields.map((f, i) => `${f} = $${i + 2}`).join(', ');
     await q(`
       INSERT INTO profiles (${cols}) VALUES (${placeholders})
       ON CONFLICT (api_key) DO UPDATE SET ${updates}, updated_at = NOW()
@@ -312,6 +334,44 @@ async function applyStripePayment(eventId, email, credits) {
   }
 }
 
+// ── Kits ──────────────────────────────────────────────────────────────────────
+
+async function saveKit(kit) {
+  await q(`
+    INSERT INTO kits (id, url, user_email, data)
+    VALUES ($1,$2,$3,$4)
+    ON CONFLICT (id) DO UPDATE SET
+      url = EXCLUDED.url, user_email = EXCLUDED.user_email,
+      data = EXCLUDED.data, updated_at = NOW()
+  `, [kit.id, kit.url || null, kit.user_email || null, JSON.stringify(kit)]);
+}
+
+async function getKit(id) {
+  const row = await q1(`SELECT data FROM kits WHERE id = $1`, [id]);
+  return row ? row.data : null;
+}
+
+async function getKits(userEmail = null) {
+  const rows = userEmail
+    ? await q(`SELECT data FROM kits WHERE user_email = $1 ORDER BY updated_at DESC`, [userEmail])
+    : await q(`SELECT data FROM kits ORDER BY updated_at DESC`);
+  return rows.map(r => r.data);
+}
+
+async function deleteKit(id) {
+  await q(`DELETE FROM kits WHERE id = $1`, [id]);
+}
+
+async function deleteKitsForUser(userEmail) {
+  const rows = await q(`DELETE FROM kits WHERE user_email = $1 RETURNING id`, [userEmail]);
+  return rows.length;
+}
+
+async function countKits() {
+  const row = await q1(`SELECT COUNT(*)::int AS n FROM kits`);
+  return row?.n || 0;
+}
+
 // ── Magic links ───────────────────────────────────────────────────────────────
 
 async function createMagicLink(email, token, expiresAt) {
@@ -339,6 +399,7 @@ module.exports = {
   insertJob, upsertJob, setJobStatus, setKitGenerated, getJobByUrl, getJobs, getJobsForRun, getSeenUrls, getStatusCounts,
   recordDecision, getDecisionSummary,
   getProfile, getProfileByUserEmail, setProfile, getProfiledUsers,
+  saveKit, getKit, getKits, deleteKit, deleteKitsForUser, countKits,
   getUser, getOrCreateUser, addUserCredits, deductUserCredits, applyStripePayment,
   createMagicLink, getMagicLink, useMagicLink,
 };

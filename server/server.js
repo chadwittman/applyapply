@@ -30,8 +30,6 @@ const ALLOWED_WEB_ORIGINS = new Set(
     .map(origin => origin.trim())
     .filter(Boolean)
 );
-const APPS_DIR = path.join(__dirname, '../applications');
-fs.mkdirSync(APPS_DIR, { recursive: true });
 
 if (IS_PRODUCTION && !process.env.APPLYAPPLY_JWT_SECRET) {
   throw new Error('APPLYAPPLY_JWT_SECRET must be set in production');
@@ -1196,11 +1194,11 @@ app.post('/profile', async (req, res) => {
   const auth = authFromRequest(req);
   if (!auth) return res.status(401).json({ error: 'Sign in required' });
   if (auth.type === 'local') return res.json({ ok: true, note: 'local mode' });
-  // Use the DB layer's own field list so this can't drift out of sync again —
-  // it silently dropped career_type/target_roles/location_pref/resume_text
-  // before, since setProfile's UPDATE writes null for every field not present.
+  // Only forward fields the client actually sent — setProfile treats absent as
+  // "leave alone". The extension popup posts 8 contact fields; it must not null
+  // out bio/resume_text/target_roles just because it doesn't know about them.
   const data = {};
-  for (const f of DB_PROFILE_FIELDS) data[f] = req.body[f] || null;
+  for (const f of DB_PROFILE_FIELDS) if (req.body[f] !== undefined) data[f] = req.body[f];
   if (auth.type === 'jwt') await setProfile(auth.email, data, true);
   else await setProfile(auth.apiKey, data);
   res.json({ ok: true });
@@ -1498,7 +1496,9 @@ async function save(){
   const btn=document.getElementById('saveBtn');
   btn.disabled=true;btn.textContent='Saving…';
   const data={};
-  for(const f of FIELDS){const el=document.getElementById(f);if(!el)continue;const v=el.value.trim();if(v)data[f]=v;}
+  // Send every field this page owns, empty ones included — the server treats an
+  // absent field as "leave alone", so omitting blanks would make clearing impossible.
+  for(const f of FIELDS){const el=document.getElementById(f);if(!el)continue;data[f]=el.value.trim();}
   try{
     const r=await fetch('/profile',{method:'POST',headers:{'x-api-key':key,'content-type':'application/json'},body:JSON.stringify(data)});
     const j=await r.json();
@@ -1522,20 +1522,16 @@ const keys = loadKeys();
 const MODEL_OPENROUTER = 'anthropic/claude-haiku-4-5';
 const MODEL_ANTHROPIC = 'claude-haiku-4-5-20251001';
 
-function loadApps() {
-  if (!fs.existsSync(APPS_DIR)) return [];
-  return fs.readdirSync(APPS_DIR)
-    .filter(f => f.endsWith('.json'))
-    .map(f => { try { return JSON.parse(fs.readFileSync(path.join(APPS_DIR, f), 'utf-8')); } catch { return null; } })
-    .filter(Boolean);
+async function loadApps(userEmail = null) {
+  try { return await db.getKits(userEmail); } catch { return []; }
 }
 
-function findApplicationByUrl(url, userEmail = null) {
+async function findApplicationByUrl(url, userEmail = null) {
   const normalize = p => p.replace(/\/(apply|application)$/, '');
   try {
-    for (const f of fs.readdirSync(APPS_DIR).filter(f => f.endsWith('.json'))) {
-      const app = JSON.parse(fs.readFileSync(path.join(APPS_DIR, f), 'utf-8'));
-      if (userEmail && app.user_email && app.user_email !== userEmail) continue;
+    // An unowned kit (generated in local mode) is not "everyone's" — getKits
+    // scopes to the caller whenever we know who they are.
+    for (const app of await db.getKits(userEmail)) {
       const urls = [app.url, ...(app.urls || [])].filter(Boolean);
       if (urls.some(u => {
         try {
@@ -1549,18 +1545,11 @@ function findApplicationByUrl(url, userEmail = null) {
   return null;
 }
 
-function loadKit(id, userEmail) {
-  const p = path.join(APPS_DIR, `${id}.json`);
-  const legacyPath = path.join(__dirname, '../apply-kits', `${id}.json`);
+async function loadKit(id, userEmail) {
   let kit = null;
-  for (const fp of [p, legacyPath]) {
-    if (fs.existsSync(fp)) {
-      try { kit = JSON.parse(fs.readFileSync(fp, 'utf-8')); } catch { return null; }
-      break;
-    }
-  }
+  try { kit = await db.getKit(id); } catch { return null; }
   if (!kit) return null;
-  if (userEmail && kit.user_email && kit.user_email !== userEmail) return 'forbidden';
+  if (userEmail && kit.user_email !== userEmail) return 'forbidden';
   return kit;
 }
 
@@ -1733,32 +1722,39 @@ async function callClaudeVision(content, maxTokens = 2048) {
   return (await r.json()).content[0].text;
 }
 
-app.get('/health', (req, res) => {
-  const count = fs.existsSync(APPS_DIR) ? fs.readdirSync(APPS_DIR).filter(f => f.endsWith('.json')).length : 0;
+app.get('/health', async (req, res) => {
+  const count = await db.countKits().catch(() => 0);
   res.json({ status: 'ok', version: VERSION, applications: count, ai: !!keys, provider: keys?.provider });
 });
 
 // Lookup a previously generated application by job URL
-app.get('/application', (req, res) => {
+// Kits carry name, email, phone, LinkedIn, salary expectation and bio — these
+// routes must never serve one to an anonymous caller. The ownership checks in
+// findApplicationByUrl/loadKit are skipped when userEmail is null, so require
+// a resolved identity up front.
+app.get('/application', async (req, res) => {
   const { url } = req.query;
   if (!url) return res.status(400).json({ error: 'url param required' });
-  const app = findApplicationByUrl(url, reqUserEmail(req));
+  const userEmail = reqUserEmail(req);
+  if (!userEmail) return res.status(401).json({ error: 'Sign in required' });
+  const app = await findApplicationByUrl(url, userEmail);
   if (app) return res.json(app);
   res.status(404).json({ error: 'No application found' });
 });
 
-app.get('/application/:id', (req, res) => {
-  const kit = loadKit(req.params.id, reqUserEmail(req));
+app.get('/application/:id', async (req, res) => {
+  const userEmail = reqUserEmail(req);
+  if (!userEmail) return res.status(401).json({ error: 'Sign in required' });
+  const kit = await loadKit(req.params.id, userEmail);
   if (!kit) return res.status(404).json({ error: 'Not found' });
   if (kit === 'forbidden') return res.status(403).json({ error: 'Forbidden' });
   res.json(kit);
 });
 
-app.get('/applications', (req, res) => {
+app.get('/applications', async (req, res) => {
   try {
     const userEmail = reqUserEmail(req);
-    let apps = loadApps();
-    if (userEmail) apps = apps.filter(a => !a.user_email || a.user_email === userEmail);
+    const apps = await loadApps(userEmail);
     res.json(apps.map(({ id, company, role, url, tier, fit_score, sourced_date, applied_at }) => ({
       id, company, role, url, tier, fit_score, sourced_date, applied_at
     })).sort((a, b) => (b.fit_score || 0) - (a.fit_score || 0)));
@@ -1774,7 +1770,7 @@ app.post('/analyze', apiLimiter, requireCredits('analyze'), async (req, res) => 
   if (!id || !fields) return res.status(400).json({ error: 'appId and fields required' });
   if (!keys) return res.status(503).json({ error: 'No API key found' });
 
-  const kitResult = loadKit(id, reqUserEmail(req));
+  const kitResult = await loadKit(id, reqUserEmail(req));
   if (!kitResult) return res.status(404).json({ error: 'Application not found' });
   if (kitResult === 'forbidden') return res.status(403).json({ error: 'Forbidden' });
   const appData = kitResult;
@@ -1949,11 +1945,10 @@ app.post('/applied', async (req, res) => {
 
   // Update the application JSON kit file
   const userEmail = reqUserEmail(req);
-  const kitData = loadKit(id, userEmail);
+  const kitData = await loadKit(id, userEmail);
   if (kitData && kitData !== 'forbidden') {
     kitData.applied_at = appliedAt;
-    const kitPath = path.join(APPS_DIR, `${id}.json`);
-    if (fs.existsSync(kitPath)) fs.writeFileSync(kitPath, JSON.stringify(kitData, null, 2));
+    await db.saveKit(kitData);
   }
 
   // Update DB status (authoritative)
@@ -1997,7 +1992,7 @@ app.post('/generate', apiLimiter, requireCredits('generate'), async (req, res) =
 
   // Return cached application if it exists (unless force regenerate)
   if (!force) {
-    const cached = findApplicationByUrl(url, userEmail);
+    const cached = await findApplicationByUrl(url, userEmail);
     if (cached) {
       console.log(`Cache hit: ${cached.company} — ${cached.role}`);
       // Backfill the pipeline row for kits generated before this existed, or
@@ -2012,10 +2007,9 @@ app.post('/generate', apiLimiter, requireCredits('generate'), async (req, res) =
     }
   } else {
     // Delete any existing application for this URL so we regenerate fresh
-    const existing = findApplicationByUrl(url, userEmail);
+    const existing = await findApplicationByUrl(url, userEmail);
     if (existing) {
-      const p = path.join(APPS_DIR, `${existing.id}.json`);
-      if (fs.existsSync(p)) fs.unlinkSync(p);
+      await db.deleteKit(existing.id);
       console.log(`Force regenerate: deleted ${existing.id}`);
     }
   }
@@ -2117,7 +2111,7 @@ Concrete over abstract: "built a pipeline that drove 4.5x revenue per title as C
 
     // Save to applications/
     if (userEmail) generated.user_email = userEmail;
-    fs.writeFileSync(path.join(APPS_DIR, `${generated.id}.json`), JSON.stringify(generated, null, 2));
+    await db.saveKit(generated);
 
     // Ensure a pipeline row exists for this URL — kits generated directly
     // (extension, URL-prepend) never went through sourcing, so without this
@@ -2153,7 +2147,7 @@ app.post('/cover-letter', requireCredits('cover_letter'), async (req, res) => {
   if (!id) return res.status(400).json({ error: 'appId required' });
   if (!keys) return res.status(503).json({ error: 'No API key' });
 
-  const coverKit = loadKit(id, reqUserEmail(req));
+  const coverKit = await loadKit(id, reqUserEmail(req));
   if (!coverKit) return res.status(404).json({ error: 'Application not found' });
   if (coverKit === 'forbidden') return res.status(403).json({ error: 'Forbidden' });
   const appData = coverKit;
@@ -2209,7 +2203,7 @@ app.post('/resume-tailor', requireCredits('resume'), async (req, res) => {
   if (!id) return res.status(400).json({ error: 'appId required' });
   if (!keys) return res.status(503).json({ error: 'No API key' });
 
-  const resumeKit = loadKit(id, reqUserEmail(req));
+  const resumeKit = await loadKit(id, reqUserEmail(req));
   if (!resumeKit) return res.status(404).json({ error: 'Application not found' });
   if (resumeKit === 'forbidden') return res.status(403).json({ error: 'Forbidden' });
   const appData = resumeKit;
@@ -2273,7 +2267,7 @@ app.post('/voice', requireCredits('voice'), async (req, res) => {
 
   let kitContext = '';
   if (id) {
-    const voiceKit = loadKit(id, reqUserEmail(req));
+    const voiceKit = await loadKit(id, reqUserEmail(req));
     const appData = (voiceKit && voiceKit !== 'forbidden') ? voiceKit : null;
     if (appData) {
       properNouns.push(appData.company, appData.role);
@@ -2354,22 +2348,15 @@ WRITING RULES:
 });
 
 // Clear all job data
-app.post('/clear', (req, res) => {
+app.post('/clear', async (req, res) => {
   try {
+    // Previously unauthenticated: an anonymous caller resolved to a null email,
+    // which made the ownership test pass for every kit and wiped all users' data.
     const clearEmail = reqUserEmail(req);
-    // Delete only this user's kit files
-    if (fs.existsSync(APPS_DIR)) {
-      for (const f of fs.readdirSync(APPS_DIR).filter(f => f.endsWith('.json'))) {
-        try {
-          const kit = JSON.parse(fs.readFileSync(path.join(APPS_DIR, f), 'utf-8'));
-          if (!clearEmail || !kit.user_email || kit.user_email === clearEmail) {
-            fs.unlinkSync(path.join(APPS_DIR, f));
-          }
-        } catch {}
-      }
-    }
-    console.log('[clear] all job data wiped');
-    res.json({ ok: true });
+    if (!clearEmail) return res.status(401).json({ error: 'Sign in required' });
+    const n = await db.deleteKitsForUser(clearEmail);
+    console.log(`[clear] wiped ${n} kits for ${clearEmail}`);
+    res.json({ ok: true, deleted: n });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -2633,7 +2620,7 @@ app.get('/sourcing', async (req, res) => {
 
   // Kit detection: build set of normalized URLs that have generated kits
   const normUrl = u => { try { const p = new URL(u); return p.hostname + p.pathname.replace(/\/(apply|application)$/, '').replace(/\/$/, ''); } catch { return u; } };
-  const kitUrlSet = new Set(loadApps().flatMap(a => [a.url, ...(a.urls||[])].filter(Boolean).map(normUrl)));
+  const kitUrlSet = new Set((await loadApps()).flatMap(a => [a.url, ...(a.urls||[])].filter(Boolean).map(normUrl)));
 
   // Opened tracking: load click history
   const OPENED_FILE = path.join(__dirname, '../logs/opened.json');
@@ -4163,10 +4150,10 @@ if (require.main === module) {
     .then(() => console.log('DB schema ready'))
     .catch(e => { console.error('DB schema init failed:', e.message); process.exit(1); })
     .then(() => {
-      app.listen(PORT, () => {
+      app.listen(PORT, async () => {
         console.log(`\nJob Apply Server — http://localhost:${PORT}`);
-        const count = fs.existsSync(APPS_DIR) ? fs.readdirSync(APPS_DIR).filter(f => f.endsWith('.json')).length : 0;
-        console.log(`${count} applications loaded`);
+        const count = await db.countKits().catch(() => 0);
+        console.log(`${count} kits in database`);
         console.log(`AI: ${keys ? `enabled via ${keys.provider} (haiku)` : 'disabled — no API key found'}\n`);
         startCron();
       });
