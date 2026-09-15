@@ -21,7 +21,7 @@ process.on('uncaughtException', (err) => {
 
 const app = express();
 const PORT = process.env.PORT || 5000;
-const VERSION = '0.8.0';
+const VERSION = '0.9.0';
 const IS_PRODUCTION = process.env.NODE_ENV === 'production';
 const APP_ORIGIN = process.env.APP_ORIGIN || 'http://localhost:5000';
 const ALLOWED_WEB_ORIGINS = new Set(
@@ -3450,25 +3450,58 @@ function startLive(){
   document.getElementById('run-btn').textContent='running…';
   setPhase(1);
 
+  var sawOutput=false;
+  var startedAt=Date.now();
+  liveNote('Run started. Connecting to the browser session…','info');
+
   // Stream log lines via SSE
   es=new EventSource(BASE+'/source/stream');
   es.onmessage=e=>{
-    try{parseLine(JSON.parse(e.data));}catch{}
+    try{sawOutput=true;parseLine(JSON.parse(e.data));}catch{}
   };
 
   // Poll status to detect completion
   statusPoller=setInterval(async()=>{
     try{
       const st=await fetch(BASE+'/source/status').then(r=>r.json());
-      if(!st.active){
-        clearInterval(statusPoller);
-        if(es){es.close();es=null;}
-        document.getElementById('sdot').className='sdot';
-        document.getElementById('topbar-meta').textContent='done — reloading…';
-        setTimeout(()=>location.reload(),2000);
+      if(st.active)return;
+      clearInterval(statusPoller);
+      if(es){es.close();es=null;}
+      document.getElementById('sdot').className='sdot';
+      document.getElementById('run-btn').disabled=false;
+      document.getElementById('run-btn').textContent='run sourcing';
+
+      // A run that ends in seconds having printed nothing has failed, not
+      // finished. Reloading on both made a crash look identical to success.
+      var quick=Date.now()-startedAt<15000;
+      if(!sawOutput&&quick){
+        document.getElementById('topbar-meta').textContent='run failed';
+        liveNote('The run ended immediately without producing output. Fetching the log…','excl');
+        try{
+          const log=await fetch(BASE+'/source/log',{headers:authHeaders()}).then(r=>r.text());
+          var tail=(log||'').trim().split('\n').slice(-12).join('\n');
+          liveNote(tail||'No log output was captured.','excl');
+        }catch{ liveNote('Could not read the run log.','excl'); }
+        liveNote('Your credits for this run are refunded automatically when it exits non-zero.','info');
+        return;
       }
+      document.getElementById('topbar-meta').textContent='run complete';
+      liveNote('Run complete. Refreshing results…','new');
+      setTimeout(()=>location.reload(),2500);
     }catch{}
   },3000);
+}
+
+// One-off message into the live feed, so the panel is never silent.
+function liveNote(text,cls){
+  var feed=document.getElementById('live-feed')||document.querySelector('.live-feed');
+  if(!feed)return;
+  var d=document.createElement('div');
+  d.className='live-line '+(cls||'info');
+  d.style.whiteSpace='pre-wrap';
+  d.textContent=text;
+  feed.appendChild(d);
+  feed.scrollTop=feed.scrollHeight;
 }
 
 // On page load — auto-connect if a run is already in progress

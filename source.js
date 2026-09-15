@@ -355,7 +355,15 @@ async function runBrowserSources(claudeKey, hbKey) {
 
   const sess = await createHBSession(hbKey);
   log(`   HB session: ${sess.id}`);
-  const { chromium } = await import('/Users/chaztyler/node_modules/playwright/index.mjs');
+  // playwright-core, not playwright: we never launch a browser, we attach to a
+  // Hyperbrowser session over CDP, so the bundled browser downloads are dead
+  // weight. Resolved against server/ because that is where deps are installed.
+  // This was an absolute path into a developer's home directory, so every run
+  // on Railway died here before doing any work — no output, no run row, which
+  // is why the live view stayed blank and history stayed empty.
+  const { createRequire } = require('module');
+  const serverRequire = createRequire(path.join(__dirname, 'server', 'package.json'));
+  const { chromium } = serverRequire('playwright-core');
   let browser;
 
   try {
