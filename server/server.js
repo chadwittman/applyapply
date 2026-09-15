@@ -21,7 +21,7 @@ process.on('uncaughtException', (err) => {
 
 const app = express();
 const PORT = process.env.PORT || 5000;
-const VERSION = '0.13.0';
+const VERSION = '0.14.0';
 const IS_PRODUCTION = process.env.NODE_ENV === 'production';
 const APP_ORIGIN = process.env.APP_ORIGIN || 'http://localhost:5000';
 const ALLOWED_WEB_ORIGINS = new Set(
@@ -3140,6 +3140,15 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;backgrou
 .run-confirm-btn:hover{opacity:.85}
 .run-confirm-btn:disabled{opacity:.35;cursor:default}
 #live-panel{display:none;padding:16px 24px 0;border-bottom:1px solid #111;margin-bottom:4px}
+.live-hero{display:flex;align-items:center;justify-content:space-between;gap:16px;border:1px solid #1e2a1e;background:#060b06;padding:14px 16px;margin-bottom:14px}
+.live-hero-left{display:flex;align-items:center;gap:12px}
+.live-hero-title{font-size:15px;font-weight:700;color:#fff;letter-spacing:-.02em}
+.live-hero-sub{font-size:11px;color:#9a9a9a;margin-top:2px}
+.live-hero-right{text-align:right}
+.live-elapsed{font-size:18px;font-weight:700;color:#4ade80;font-variant-numeric:tabular-nums;line-height:1}
+.live-found{font-size:10px;color:#8f8f8f;margin-top:3px;letter-spacing:.04em;text-transform:uppercase}
+.live-spin{width:16px;height:16px;border:2px solid #1e3a1e;border-top-color:#4ade80;border-radius:50%;display:inline-block;animation:jaaspin .8s linear infinite;flex-shrink:0}
+@keyframes jaaspin{to{transform:rotate(360deg)}}
 .live-phases{display:flex;gap:0;margin-bottom:16px}
 .live-phase{font-size:10px;color:#8f8f8f;padding:4px 10px;border:1px solid #1a1a1a;border-right:none;letter-spacing:.04em}
 .live-phase:last-child{border-right:1px solid #1a1a1a}
@@ -3242,10 +3251,10 @@ ${alertBanners.join('\n')}
     <button class="run-confirm-btn" id="run-confirm-btn" onclick="confirmRun()">Run sourcing</button>
   </div>
 </div>
-${!savedRoles.length ? `<div style="border:1px solid #3a2a00;background:#0d0800;padding:12px 18px;margin:0 24px 14px">
+<div id="no-roles-banner" style="display:none;border:1px solid #3a2a00;background:#0d0800;padding:12px 18px;margin:0 24px 14px">
   <div style="font-size:12px;color:#f59e0b;font-weight:700;margin-bottom:4px">No target roles set</div>
   <div style="font-size:11px;color:#c9c9c9;line-height:1.7">Sourcing searches for the job titles on your profile, so without them it falls back to a generic list and the results will be poor. <a href="/setup" style="color:#60a5fa">Set your target roles →</a></div>
-</div>` : ''}
+</div>
 
 <div id="run-failed">
   <div class="rf-title">Sourcing run failed</div>
@@ -3259,6 +3268,19 @@ ${!savedRoles.length ? `<div style="border:1px solid #3a2a00;background:#0d0800;
 </div>
 
 <div id="live-panel">
+  <div class="live-hero">
+    <div class="live-hero-left">
+      <span class="live-spin"></span>
+      <div>
+        <div class="live-hero-title" id="live-title">Agents are searching</div>
+        <div class="live-hero-sub" id="live-sub">Opening a browser session…</div>
+      </div>
+    </div>
+    <div class="live-hero-right">
+      <div class="live-elapsed" id="live-elapsed">0:00</div>
+      <div class="live-found"><span id="live-found-n">0</span> found</div>
+    </div>
+  </div>
   <div class="live-phases" id="live-phases">
     <div class="live-phase" id="ph1">1 · scraping</div>
     <div class="live-phase" id="ph2">2 · validating</div>
@@ -3439,6 +3461,19 @@ function toggleSchedPanel(){
   if(!open&&!SCHED)loadSchedule();
 }
 
+// The page is a plain navigation carrying no session, so the server cannot
+// know whose profile this is — anything personalised has to be resolved here.
+function checkTargetRoles(){
+  var key=(function(){try{return localStorage.getItem('aa_session')||'';}catch(e){return '';}})();
+  if(!key)return;
+  fetch('/profile',{headers:{'x-api-key':key}}).then(function(r){return r.ok?r.json():null;}).then(function(p){
+    var banner=document.getElementById('no-roles-banner');
+    if(!banner)return;
+    var has=p&&p.target_roles&&String(p.target_roles).trim();
+    banner.style.display=has?'none':'block';
+  }).catch(function(){});
+}
+
 function loadSchedule(){
   fetch('/schedule',{headers:authHeaders()}).then(function(r){return r.ok?r.json():null;}).then(function(d){
     if(!d)return;
@@ -3611,12 +3646,29 @@ function startLive(){
   var panel=document.getElementById('run-failed');if(panel)panel.style.display='none';
   var sawOutput=false;
   var startedAt=Date.now();
+
+  // A visible clock and a running count, so it is never ambiguous whether
+  // anything is happening.
+  document.getElementById('live-found-n').textContent='0';
+  document.getElementById('live-title').textContent='Agents are searching';
+  document.getElementById('live-sub').textContent='Opening a browser session…';
+  clearInterval(window.__jaaTick);
+  window.__jaaTick=setInterval(function(){
+    var s=Math.floor((Date.now()-startedAt)/1000);
+    var el=document.getElementById('live-elapsed');
+    if(el)el.textContent=Math.floor(s/60)+':'+String(s%60).padStart(2,'0');
+  },1000);
   liveNote('Run started. Connecting to the browser session…','info');
 
   // Stream log lines via SSE
   es=new EventSource(BASE+'/source/stream');
   es.onmessage=e=>{
-    try{sawOutput=true;parseLine(JSON.parse(e.data));}catch{}
+    try{
+      sawOutput=true;
+      var line=JSON.parse(e.data);
+      parseLine(line);
+      narrate(String(line||''));
+    }catch{}
   };
 
   // Poll status to detect completion
@@ -3625,6 +3677,7 @@ function startLive(){
       const st=await fetch(BASE+'/source/status').then(r=>r.json());
       if(st.active)return;
       clearInterval(statusPoller);
+      clearInterval(window.__jaaTick);
       if(es){es.close();es=null;}
       document.getElementById('sdot').className='sdot';
       document.getElementById('run-btn').disabled=false;
@@ -3643,6 +3696,25 @@ function startLive(){
       setTimeout(()=>location.reload(),2500);
     }catch{}
   },3000);
+}
+
+// Turn raw log lines into a plain statement of what the agents are doing.
+function narrate(line){
+  var sub=document.getElementById('live-sub');
+  var title=document.getElementById('live-title');
+  if(!sub)return;
+  var m;
+  if((m=line.match(/Browsing ([^.]+?)\.\.\./))) sub.textContent='Searching '+m[1].trim()+'…';
+  else if(/HB session/i.test(line)) sub.textContent='Browser session open. Starting the first source…';
+  else if(/Running \d+ of \d+ sources/i.test(line)) sub.textContent=line.trim();
+  else if((m=line.match(/(\d+) total, (\d+) matches/))) sub.textContent='Scanned '+m[1]+' listings, '+m[2]+' match your titles';
+  else if(/checking location|auditing/i.test(line)) { title.textContent='Checking locations'; sub.textContent=line.trim().slice(0,90); }
+  else if(/saving|inserted|added/i.test(line)) { title.textContent='Saving results'; sub.textContent=line.trim().slice(0,90); }
+  var found=document.getElementById('live-found-n');
+  if(found){
+    var n=document.querySelectorAll('#live-feed .live-line.new').length;
+    if(n)found.textContent=String(n);
+  }
 }
 
 async function showRunFailure(){
@@ -3685,6 +3757,8 @@ function liveNote(text,cls){
 fetch(BASE+'/source/status').then(r=>r.json()).then(st=>{
   if(st.active) startLive();
 }).catch(()=>{});
+
+checkTargetRoles();
 
 function trackOpen(url){
   fetch(BASE+'/track/open',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({url})}).catch(()=>{});
