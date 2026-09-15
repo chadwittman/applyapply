@@ -322,7 +322,7 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
   const ats = atsFromUrl(url);
 
   const doInject = () =>
-    chrome.scripting.executeScript({ target: { tabId }, files: ['content.js'] })
+    chrome.scripting.executeScript({ target: { tabId }, files: ['vendor/jspdf.umd.min.js', 'content.js'] })
       .then(() => console.log('[applyapply] injected into', url))
       .catch(err => console.warn('[applyapply] inject failed:', err.message, url));
 

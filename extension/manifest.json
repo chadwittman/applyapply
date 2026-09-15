@@ -1,9 +1,16 @@
 {
   "manifest_version": 3,
   "name": "applyapply",
-  "version": "1.9.10",
+  "version": "1.9.11",
   "description": "Auto-fill job applications with AI-generated apply kits",
-  "permissions": ["activeTab", "storage", "clipboardWrite", "scripting", "tabs", "offscreen"],
+  "permissions": [
+    "activeTab",
+    "storage",
+    "clipboardWrite",
+    "scripting",
+    "tabs",
+    "offscreen"
+  ],
   "host_permissions": [
     "https://jobs.ashbyhq.com/*",
     "https://job-boards.greenhouse.io/*",
@@ -30,13 +37,20 @@
         "https://jobs.a16z.com/*",
         "https://stripe.com/jobs/*"
       ],
-      "js": ["content.js"],
+      "js": [
+        "vendor/jspdf.umd.min.js",
+        "content.js"
+      ],
       "run_at": "document_idle",
       "all_frames": true
     },
     {
-      "matches": ["<all_urls>"],
-      "js": ["voice.js"],
+      "matches": [
+        "<all_urls>"
+      ],
+      "js": [
+        "voice.js"
+      ],
       "run_at": "document_idle"
     }
   ],

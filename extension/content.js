@@ -340,6 +340,9 @@ function buildHTML(serverDown) {
 
 .act{padding:11px 14px;border-bottom:1px solid #ebebeb;flex-shrink:0;}
 .act-row{display:flex;gap:6px;flex-wrap:wrap;}
+.sh-actions{display:flex;align-items:flex-start;gap:4px;flex-shrink:0;}
+.hdr-btn{background:none;border:none;color:#bbb;font-size:15px;line-height:1;cursor:pointer;padding:2px 4px;font-family:inherit;transition:color .15s;}
+.hdr-btn:hover{color:#0a0a0a;}
 .fill-btn{
   flex:1 1 96px;padding:7px 9px;background:#0a0a0a;color:#fff;border:none;
   font-size:11px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;
@@ -389,7 +392,7 @@ function buildHTML(serverDown) {
   display:flex;flex-direction:column;align-items:center;justify-content:center;gap:1px;line-height:1.25;
 }
 .b-cost{font-size:8px;font-weight:500;letter-spacing:.03em;text-transform:none;opacity:.6;}
-#jaa-regen{flex:0 0 auto;padding:7px 11px;font-size:12px;}
+
 .cl-btn:hover{color:#0a0a0a;border-color:#ccc;}
 .cl-btn:disabled{color:#ccc;cursor:not-allowed;}
 .cl-out{padding:14px;border-bottom:1px solid #ebebeb;font-size:11px;line-height:1.7;color:#0a0a0a;white-space:pre-wrap;background:#fafafa;transition:background .12s;}
@@ -420,14 +423,16 @@ function buildHTML(serverDown) {
       ${a ? `<div class="sh-meta">Tier ${a.tier} &nbsp;·&nbsp; ${a.fit_score}/10</div>` : ''}
       ${locBadge}
     </div>
-    <button class="x-btn" id="jaa-close">×</button>
+    <div class="sh-actions">
+      ${a ? '<button class="hdr-btn" id="jaa-regen" title="Regenerate this kit from scratch">↺</button>' : ''}
+      <button class="x-btn" id="jaa-close">×</button>
+    </div>
   </div>
   ${a ? `<div class="act">
     <div class="act-row">
       <button class="fill-btn" id="jaa-fill">Fill form</button>
       <button class="cl-btn" id="jaa-gen-cl">Cover letter</button>
       <button class="cl-btn" id="jaa-gen-resume">Tailored resume</button>
-      <button class="cl-btn" id="jaa-regen" title="Regenerate application from scratch">↺</button>
     </div>
     <div class="fill-note" id="jaa-note"></div>
   </div>` : ''}
@@ -1028,6 +1033,8 @@ function deterministicFill(app) {
     }
   }
 
+  filled += fillCheckboxGroups(t);
+
   // QA pass — match any unfilled textarea to app QA answers by word overlap
   if (t.qa?.length) {
     for (const ta of document.querySelectorAll('textarea')) {
@@ -1087,6 +1094,73 @@ function clickRadioByPattern(pattern, desiredValue) {
     }
   }
   return false;
+}
+
+function getCheckboxText(cb) {
+  if (cb.id) {
+    const l = document.querySelector(`label[for="${cb.id}"]`);
+    if (l) return l.textContent.trim();
+  }
+  const own = cb.closest('label');
+  if (own) return own.textContent.trim();
+  return cb.nextElementSibling?.textContent?.trim() || cb.value || '';
+}
+
+// Checkboxes were excluded from field scanning entirely, so multi-select
+// questions were never touched. Compliance blocks ("select all that apply",
+// sanctions/export control) are the common case and they always carry a
+// "None of the above" option.
+function fillCheckboxGroups(t) {
+  const boxes = [...document.querySelectorAll('input[type="checkbox"]')]
+    .filter(cb => !cb.disabled && cb.offsetParent !== null);
+  if (!boxes.length) return 0;
+
+  // Group by the nearest ancestor that holds more than one checkbox.
+  const groups = new Map();
+  for (const cb of boxes) {
+    let container = cb;
+    let node = cb.parentElement;
+    for (let i = 0; node && i < 6; i++, node = node.parentElement) {
+      if (node.querySelectorAll('input[type="checkbox"]').length > 1) { container = node; break; }
+    }
+    if (!groups.has(container)) groups.set(container, []);
+    groups.get(container).push(cb);
+  }
+
+  let filled = 0;
+  for (const [container, group] of groups) {
+    if (group.some(cb => cb.checked)) continue; // already answered — leave it
+
+    const optionText = group.map(getCheckboxText).join(' ');
+    let question = (container.textContent || '').trim().replace(/\s+/g, ' ');
+    // Strip the options back out so what's left is the question itself.
+    for (const o of group.map(getCheckboxText)) question = question.replace(o, ' ');
+    question = question.replace(/\s+/g, ' ').trim();
+
+    // Never answer these for someone. They are the applicant's to disclose.
+    if (/gender|race|ethnic|veteran|disabilit|sexual orientation|transgender|pronoun|hispanic|latino/i.test(question + ' ' + optionText)) continue;
+    // Consent and attestation are affirmations only the applicant can make.
+    if (/i (agree|consent|certify|acknowledge|authorize)|terms|privacy policy|accurate to the best/i.test(question + ' ' + optionText)) continue;
+
+    const none = group.find(cb => /^none of the above|^none$/i.test(getCheckboxText(cb).trim()));
+    if (none) {
+      fireRadioClick(none);
+      filled++;
+      continue;
+    }
+
+    // Otherwise only act on an explicit answer already written for this
+    // question in the kit — never guess at a multi-select.
+    const qa = (t.qa || []).find(item => {
+      const q = (item.q || '').toLowerCase();
+      return q && question.toLowerCase().includes(q.slice(0, 40));
+    });
+    if (qa?.a) {
+      const match = group.find(cb => qa.a.toLowerCase().includes(getCheckboxText(cb).trim().toLowerCase()));
+      if (match) { fireRadioClick(match); filled++; }
+    }
+  }
+  return filled;
 }
 
 function buildRadioGroups() {
@@ -1538,41 +1612,61 @@ function renderCoverLetter(text, clOut) {
   clOut.appendChild(sec);
 }
 
+// Saves straight to Downloads. jsPDF is bundled with the extension rather than
+// pulled from a CDN, because a content script loading a remote script trips the
+// page's CSP on exactly the sites we run on.
 function printResume(r) {
-  const w = window.open('', '_blank');
-  if (!w) return;
-  const esc = t => String(t == null ? '' : t)
-    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-  const roles = (r.experience || []).map(e => `
-    <section>
-      <div class="role"><span class="co">${esc(e.company)}</span><span class="dates">${esc(e.dates)}</span></div>
-      <div class="title">${esc(e.title)}</div>
-      <ul>${(e.bullets || []).map(b => `<li>${esc(b)}</li>`).join('')}</ul>
-    </section>`).join('');
-  w.document.write(`<!DOCTYPE html><html><head><title>${esc(r.name || 'Resume')}</title>
-<style>
-  @page { margin: 0.6in; }
-  body { font-family: Georgia, 'Times New Roman', serif; font-size: 10.5pt; line-height: 1.45; color: #111; max-width: 7.2in; margin: 0 auto; }
-  h1 { font-size: 19pt; letter-spacing: -.02em; margin: 0 0 4pt; }
-  .summary { margin: 0 0 14pt; }
-  section { margin-bottom: 12pt; page-break-inside: avoid; }
-  .role { display: flex; justify-content: space-between; align-items: baseline; border-bottom: 1px solid #ddd; padding-bottom: 2pt; }
-  .co { font-weight: bold; font-size: 11.5pt; }
-  .dates { font-size: 9pt; color: #555; }
-  .title { font-style: italic; margin: 2pt 0 4pt; }
-  ul { margin: 0; padding-left: 15pt; }
-  li { margin-bottom: 3pt; }
-  .skills { margin-top: 12pt; font-size: 10pt; }
-  .skills b { font-variant: small-caps; letter-spacing: .04em; }
-</style></head><body>
-  <h1>${esc(r.name || '')}</h1>
-  <p class="summary">${esc(r.summary || '')}</p>
-  ${roles}
-  ${r.skills && r.skills.length ? `<div class="skills"><b>Skills</b> &nbsp;${esc(r.skills.join(' · '))}</div>` : ''}
-</body></html>`);
-  w.document.close();
-  w.focus();
-  setTimeout(() => w.print(), 400);
+  const JsPDF = window.jspdf?.jsPDF;
+  if (!JsPDF) { alert('PDF library missing — reload the extension.'); return; }
+  const doc = new JsPDF({ unit: 'pt', format: 'letter' });
+  const M = 54, W = doc.internal.pageSize.getWidth() - M * 2;
+  const BOTTOM = doc.internal.pageSize.getHeight() - M;
+  let y = M + 6;
+  const room = n => { if (y + n > BOTTOM) { doc.addPage(); y = M; } };
+
+  doc.setFont('times', 'bold'); doc.setFontSize(19);
+  doc.text(r.name || '', M, y); y += 20;
+
+  if (r.summary) {
+    doc.setFont('times', 'normal'); doc.setFontSize(10.5);
+    for (const line of doc.splitTextToSize(r.summary, W)) { room(14); doc.text(line, M, y); y += 13; }
+    y += 8;
+  }
+
+  for (const e of r.experience || []) {
+    room(46);
+    doc.setFont('times', 'bold'); doc.setFontSize(11.5);
+    doc.text(e.company || '', M, y);
+    doc.setFont('times', 'normal'); doc.setFontSize(9);
+    doc.text(e.dates || '', M + W, y, { align: 'right' });
+    y += 4;
+    doc.setDrawColor(210); doc.line(M, y, M + W, y); y += 12;
+    doc.setFont('times', 'italic'); doc.setFontSize(10.5);
+    doc.text(e.title || '', M, y); y += 14;
+    doc.setFont('times', 'normal');
+    for (const b of e.bullets || []) {
+      const lines = doc.splitTextToSize(b, W - 14);
+      lines.forEach((line, i) => {
+        room(14);
+        if (i === 0) doc.text('\u2022', M + 2, y);
+        doc.text(line, M + 14, y);
+        y += 13;
+      });
+      y += 2;
+    }
+    y += 8;
+  }
+
+  if (r.skills?.length) {
+    room(26);
+    doc.setFont('times', 'bold'); doc.setFontSize(10);
+    doc.text('SKILLS', M, y); y += 13;
+    doc.setFont('times', 'normal');
+    for (const line of doc.splitTextToSize(r.skills.join(' \u00b7 '), W)) { room(13); doc.text(line, M, y); y += 12; }
+  }
+
+  const slug = ((r.name || 'resume') + '-' + (r.company || '')).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+  doc.save(slug + '.pdf');
 }
 
 function printCoverLetter(text) {
