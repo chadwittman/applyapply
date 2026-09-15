@@ -21,7 +21,7 @@ process.on('uncaughtException', (err) => {
 
 const app = express();
 const PORT = process.env.PORT || 5000;
-const VERSION = '0.10.0';
+const VERSION = '0.11.0';
 const IS_PRODUCTION = process.env.NODE_ENV === 'production';
 const APP_ORIGIN = process.env.APP_ORIGIN || 'http://localhost:5000';
 const ALLOWED_WEB_ORIGINS = new Set(
@@ -1745,18 +1745,27 @@ app.get('/applications', async (req, res) => {
 
 // AI field-mapping — accepts optional screenshot for visual form analysis
 app.post('/analyze', apiLimiter, requireCredits('analyze'), async (req, res) => {
-  const { appId, kitId, fields, screenshot } = req.body;
+  const { appId, kitId, fields, screenshot, company, role } = req.body;
   const id = appId || kitId;
-  if (!id || !fields) return res.status(400).json({ error: 'appId and fields required' });
+  if (!fields) return res.status(400).json({ error: 'fields required' });
   if (!keys) return res.status(503).json({ error: 'No API key found' });
 
-  const kitResult = await loadKit(id, reqUserEmail(req));
-  if (!kitResult) return res.status(404).json({ error: 'Application not found' });
-  if (kitResult === 'forbidden') return res.status(403).json({ error: 'Forbidden' });
-  const appData = kitResult;
+  // A kit is optional. Contact details come from the profile, so vision-based
+  // filling should work on any form the moment someone is signed in — requiring
+  // a kit first meant this path could not run where it was needed most.
+  let appData = null;
+  if (id) {
+    const kitResult = await loadKit(id, reqUserEmail(req));
+    if (kitResult === 'forbidden') return res.status(403).json({ error: 'Forbidden' });
+    if (kitResult) appData = kitResult;
+  }
+  if (!appData) {
+    const prof = await resolveProfile(req);
+    appData = { company: company || 'this company', role: role || 'this role', profile: prof, tailored: {} };
+  }
 
   const p = { ...PROFILE, ...appData.profile };
-  const t = appData.tailored;
+  const t = appData.tailored || {};
   const qaBlock = (t.qa || []).map((item, i) => `Q${i + 1}: ${item.q}\nA${i + 1}: ${item.a}`).join('\n\n');
 
   const prompt = `You are filling out a job application for ${appData.company} — ${appData.role}.
@@ -2357,6 +2366,17 @@ Return ONLY valid JSON, no markdown:
     console.error('Interview questions error:', e.message);
     res.status(500).json({ error: e.message });
   }
+});
+
+// Context volunteered against a coverage gap, saved to the profile so every
+// later generation benefits rather than just this one resume.
+app.post('/interview/context', async (req, res) => {
+  const userEmail = reqUserEmail(req);
+  if (!userEmail) return res.status(401).json({ error: 'Sign in required' });
+  const { question, answer } = req.body || {};
+  if (!question || !answer?.trim()) return res.status(400).json({ error: 'question and answer required' });
+  const row = await db.addAnsweredEvidence(userEmail, String(question).trim(), answer.trim());
+  res.json({ ok: true, id: row?.id });
 });
 
 app.post('/interview/answer', async (req, res) => {
@@ -4371,9 +4391,18 @@ function renderResumeSection() {
         + '<div style="font-size:11px;color:' + tone + ';font-weight:600;margin-bottom:6px">'
         + esc(String(cov.confidence || '').toUpperCase()) + ' — how well your real experience covers this role</div>'
         + (cov.gaps && cov.gaps.length
-            ? '<div style="font-size:11px;color:#b9b9b9;line-height:1.7"><b style="color:#fff">Not evidenced:</b> ' + esc(cov.gaps.join(' · ')) + '</div>'
+            ? '<div style="font-size:11px;color:#b9b9b9;line-height:1.7"><b style="color:#fff">Not evidenced.</b> If you have done this, say so and it goes into your profile for every future application:</div>'
+              + cov.gaps.map(function(g, i) {
+                  return '<div style="margin-top:8px">'
+                    + '<div style="font-size:11px;color:#ccc;margin-bottom:4px">' + esc(g) + '</div>'
+                    + '<textarea id="gap-' + i + '" placeholder="What you actually did. Specifics beat adjectives." style="width:100%;min-height:52px;background:#0a0a0a;border:1px solid #222;color:#fff;font-size:11px;font-family:inherit;padding:6px;outline:none;resize:vertical"></textarea>'
+                    + '<button onclick="saveGapContext(' + i + ')" style="margin-top:4px;padding:4px 10px;background:#0a0a0a;border:1px solid #2a2a2a;color:#b9b9b9;font-size:10px;cursor:pointer;font-family:inherit">Save to profile</button>'
+                    + '<span class="gap-st" id="gap-st-' + i + '" style="font-size:10px;color:#8f8f8f;margin-left:8px"></span>'
+                    + '</div>';
+                }).join('')
+              + '<button onclick="generateResume(true)" style="margin-top:12px;padding:6px 12px;background:#fff;color:#0a0a0a;border:none;font-size:11px;font-weight:700;cursor:pointer;font-family:inherit">Regenerate with this context — ' + RESUME_COST + ' credits</button>'
             : '<div style="font-size:11px;color:#b9b9b9">Everything this role asks for is backed by real experience.</div>')
-        + (cov.improve ? '<div style="font-size:11px;color:#8f8f8f;margin-top:6px">' + esc(cov.improve) + ' <a href="/setup" style="color:#60a5fa">Answer interview questions →</a></div>' : '')
+        + (cov.improve ? '<div style="font-size:11px;color:#8f8f8f;margin-top:8px">' + esc(cov.improve) + '</div>' : '')
         + '</div>';
     }
     el.innerHTML =
@@ -4395,6 +4424,23 @@ function renderResumeSection() {
       '</div>' +
       '<button class="btn-primary" style="padding:9px 18px;font-size:12px" onclick="generateResume(false)">Generate tailored resume — ' + RESUME_COST + ' credits</button>';
   }
+}
+
+// Saves against the gap text itself, so the answer is reusable evidence rather
+// than a one-off edit to this resume.
+function saveGapContext(i) {
+  var ta = document.getElementById('gap-' + i);
+  var st = document.getElementById('gap-st-' + i);
+  var gaps = (resumeData && resumeData.coverage && resumeData.coverage.gaps) || [];
+  if (!ta || !ta.value.trim()) { if (st) st.textContent = 'Write something first'; return; }
+  st.textContent = 'Saving…';
+  fetch('/interview/context', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + getSession() },
+    body: JSON.stringify({ question: gaps[i] || ('Context ' + i), answer: ta.value }),
+  }).then(function(r) {
+    st.textContent = r.ok ? 'Saved to your profile' : 'Could not save';
+  }).catch(function() { st.textContent = 'Could not save'; });
 }
 
 function generateResume(force) {

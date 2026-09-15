@@ -634,7 +634,16 @@ function bindEvents() {
       try {
         result = await aiFill(currentApp);
       } catch {
-        try { result = deterministicFill(currentApp); } catch { result = { filled: 0, skipped: 0 }; }
+        result = null;
+      }
+      // Vision handles markup the selectors cannot read, but it can come back
+      // empty (no credits, rate limit, an unreadable screenshot). Fall through
+      // to the deterministic pass rather than reporting nothing happened.
+      if (!result || !result.filled) {
+        try {
+          const det = deterministicFill(currentApp);
+          result = result?.filled ? result : det;
+        } catch { result = result || { filled: 0, skipped: 0 }; }
       }
       setBtn('jaa-fill', 'Re-fill');
       fillBtn.disabled = false;
@@ -917,15 +926,23 @@ function captureScreenshot() {
   });
 }
 
+// Vision first. A screenshot plus the field list works on markup we cannot
+// parse, which is most of it — the DOM heuristics below are the fast path, not
+// the reliable one. Runs with or without a kit: contact details come from the
+// profile, so there is no reason to require one.
 async function aiFill(app) {
-  if (!app?.id) throw new Error('no-kit');
   const fields = scanPageFields();
 
   // Capture the form visually so Claude can see what's actually rendered
   let screenshot = null;
   try { screenshot = await captureScreenshot(); } catch {}
 
-  const body = { appId: app.id, fields };
+  const body = { fields };
+  if (app?.id) body.appId = app.id;
+  else {
+    const d = scrapeJobDetails();
+    body.company = d.company; body.role = d.role;
+  }
   if (screenshot) body.screenshot = screenshot;
 
   const res = await serverFetch('/analyze', {

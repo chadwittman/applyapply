@@ -493,6 +493,23 @@ async function addEvidenceQuestions(userEmail, items) {
   return getEvidence(userEmail);
 }
 
+// Context the user volunteers against a named gap, rather than against a
+// question we generated. Same store, so it feeds generation identically.
+async function addAnsweredEvidence(userEmail, question, answer, theme = null) {
+  const existing = await q1(
+    `SELECT id FROM evidence WHERE user_email = $1 AND lower(question) = lower($2)`,
+    [userEmail, question]
+  );
+  if (existing) {
+    return q1(`UPDATE evidence SET answer = $2, updated_at = NOW() WHERE id = $1 RETURNING *`,
+      [existing.id, answer]);
+  }
+  return q1(
+    `INSERT INTO evidence (user_email, question, answer, theme) VALUES ($1,$2,$3,$4) RETURNING *`,
+    [userEmail, question, answer, theme]
+  );
+}
+
 async function setEvidenceAnswer(userEmail, id, answer) {
   return q1(
     `UPDATE evidence SET answer = $3, updated_at = NOW()
@@ -615,7 +632,7 @@ module.exports = {
   recordDecision, getDecisionSummary,
   getProfile, getProfileByUserEmail, setProfile, getProfiledUsers,
   saveKit, getKit, getKits, deleteKit, deleteKitsForUser, countKits,
-  getEvidence, addEvidenceQuestions, setEvidenceAnswer, deleteEvidence,
+  getEvidence, addEvidenceQuestions, addAnsweredEvidence, setEvidenceAnswer, deleteEvidence,
   getSetting, setSetting,
   getSchedule, setSchedule, getDueSchedules, markScheduleRun, getAllEnabledSchedules,
   roleKeyFor, cacheKeyFor, getCachedSources, putCachedSource,
