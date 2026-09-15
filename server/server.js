@@ -21,7 +21,7 @@ process.on('uncaughtException', (err) => {
 
 const app = express();
 const PORT = process.env.PORT || 5000;
-const VERSION = '0.5.0';
+const VERSION = '0.6.0';
 const IS_PRODUCTION = process.env.NODE_ENV === 'production';
 const APP_ORIGIN = process.env.APP_ORIGIN || 'http://localhost:5000';
 const ALLOWED_WEB_ORIGINS = new Set(
@@ -2454,85 +2454,131 @@ app.post('/clear', async (req, res) => {
 const SCHEDULE_TZ = process.env.SCHEDULE_TZ || 'America/Chicago';
 const SCHEDULE_DEFAULT = { hour: 8, minute: 0, enabled: false };
 
-// Kept in Postgres, not on disk — the container filesystem is wiped on every
-// deploy, which used to reset this to disabled and stop the nightly run with
-// no indication anything had changed. Cached so the render paths stay sync.
-let scheduleCache = { ...SCHEDULE_DEFAULT };
-
-function loadSchedule() {
-  return scheduleCache;
-}
-
-async function refreshSchedule() {
-  scheduleCache = await db.getSetting('schedule', SCHEDULE_DEFAULT).catch(() => SCHEDULE_DEFAULT);
-  return scheduleCache;
-}
-
-async function saveSchedule(s) {
-  scheduleCache = s;
-  await db.setSetting('schedule', s);
-  return s;
-}
-
 let cronTask = null;
 
 function startCron() {
   if (cronTask) { cronTask.stop(); cronTask = null; }
-  const s = loadSchedule();
-  if (!s.enabled) return;
-  cronTask = cron.schedule(`${s.minute} ${s.hour} * * *`, () => {
-    console.log('[cron] running scheduled source');
-    const { spawn } = require('child_process');
-    if (!fs.existsSync(path.join(__dirname, '../logs'))) fs.mkdirSync(path.join(__dirname, '../logs'), { recursive: true });
-    const sourceScript = path.join(__dirname, '../source.js');
-
-    // Run for each user with sourcing configured; fall back to anonymous (Chad's local run)
-    db.getProfiledUsers().then(profiledUsers => {
-    const toRun = profiledUsers.length ? profiledUsers : [null];
-    toRun.forEach((email, i) => {
-      const logFile = SOURCE_LOG_FILE + (email ? `.${email.split('@')[0]}` : '');
-      const ls = fs.createWriteStream(logFile, { flags: 'w' });
-      const child = spawn('node', [sourceScript], {
-        cwd: path.join(__dirname, '..'),
-        stdio: ['ignore', 'pipe', 'pipe'],
-        detached: true,
-        env: { ...process.env, ...(email ? { JAA_USER_EMAIL: email } : {}) },
-      });
-      child.stdout.pipe(ls);
-      child.stderr.pipe(ls);
-      const cronKey = email || '__local__';
-      sourcingPids.set(cronKey, child.pid);
-      child.unref();
-      child.on('exit', (code) => {
-        sourcingPids.delete(cronKey);
-        ls.end();
-        console.log(`[cron] source complete for ${email || 'anonymous'}, exit ${code}`);
-        if (email) {
-          const pipelineUrl = 'https://applyapplyapply.replit.app/pipeline';
-          sendEmail(email, 'applyapply — daily sourcing complete',
-            `<div style="font-family:-apple-system,sans-serif;max-width:480px;margin:40px auto;padding:32px;background:#fff;border:1px solid #e5e5e5;border-radius:8px">
-              <h2 style="font-size:16px;font-weight:700;margin-bottom:10px">Daily sourcing finished</h2>
-              <p style="color:#555;font-size:14px;margin-bottom:20px">Your daily job sourcing run completed. Check your pipeline for new leads.</p>
-              <a href="${pipelineUrl}" style="display:inline-block;background:#0a0a0a;color:#fff;text-decoration:none;padding:10px 20px;border-radius:6px;font-size:14px;font-weight:600">View pipeline →</a>
-            </div>`,
-            `Daily sourcing complete. View pipeline: ${pipelineUrl}`
-          ).catch(() => {});
-        }
-      });
-    }); // end toRun.forEach
-    }).catch(e => console.error('[cron] getProfiledUsers:', e.message));
+  // Per-user times can't be expressed as one cron expression, so tick each
+  // minute and dispatch whoever is due.
+  cronTask = cron.schedule('* * * * *', async () => {
+    const [h, m] = new Intl.DateTimeFormat('en-US', {
+      timeZone: SCHEDULE_TZ, hour: '2-digit', minute: '2-digit', hour12: false,
+    }).format(new Date()).split(':').map(Number);
+    let due = [];
+    try { due = await db.getDueSchedules(h, m); }
+    catch (e) { console.error('[cron] getDueSchedules:', e.message); return; }
+    for (const row of due) {
+      try { await runScheduledSourcing(row); }
+      catch (e) { console.error(`[cron] ${row.user_email}:`, e.message); }
+    }
   }, { timezone: SCHEDULE_TZ });
-  console.log(`[cron] scheduled daily at ${String(s.hour).padStart(2,'0')}:${String(s.minute).padStart(2,'0')} ${SCHEDULE_TZ}`);
+  console.log(`[cron] per-user scheduler armed (${SCHEDULE_TZ})`);
 }
 
-app.get('/schedule', (req, res) => res.json(loadSchedule()));
+async function runScheduledSourcing(row) {
+  const email = row.user_email;
+  const names = Array.isArray(row.sources) ? row.sources : null;
+  const selected = names?.length
+    ? SOURCE_CATALOG.filter(s => names.includes(s.name))
+    : SOURCE_CATALOG.filter(s => s.on);
+  if (!selected.length) return;
+  const cost = selected.reduce((n, s) => n + s.credits, 0);
+
+  // Stamp before doing anything expensive: a crash mid-run must not let the
+  // next tick start a second run and charge twice.
+  await db.markScheduleRun(email);
+
+  const user = await getUser(email);
+  if (!user || user.credits < cost) {
+    console.log(`[cron] skipped ${email} — needs ${cost}, has ${user?.credits ?? 0}`);
+    sendEmail(email, 'applyapply — nightly sourcing skipped',
+      `<div style="font-family:-apple-system,sans-serif;max-width:480px;margin:40px auto;padding:32px;background:#fff;border:1px solid #e5e5e5;border-radius:8px">
+        <h2 style="font-size:16px;font-weight:700;margin-bottom:10px">Nightly sourcing didn't run</h2>
+        <p style="color:#555;font-size:14px;margin-bottom:20px">It needed ${cost} credits and your balance is ${user?.credits ?? 0}. Top up and tonight's run will go ahead as normal.</p>
+        <a href="${APP_ORIGIN}/buy" style="display:inline-block;background:#0a0a0a;color:#fff;text-decoration:none;padding:10px 20px;border-radius:6px;font-size:14px;font-weight:600">Add credits →</a>
+      </div>`,
+      `Nightly sourcing needed ${cost} credits, balance ${user?.credits ?? 0}. Top up: ${APP_ORIGIN}/buy`
+    ).catch(() => {});
+    return;
+  }
+
+  await db.deductUserCredits(email, cost);
+  console.log(`[cron] ${email}: ${cost} credits for [${selected.map(s => s.name).join(', ')}]`);
+
+  const { spawn } = require('child_process');
+  const logDir = path.join(__dirname, '../logs');
+  if (!fs.existsSync(logDir)) fs.mkdirSync(logDir, { recursive: true });
+  const logFile = SOURCE_LOG_FILE + `.${email.split('@')[0]}`;
+  const ls = fs.createWriteStream(logFile, { flags: 'w' });
+
+  const child = spawn('node', [path.join(__dirname, '../source.js')], {
+    cwd: path.join(__dirname, '..'),
+    stdio: ['ignore', 'pipe', 'pipe'],
+    detached: true,
+    env: {
+      ...process.env,
+      JAA_USER_EMAIL: email,
+      JAA_ENABLED_SOURCES: JSON.stringify(selected.map(s => s.name)),
+    },
+  });
+  child.stdout.pipe(ls);
+  child.stderr.pipe(ls);
+  sourcingPids.set(email, child.pid);
+  child.unref();
+
+  child.on('exit', async (code) => {
+    sourcingPids.delete(email);
+    ls.end();
+    console.log(`[cron] ${email} finished, exit ${code}`);
+    // A failed run bought nothing — give the credits back.
+    if (code !== 0) {
+      await db.addUserCredits(email, cost).catch(() => {});
+      console.log(`[cron] refunded ${cost} to ${email} after a failed run`);
+      return;
+    }
+    sendEmail(email, 'applyapply — daily sourcing complete',
+      `<div style="font-family:-apple-system,sans-serif;max-width:480px;margin:40px auto;padding:32px;background:#fff;border:1px solid #e5e5e5;border-radius:8px">
+        <h2 style="font-size:16px;font-weight:700;margin-bottom:10px">Daily sourcing finished</h2>
+        <p style="color:#555;font-size:14px;margin-bottom:20px">New matches are waiting in your pipeline.</p>
+        <a href="${APP_ORIGIN}/pipeline" style="display:inline-block;background:#0a0a0a;color:#fff;text-decoration:none;padding:10px 20px;border-radius:6px;font-size:14px;font-weight:600">View pipeline →</a>
+      </div>`,
+      `Daily sourcing complete. View pipeline: ${APP_ORIGIN}/pipeline`
+    ).catch(() => {});
+  });
+}
+
+app.get('/schedule', async (req, res) => {
+  const userEmail = reqUserEmail(req);
+  if (!userEmail) return res.status(401).json({ error: 'Sign in required' });
+  const row = await db.getSchedule(userEmail);
+  res.json({
+    hour: row?.hour ?? SCHEDULE_DEFAULT.hour,
+    minute: row?.minute ?? SCHEDULE_DEFAULT.minute,
+    enabled: row?.enabled ?? false,
+    sources: row?.sources || null,
+    last_run_at: row?.last_run_at || null,
+    timezone: SCHEDULE_TZ,
+    catalog: SOURCE_CATALOG.map(s => ({ name: s.name, credits: s.credits, desc: s.desc })),
+  });
+});
 
 app.post('/schedule', async (req, res) => {
-  const { hour, minute, enabled } = req.body;
-  const s = { hour: hour ?? 8, minute: minute ?? 0, enabled: enabled ?? true };
-  await saveSchedule(s);
-  startCron();
-  res.json({ ok: true, schedule: s });
+  const userEmail = reqUserEmail(req);
+  if (!userEmail) return res.status(401).json({ error: 'Sign in required' });
+  const { hour, minute, enabled, sources } = req.body || {};
+  const h = Math.min(23, Math.max(0, Number(hour ?? SCHEDULE_DEFAULT.hour)));
+  const m = Math.min(59, Math.max(0, Number(minute ?? SCHEDULE_DEFAULT.minute)));
+  const names = Array.isArray(sources) && sources.length
+    ? SOURCE_CATALOG.filter(s => sources.includes(s.name)).map(s => s.name)
+    : null;
+  const row = await db.setSchedule(userEmail, { hour: h, minute: m, enabled: !!enabled, sources: names });
+  const selected = names?.length ? SOURCE_CATALOG.filter(s => names.includes(s.name)) : SOURCE_CATALOG.filter(s => s.on);
+  res.json({
+    ok: true,
+    schedule: { hour: row.hour, minute: row.minute, enabled: row.enabled, sources: row.sources },
+    nightly_cost: selected.reduce((n, s) => n + s.credits, 0),
+    timezone: SCHEDULE_TZ,
+  });
 });
 
 // Source new jobs on demand
@@ -2800,7 +2846,7 @@ app.get('/sourcing', async (req, res) => {
   const nExc = (c.excluded||0)+(c.url_dead||0);
   const runMeta = data ? `${data.date} · ${nAdded} added, ${nFiltered} filtered, ${nExc} excluded` : 'no run yet';
 
-  const sched = loadSchedule();
+  const sched = (await db.getSchedule(reqUserEmail(req)).catch(() => null)) || SCHEDULE_DEFAULT;
   const schedText = sched.enabled
     ? `auto ${String(sched.hour).padStart(2,'0')}:${String(sched.minute).padStart(2,'0')} CT`
     : 'no schedule';
@@ -2933,11 +2979,35 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;backgrou
   <span class="sdot" id="sdot"></span>
   <span class="topbar-title">sourcing</span><span style="font-size:10px;color:#2a2a2a;margin-left:4px">v${VERSION}</span>
   <span class="topbar-meta" id="topbar-meta">${runMeta}</span>
-  <span class="topbar-sched" id="sched-label">${schedText}</span>
+  <span class="topbar-sched" id="sched-label" onclick="toggleSchedPanel()" style="cursor:pointer;text-decoration:underline;text-underline-offset:3px" title="Set up nightly sourcing">${schedText}</span>
   <span id="balance-display" style="font-size:10px;color:#2a2a2a"></span>
   <button class="run-btn" id="run-btn" onclick="toggleSourcePanel()">run sourcing</button>
 </div>
 ${alertBanners.join('\n')}
+<div id="sched-panel" style="display:none;border-bottom:1px solid #181818;padding:16px 24px;background:#060606">
+  <div class="panel-section-label">Nightly sourcing</div>
+  <div style="font-size:11px;color:#777;line-height:1.7;margin-bottom:12px;max-width:560px">
+    Runs on our servers at the time you pick, so your machine doesn't need to be on.
+    New matches are waiting in your pipeline in the morning, and you get an email when it finishes.
+    Each run costs the same credits as running those sources by hand.
+  </div>
+  <div style="display:flex;gap:14px;align-items:center;flex-wrap:wrap;margin-bottom:12px">
+    <label style="font-size:11px;color:#aaa;display:flex;align-items:center;gap:6px">
+      <input type="checkbox" id="sched-enabled" style="accent-color:#3b82f6"> Run nightly
+    </label>
+    <label style="font-size:11px;color:#aaa;display:flex;align-items:center;gap:6px">
+      at <input type="time" id="sched-time" value="06:00" style="background:#111;border:1px solid #1e1e1e;color:#fff;font-size:11px;padding:4px 6px;font-family:inherit">
+      <span id="sched-tz" style="color:#555"></span>
+    </label>
+  </div>
+  <div class="panel-section-label">Sources to run</div>
+  <div class="src-sel-grid" id="sched-sources"></div>
+  <div class="src-footer">
+    <span class="src-total">Each night: <strong id="sched-cost">—</strong> &nbsp;<span id="sched-last" style="color:#555;font-size:10px"></span></span>
+    <button class="run-confirm-btn" onclick="saveSchedule()">Save schedule</button>
+  </div>
+</div>
+
 <div id="source-panel">
   <div class="panel-section-label">Roles</div>
   <div class="role-grid" id="role-grid">${PRESET_ROLES.map(r => {
@@ -3089,7 +3159,7 @@ let userBalance=null;
 
 async function loadBalance(){
   try{
-    const d=await fetch(BASE+'/credits').then(r=>r.json());
+    const d=await fetch(BASE+'/credits',{headers:authHeaders()}).then(r=>r.json());
     userBalance=d.balance??d.credits??null;
     const el=document.getElementById('src-balance');
     if(el&&userBalance!==null)el.textContent=userBalance+' available';
@@ -3122,6 +3192,61 @@ function updateTotal(){
   if(el)el.textContent=total+' credit'+(total===1?'':'s');
   const btn=document.getElementById('run-confirm-btn');
   if(btn)btn.textContent='Run sourcing ('+total+' credits)';
+}
+
+var SCHED = null;
+
+// This page sent no credentials at all, so anything user-scoped (balance,
+// schedule) came back 401. Same session the setup page reads.
+function authHeaders(){
+  try{ var t=localStorage.getItem('aa_session'); return t?{'x-api-key':t}:{}; }catch(e){ return {}; }
+}
+
+function toggleSchedPanel(){
+  var el=document.getElementById('sched-panel');
+  var open=el.style.display!=='none';
+  el.style.display=open?'none':'block';
+  if(!open&&!SCHED)loadSchedule();
+}
+
+function loadSchedule(){
+  fetch('/schedule',{headers:authHeaders()}).then(function(r){return r.ok?r.json():null;}).then(function(d){
+    if(!d)return;
+    SCHED=d;
+    document.getElementById('sched-enabled').checked=!!d.enabled;
+    document.getElementById('sched-time').value=String(d.hour).padStart(2,'0')+':'+String(d.minute).padStart(2,'0');
+    document.getElementById('sched-tz').textContent=(d.timezone||'').split('/').pop().replace('_',' ');
+    if(d.last_run_at)document.getElementById('sched-last').textContent='last run '+new Date(d.last_run_at).toLocaleString();
+    var on=d.sources&&d.sources.length?d.sources:(d.catalog||[]).map(function(c){return c.name;});
+    document.getElementById('sched-sources').innerHTML=(d.catalog||[]).map(function(c){
+      return '<div class="src-sel-row">'
+        +'<input type="checkbox" data-sched-src="'+c.name.replace(/"/g,'&quot;')+'"'+(on.indexOf(c.name)>=0?' checked':'')+' onchange="schedCost()">'
+        +'<span class="src-sel-name">'+c.name+'</span>'
+        +'<span class="src-sel-cost">'+c.credits+' cr</span></div>';
+    }).join('');
+    schedCost();
+  }).catch(function(){});
+}
+
+function schedCost(){
+  if(!SCHED)return;
+  var picked=[].slice.call(document.querySelectorAll('[data-sched-src]:checked')).map(function(i){return i.getAttribute('data-sched-src');});
+  var total=(SCHED.catalog||[]).filter(function(c){return picked.indexOf(c.name)>=0;}).reduce(function(n,c){return n+c.credits;},0);
+  document.getElementById('sched-cost').textContent=total+' credits';
+}
+
+function saveSchedule(){
+  var t=(document.getElementById('sched-time').value||'06:00').split(':');
+  var picked=[].slice.call(document.querySelectorAll('[data-sched-src]:checked')).map(function(i){return i.getAttribute('data-sched-src');});
+  fetch('/schedule',{method:'POST',headers:Object.assign({'content-type':'application/json'},authHeaders()),
+    body:JSON.stringify({hour:Number(t[0]),minute:Number(t[1]),enabled:document.getElementById('sched-enabled').checked,sources:picked})})
+  .then(function(r){return r.json();}).then(function(d){
+    var lbl=document.getElementById('sched-label');
+    if(d&&d.schedule&&d.schedule.enabled){
+      lbl.textContent='auto '+String(d.schedule.hour).padStart(2,'0')+':'+String(d.schedule.minute).padStart(2,'0')+' · '+d.nightly_cost+' cr/night';
+    } else if(lbl){ lbl.textContent='no schedule'; }
+    document.getElementById('sched-panel').style.display='none';
+  }).catch(function(){});
 }
 
 function toggleSourcePanel(){
@@ -4253,11 +4378,7 @@ if (require.main === module) {
         const count = await db.countKits().catch(() => 0);
         console.log(`${count} kits in database`);
         console.log(`AI: ${keys ? `enabled via ${keys.provider} (haiku)` : 'disabled — no API key found'}\n`);
-        await refreshSchedule();
         startCron();
-        if (scheduleCache.enabled) {
-          console.log(`Nightly sourcing armed for ${String(scheduleCache.hour).padStart(2,'0')}:${String(scheduleCache.minute).padStart(2,'0')}`);
-        }
       });
     });
 }

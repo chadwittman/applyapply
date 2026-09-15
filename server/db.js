@@ -129,6 +129,20 @@ async function initSchema() {
     )
   `);
 
+  // Per-user sourcing schedule. Each user picks their own time and sources,
+  // and pays their own credits for the run.
+  await q(`
+    CREATE TABLE IF NOT EXISTS schedules (
+      user_email TEXT PRIMARY KEY,
+      hour INTEGER NOT NULL DEFAULT 6,
+      minute INTEGER NOT NULL DEFAULT 0,
+      enabled BOOLEAN NOT NULL DEFAULT false,
+      sources JSONB,
+      last_run_at TIMESTAMPTZ,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
+
   await q(`
     CREATE TABLE IF NOT EXISTS magic_links (
       token TEXT PRIMARY KEY,
@@ -477,6 +491,37 @@ async function deleteEvidence(userEmail, id) {
   await q(`DELETE FROM evidence WHERE id = $1 AND user_email = $2`, [id, userEmail]);
 }
 
+// ── Schedules ─────────────────────────────────────────────────────────────────
+
+async function getSchedule(userEmail) {
+  return q1(`SELECT * FROM schedules WHERE user_email = $1`, [userEmail]);
+}
+
+async function setSchedule(userEmail, { hour, minute, enabled, sources }) {
+  return q1(`
+    INSERT INTO schedules (user_email, hour, minute, enabled, sources, updated_at)
+    VALUES ($1,$2,$3,$4,$5,NOW())
+    ON CONFLICT (user_email) DO UPDATE SET
+      hour = EXCLUDED.hour, minute = EXCLUDED.minute,
+      enabled = EXCLUDED.enabled, sources = EXCLUDED.sources, updated_at = NOW()
+    RETURNING *
+  `, [userEmail, hour, minute, enabled, sources ? JSON.stringify(sources) : null]);
+}
+
+// Everything due at this wall-clock minute, skipping anything already run
+// within the last 23h so a restart mid-minute can't double-charge.
+async function getDueSchedules(hour, minute) {
+  return q(`
+    SELECT * FROM schedules
+    WHERE enabled = true AND hour = $1 AND minute = $2
+      AND (last_run_at IS NULL OR last_run_at < NOW() - INTERVAL '23 hours')
+  `, [hour, minute]);
+}
+
+async function markScheduleRun(userEmail) {
+  await q(`UPDATE schedules SET last_run_at = NOW() WHERE user_email = $1`, [userEmail]);
+}
+
 // ── Settings ──────────────────────────────────────────────────────────────────
 
 async function getSetting(key, fallback = null) {
@@ -522,6 +567,7 @@ module.exports = {
   saveKit, getKit, getKits, deleteKit, deleteKitsForUser, countKits,
   getEvidence, addEvidenceQuestions, setEvidenceAnswer, deleteEvidence,
   getSetting, setSetting,
+  getSchedule, setSchedule, getDueSchedules, markScheduleRun,
   getUser, getOrCreateUser, addUserCredits, deductUserCredits, applyStripePayment,
   createMagicLink, getMagicLink, useMagicLink,
 };
