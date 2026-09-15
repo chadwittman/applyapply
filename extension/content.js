@@ -1254,7 +1254,13 @@ async function generateApp(btn) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(details),
     });
-    if (!res.ok) throw new Error(JSON.stringify(res.data));
+    if (!res.ok) {
+      // Say what to do, not what the server returned — a raw JSON blob in the
+      // sidebar tells the user nothing actionable.
+      if (res.status === 401) throw new Error('Not signed in. Open the applyapply icon in your toolbar and sign in, then try again.');
+      if (res.status === 402) throw new Error('Out of credits. Top up, then try again.');
+      throw new Error(res.data?.error || `Request failed (${res.status || 'network'})`);
+    }
     currentApp = res.data;
 
     // Rebuild sidebar with the generated application
