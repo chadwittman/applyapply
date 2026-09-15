@@ -267,8 +267,13 @@ function buildHBSources() {
   return [
     {
       name: 'a16z job board',
-      url: 'https://jobs.a16z.com/jobs?remoteOnly=true&postedSince=P2D',
-      waitMs: 2000,
+      // Unfiltered on purpose. remoteOnly/postedSince baked the requesting
+      // user's preferences into the URL, so no two users could share a fetch
+      // and a 2-day window silently dropped anything older. Pull the whole
+      // board once, cache it, and let each run filter locally for free.
+      url: 'https://jobs.a16z.com/jobs',
+      paginate: true,
+      waitMs: 2500,
       apiMode: {
         endpoint: '/api-boards/search-jobs',
         body: { meta: { size: 200 }, board: { id: 'andreessen-horowitz', isParent: true }, query: { remoteOnly: true, postedSince: 'P2D', promoteFeatured: true } },
@@ -276,8 +281,9 @@ function buildHBSources() {
     },
     {
       name: 'Sequoia job board',
-      url: 'https://jobs.sequoiacap.com/jobs?remote=true',
-      waitMs: 2000,
+      url: 'https://jobs.sequoiacap.com/jobs',
+      paginate: true,
+      waitMs: 2500,
       apiMode: {
         endpoint: '/api-boards/search-jobs',
         body: { meta: { size: 200 }, board: { id: 'sequoia-capital', isParent: true }, query: { remoteOnly: true, promoteFeatured: true } },
@@ -395,6 +401,32 @@ async function runBrowserSources(claudeKey, hbKey) {
               return (d.jobs || []).map(j => ({ role: j.title || '', company: j.companyName || '', url: j.applyUrl || '', location: j.remote ? 'Remote' : (j.location?.name || '') }));
             } catch { return null; }
           }, source.apiMode);
+
+          if ((!apiData || !apiData.length) && source.paginate) {
+            // "Show more jobs" is the only way deeper into these boards —
+            // scrolling does nothing. ~40 clicks reaches the end of the a16z
+            // board in about a minute.
+            const t0 = Date.now();
+            let last = 0;
+            for (let i = 0; i < 60; i++) {
+              if (Date.now() - t0 > 150000) break;
+              const clicked = await page.evaluate(() => {
+                const btn = [...document.querySelectorAll('button,a')]
+                  .find(e => /show more|load more/i.test((e.innerText || '').trim()));
+                if (!btn) return false;
+                btn.click();
+                return true;
+              });
+              if (!clicked) break;
+              await page.waitForTimeout(1400);
+              const n = await page.evaluate(() =>
+                new Set([...document.querySelectorAll('a[href*="/jobs/"]')].map(a => a.href)).size);
+              if (n === last && i > 1) break;
+              last = n;
+              if (i % 10 === 0) process.stdout.write(`\r   Paging ${source.name}: ${n} jobs...`);
+            }
+            log('');
+          }
 
           if (!apiData || !apiData.length) {
             apiData = await page.evaluate(() => {
