@@ -21,7 +21,7 @@ process.on('uncaughtException', (err) => {
 
 const app = express();
 const PORT = process.env.PORT || 5000;
-const VERSION = '0.14.0';
+const VERSION = '0.15.0';
 const IS_PRODUCTION = process.env.NODE_ENV === 'production';
 const APP_ORIGIN = process.env.APP_ORIGIN || 'http://localhost:5000';
 const ALLOWED_WEB_ORIGINS = new Set(
@@ -2698,6 +2698,7 @@ async function runScheduledSourcing(row) {
   // all and there is nothing to diagnose from.
   child.stdout.on('data', d => process.stdout.write(`[source:${email}] ${d}`));
   child.stderr.on('data', d => process.stderr.write(`[source:${email}] ${d}`));
+  child.on('error', err => console.error(`[source:${email}] spawn failed:`, err.message));
   sourcingPids.set(email, child.pid);
   child.unref();
 
@@ -2763,6 +2764,7 @@ const sourcingPids = new Map();
 function getSourcingPid() { return sourcingPids.size > 0 ? [...sourcingPids.values()][0] : null; }
 
 app.get('/source/status', async (req, res) => {
+  res.setHeader('Cache-Control', 'no-store');
   const userEmail = reqUserEmail(req);
   const key = userEmail || '__local__';
   const active = sourcingPids.has(key);
@@ -2833,6 +2835,13 @@ app.post('/source/run', apiLimiter, async (req, res) => {
   // Mirror to the container log so a failure survives the ephemeral disk.
   child.stdout.on('data', d => process.stdout.write(`[source] ${d}`));
   child.stderr.on('data', d => process.stderr.write(`[source] ${d}`));
+  // A spawn that never starts emits nothing on either stream, so without this
+  // the failure is completely silent.
+  child.on('error', err => {
+    console.error('[source] spawn failed:', err.message);
+    try { logStream.write(`\nspawn failed: ${err.message}\n`); } catch {}
+  });
+  console.log(`[source] spawned pid ${child.pid} for ${pidKey} — ${selectedSources.map(s => s.name).join(', ')}`);
   sourcingPids.set(pidKey, child.pid);
   child.unref();
   const runEmail = userEmail;
@@ -2858,8 +2867,14 @@ app.post('/source/run', apiLimiter, async (req, res) => {
 });
 
 app.get('/source/log', (req, res) => {
+  res.setHeader('Cache-Control', 'no-store');
+  const userEmail = reqUserEmail(req);
+  if (!userEmail) return res.status(401).type('text/plain').send('Sign in required');
   try {
-    const text = fs.existsSync(SOURCE_LOG_FILE) ? fs.readFileSync(SOURCE_LOG_FILE, 'utf-8') : '(no log yet)';
+    // Per-user file first: the shared one is this user's only in local mode.
+    const mine = SOURCE_LOG_FILE + `.${userEmail.split('@')[0]}`;
+    const file = fs.existsSync(mine) ? mine : SOURCE_LOG_FILE;
+    const text = fs.existsSync(file) ? fs.readFileSync(file, 'utf-8') : '(no log yet)';
     res.type('text/plain').send(text);
   } catch { res.status(500).send('error reading log'); }
 });
@@ -3624,12 +3639,12 @@ async function confirmRun(){
       btn.disabled=false;btn.textContent='run sourcing';
       alert(d.error+(d.balance!=null?' (balance: '+d.balance+', needed: '+d.required+')':''));
     } else {
-      startLive();
+      startLive(true);
     }
   }catch{btn.disabled=false;btn.textContent='run sourcing';}
 }
 
-function startLive(){
+function startLive(userInitiated){
   // Hand the screen over to the run: the config panel staying open on top was
   // why a started run read as nothing happening.
   var sp=document.getElementById('source-panel');if(sp)sp.style.display='none';
@@ -3674,7 +3689,7 @@ function startLive(){
   // Poll status to detect completion
   statusPoller=setInterval(async()=>{
     try{
-      const st=await fetch(BASE+'/source/status').then(r=>r.json());
+      const st=await fetch(BASE+'/source/status',{cache:'no-store'}).then(r=>r.json());
       if(st.active)return;
       clearInterval(statusPoller);
       clearInterval(window.__jaaTick);
@@ -3685,8 +3700,11 @@ function startLive(){
 
       // A run that ends in seconds having printed nothing has failed, not
       // finished. Reloading on both made a crash look identical to success.
+      // Reconnecting to an existing run is not the same as starting one: a
+      // quiet reconnect must never be reported as a failed launch, which is
+      // exactly what a stale cached status used to produce.
       var quick=Date.now()-startedAt<15000;
-      if(!sawOutput&&quick){
+      if(userInitiated&&!sawOutput&&quick){
         document.getElementById('topbar-meta').textContent='run failed';
         showRunFailure();
         return;
@@ -3754,8 +3772,8 @@ function liveNote(text,cls){
 }
 
 // On page load — auto-connect if a run is already in progress
-fetch(BASE+'/source/status').then(r=>r.json()).then(st=>{
-  if(st.active) startLive();
+fetch(BASE+'/source/status',{cache:'no-store'}).then(r=>r.json()).then(st=>{
+  if(st.active) startLive(false);
 }).catch(()=>{});
 
 checkTargetRoles();
