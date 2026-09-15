@@ -1480,6 +1480,12 @@ async function generateApp(btn) {
     const sidebar = shadow?.getElementById('jaa-sidebar');
     if (sidebar) { isOpen = true; sidebar.classList.add('open'); setBodyPush(true); }
 
+    // The kit now ships with a tailored resume when one could be built.
+    if (currentApp?.tailored_resume) {
+      const out = shadow?.getElementById('jaa-resume-out');
+      if (out) { renderResume(currentApp.tailored_resume, out); setBtn('jaa-gen-resume', 'Regenerate'); }
+    }
+
     // Auto-generate cover letter
     autoGenerateCoverLetter();
   } catch (e) {
@@ -1550,6 +1556,31 @@ function renderResume(resume, out) {
   const body = document.createElement('div');
   body.className = 'sec-body';
   body.style.display = 'none';
+
+  // Say plainly whether this is worth sending as-is.
+  const cov = resume.coverage;
+  if (cov) {
+    const box = document.createElement('div');
+    const tone = cov.confidence === 'strong' ? '#15803d' : cov.confidence === 'thin' ? '#b45309' : '#1d4ed8';
+    box.style.cssText = 'border:1px solid #e8e8e8;background:#fafafa;padding:8px 10px;margin-bottom:10px;font-size:10px;line-height:1.6';
+    const head = document.createElement('div');
+    head.style.cssText = `color:${tone};font-weight:700;letter-spacing:.04em;margin-bottom:4px`;
+    head.textContent = String(cov.confidence || '').toUpperCase() + ' match on your real experience';
+    box.appendChild(head);
+    if (cov.gaps?.length) {
+      const g = document.createElement('div');
+      g.style.color = '#555';
+      g.textContent = 'Not evidenced: ' + cov.gaps.join(' · ');
+      box.appendChild(g);
+    }
+    if (cov.improve) {
+      const imp = document.createElement('div');
+      imp.style.cssText = 'color:#777;margin-top:4px';
+      imp.textContent = cov.improve;
+      box.appendChild(imp);
+    }
+    body.appendChild(box);
+  }
 
   const prose = document.createElement('div');
   prose.className = 'prose';

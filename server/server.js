@@ -21,7 +21,7 @@ process.on('uncaughtException', (err) => {
 
 const app = express();
 const PORT = process.env.PORT || 5000;
-const VERSION = '0.9.1';
+const VERSION = '0.10.0';
 const IS_PRODUCTION = process.env.NODE_ENV === 'production';
 const APP_ORIGIN = process.env.APP_ORIGIN || 'http://localhost:5000';
 const ALLOWED_WEB_ORIGINS = new Set(
@@ -2114,6 +2114,27 @@ Concrete over abstract: "built a pipeline that drove 4.5x revenue per title as C
     });
     await db.setKitGenerated(url);
 
+    // Tailor the resume in the same pass. It needs the kit's why_role, so it
+    // cannot run earlier, and doing it here saves the user a second wait.
+    // Charged separately and skipped rather than failing if the balance is
+    // short — a missing resume must not cost them the kit they just paid for.
+    if (profile.resume_text && userEmail) {
+      try {
+        const bal = await getUser(userEmail);
+        if ((bal?.credits ?? 0) >= CREDIT_COSTS.resume) {
+          generated.tailored_resume = await buildTailoredResume(profile, generated, userEmail);
+          await db.deductUserCredits(userEmail, CREDIT_COSTS.resume);
+          await db.saveKit(generated);
+          console.log(`Tailored resume included for ${generated.company} (+${CREDIT_COSTS.resume} credits)`);
+        } else {
+          generated.resume_skipped = `Needed ${CREDIT_COSTS.resume} more credits to tailor your resume.`;
+        }
+      } catch (e) {
+        console.error('Auto resume tailor failed:', e.message);
+        generated.resume_skipped = 'Tailored resume could not be generated — you can retry it from the kit.';
+      }
+    }
+
     console.log(`Generated: ${generated.company} — ${generated.role}`);
     res.json(generated);
   } catch (e) {
@@ -2179,29 +2200,16 @@ Banned patterns:
 
 // Generate a job-specific tailored resume from the candidate's real uploaded
 // resume text — reorders and reweights existing bullets, never invents facts.
-app.post('/resume-tailor', requireCredits('resume'), async (req, res) => {
-  const { appId, kitId } = req.body;
-  const id = appId || kitId;
-  if (!id) return res.status(400).json({ error: 'appId required' });
-  if (!keys) return res.status(503).json({ error: 'No API key' });
-
-  const resumeKit = await loadKit(id, reqUserEmail(req));
-  if (!resumeKit) return res.status(404).json({ error: 'Application not found' });
-  if (resumeKit === 'forbidden') return res.status(403).json({ error: 'Forbidden' });
-  const appData = resumeKit;
-
-  const profile = await resolveProfile(req);
-  if (!profile.resume_text) {
-    return res.status(422).json({ error: 'No resume on file — upload a PDF at /setup first, then try again.' });
-  }
-
+// Shared by the on-demand endpoint and by kit generation, so both produce the
+// same resume rather than drifting into two versions of the prompt.
+async function buildTailoredResume(profile, appData, userEmail) {
   const t = appData.tailored || {};
   const resumeName = `${appData.profile?.first_name || profile.first_name || ''} ${appData.profile?.last_name || profile.last_name || ''}`.trim();
 
   const prompt = `Rewrite this candidate's resume experience for ${appData.role} at ${appData.company}.
 
 ORIGINAL RESUME — the primary source of real facts (companies, titles, dates, numbers). Do not invent, merge, or drop any role. Do not invent a number, metric, or outcome that appears in neither the resume nor the additional evidence below:
-${profile.resume_text.slice(0, 6000)}${await evidenceBlock(reqUserEmail(req))}
+${profile.resume_text.slice(0, 6000)}${await evidenceBlock(userEmail)}
 
 WHY THIS ROLE / WHAT TO EMPHASIZE (from an earlier pass on this same application):
 ${t.why_role || t.headline || 'No additional context — use judgment based on the role title.'}
@@ -2213,21 +2221,51 @@ Rules:
 - Cut bullets irrelevant to this role if the original has many; keep the strongest 3-5 per role.
 - Do not add a role, company, or credential that appears in neither the resume nor the evidence.
 
+Then judge your own output honestly. The candidate needs to know whether to send this or to strengthen it first, so do not flatter it.
+
 Return ONLY valid JSON, no markdown:
 {
   "summary": "<2-3 sentence resume summary tailored to this specific role, first person voice matching a resume header, not a cover letter>",
   "experience": [
     {"company": "<exact>", "title": "<exact>", "dates": "<exact>", "bullets": ["<bullet>", "..."]}
   ],
-  "skills": ["<skill pulled from the original resume, ordered by relevance to this role>"]
+  "skills": ["<skill pulled from the original resume, ordered by relevance to this role>"],
+  "coverage": {
+    "confidence": "<strong | moderate | thin — how well this candidate's real evidence covers what the role asks for>",
+    "evidenced": ["<a requirement of this role you could back with specific real experience>"],
+    "gaps": ["<a requirement of this role you could NOT evidence from the resume or the additional evidence>"],
+    "improve": "<one sentence naming the single thing the candidate could tell us that would most strengthen this resume>"
+  }
 }`;
 
+  const raw = await callClaude(prompt, 2800, 'claude-sonnet-4-6');
+  const match = raw.match(/\{[\s\S]*\}/);
+  if (!match) throw new Error('No JSON in response');
+  const tailored = cleanEmDashes(JSON.parse(match[0]));
+  return { name: resumeName, company: appData.company, role: appData.role, ...tailored };
+}
+
+app.post('/resume-tailor', requireCredits('resume'), async (req, res) => {
+  const { appId, kitId } = req.body;
+  const id = appId || kitId;
+  if (!id) return res.status(400).json({ error: 'appId required' });
+  if (!keys) return res.status(503).json({ error: 'No API key' });
+
+  const userEmail = reqUserEmail(req);
+  const resumeKit = await loadKit(id, userEmail);
+  if (!resumeKit) return res.status(404).json({ error: 'Application not found' });
+  if (resumeKit === 'forbidden') return res.status(403).json({ error: 'Forbidden' });
+
+  const profile = await resolveProfile(req);
+  if (!profile.resume_text) {
+    return res.status(422).json({ error: 'No resume on file — upload a PDF at /setup first, then try again.' });
+  }
+
   try {
-    const raw = await callClaude(prompt, 2500, 'claude-sonnet-4-6');
-    const match = raw.match(/\{[\s\S]*\}/);
-    if (!match) throw new Error('No JSON in response');
-    const tailoredResume = cleanEmDashes(JSON.parse(match[0]));
-    res.json({ name: resumeName, company: appData.company, role: appData.role, ...tailoredResume });
+    const out = await buildTailoredResume(profile, resumeKit, userEmail);
+    resumeKit.tailored_resume = out;
+    await db.saveKit(resumeKit).catch(() => {});
+    res.json(out);
   } catch (e) {
     console.error('Resume tailor error:', e.message);
     res.status(500).json({ error: e.message });
@@ -4263,8 +4301,13 @@ function renderKit(kit) {
     gen.appendChild(makeGenBlock('qa' + i, item.q, item.a));
   });
 
-  resumeData = null;
+  resumeData = kit.tailored_resume || null;
   renderResumeSection();
+  if (kit.resume_skipped) {
+    var rs = document.getElementById('resumeSection');
+    if (rs) rs.insertAdjacentHTML('afterbegin',
+      '<div style="font-size:11px;color:#f59e0b;margin-bottom:10px">' + esc(kit.resume_skipped) + '</div>');
+  }
 
   document.getElementById('kit').style.display = 'block';
   document.getElementById('kitActions').style.display = 'flex';
@@ -4320,8 +4363,22 @@ function renderResumeSection() {
         (e.bullets || []).map(function(b) { return '<li>' + esc(b) + '</li>'; }).join('') +
         '</ul></div>';
     }).join('');
+    var cov = resumeData.coverage || null;
+    var covHtml = '';
+    if (cov) {
+      var tone = cov.confidence === 'strong' ? '#4ade80' : cov.confidence === 'thin' ? '#f59e0b' : '#60a5fa';
+      covHtml = '<div style="border:1px solid #1a1a1a;padding:10px 12px;margin-bottom:14px;background:#050505">'
+        + '<div style="font-size:11px;color:' + tone + ';font-weight:600;margin-bottom:6px">'
+        + esc(String(cov.confidence || '').toUpperCase()) + ' — how well your real experience covers this role</div>'
+        + (cov.gaps && cov.gaps.length
+            ? '<div style="font-size:11px;color:#b9b9b9;line-height:1.7"><b style="color:#fff">Not evidenced:</b> ' + esc(cov.gaps.join(' · ')) + '</div>'
+            : '<div style="font-size:11px;color:#b9b9b9">Everything this role asks for is backed by real experience.</div>')
+        + (cov.improve ? '<div style="font-size:11px;color:#8f8f8f;margin-top:6px">' + esc(cov.improve) + ' <a href="/setup" style="color:#60a5fa">Answer interview questions →</a></div>' : '')
+        + '</div>';
+    }
     el.innerHTML =
       '<div class="gen-block">' +
+        covHtml +
         '<div style="font-size:12px;color:#ccc;line-height:1.6;margin-bottom:16px">' + esc(resumeData.summary || '') + '</div>' +
         exp +
         (resumeData.skills && resumeData.skills.length ? '<div style="font-size:11px;color:#888;margin-top:4px"><b style="color:#fff">Skills:</b> ' + esc(resumeData.skills.join(', ')) + '</div>' : '') +
