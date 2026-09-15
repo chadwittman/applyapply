@@ -31,8 +31,12 @@ function serverFetch(path, options = {}) {
   const headers = { ...(options.headers || {}) };
   if (API_KEY) headers['x-api-key'] = API_KEY;
   const opts = { ...options, headers };
-  // Try routing through background service worker first (needed for CORS on some pages)
-  // Fall back to direct fetch if chrome.runtime is unavailable (e.g. after extension reload)
+  // Requests must go through the background worker: a fetch issued here carries
+  // the job site's origin, which the server's CORS allowlist rejects. Messaging
+  // dies when an extension reload orphans a content script in an already-open
+  // tab, and the only fix is reloading the page — so say that, rather than
+  // falling back to a direct fetch that cannot succeed ("Failed to fetch").
+  const STALE = 'Extension was updated. Reload this page to reconnect.';
   if (chrome?.runtime?.sendMessage) {
     return new Promise((resolve, reject) => {
       try {
@@ -43,13 +47,13 @@ function serverFetch(path, options = {}) {
               body: opts.body || null,
           }},
           res => {
-            if (chrome.runtime.lastError) return directFetch(path, opts).then(resolve).catch(reject);
-            if (!res) return reject(new Error('No response from background'));
+            if (chrome.runtime.lastError) return reject(new Error(STALE));
+            if (!res) return reject(new Error(STALE));
             resolve(res);
           }
         );
       } catch {
-        directFetch(path, opts).then(resolve).catch(reject);
+        reject(new Error(STALE));
       }
     });
   }
