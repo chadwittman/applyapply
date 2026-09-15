@@ -147,6 +147,10 @@ function detectATS() {
 
   const h = location.hostname;
   if (h === 'jobs.ashbyhq.com') return 'ashby';
+  // Hosted ATS platforms that render their own application form. Detection
+  // used to be a short hardcoded list, so a new one (gem.com) meant the
+  // sidebar silently never appeared.
+  if (/(^|\.)(gem\.com|workable\.com|smartrecruiters\.com|myworkdayjobs\.com|jobvite\.com|icims\.com|breezy\.hr|recruitee\.com|teamtailor\.com|careerpuck\.com|comeet\.com|rippling\.com|paylocity\.com|dover\.com|pinpointhq\.com|jazzhr\.com|bamboohr\.com)$/i.test(h)) return 'generic';
   if (['job-boards.greenhouse.io', 'jobs.greenhouse.io', 'boards.greenhouse.io'].includes(h)) return 'greenhouse';
   if (h === 'jobs.lever.co') return 'lever';
   if (h === 'instacart.careers') return 'greenhouse';
@@ -210,7 +214,10 @@ function finishBar(bar) {
 const IN_FRAME = window.self !== window.top;
 
 async function init() {
-  if (!detectATS()) return;
+  // Clicking the toolbar icon is an explicit request for the sidebar on this
+  // page — honour it even where detection comes up empty, rather than doing
+  // nothing and looking broken.
+  if (!detectATS() && !window.__JAA_FORCE) return;
 
   // In an iframe: skip sidebar, just fill fields + report form questions to parent
   if (IN_FRAME) {

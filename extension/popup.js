@@ -76,9 +76,24 @@ chrome.storage.sync.get(['mode', 'apiKey', 'profile', 'userEmail'], ({ mode, api
 // Force-inject sidebar on popup open
 chrome.tabs.query({ active: true, currentWindow: true }, ([tab]) => {
   if (!tab?.id) return;
-  chrome.tabs.sendMessage(tab.id, { type: 'FORCE_INIT' }, () => {
-    if (chrome.runtime.lastError) {
-      chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ['content.js'] }).catch(() => {});
+  chrome.tabs.sendMessage(tab.id, { type: 'FORCE_INIT' }, async () => {
+    if (!chrome.runtime.lastError) return;
+    // Nothing listening: the page was never auto-detected. Inject on demand,
+    // flagging it as an explicit request so content.js renders regardless of
+    // whether it recognises the ATS. jspdf has to come along or the PDF
+    // button is dead on any page reached this way.
+    try {
+      await chrome.scripting.executeScript({
+        target: { tabId: tab.id, allFrames: true },
+        func: () => { window.__JAA_FORCE = true; },
+      });
+      await chrome.scripting.executeScript({
+        target: { tabId: tab.id, allFrames: true },
+        files: ['vendor/jspdf.umd.min.js', 'content.js'],
+      });
+    } catch (e) {
+      const s = document.getElementById('save-status');
+      if (s) s.textContent = 'Cannot run on this page';
     }
   });
 });

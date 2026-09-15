@@ -287,6 +287,11 @@ function isEmbeddedJobPage(url) {
     // Already handled by content_scripts manifest — skip known ATS domains
     if (/jobs\.ashbyhq\.com|greenhouse\.io|jobs\.lever\.co|instacart\.careers|jobs\.a16z\.com|stripe\.com/.test(host)) return false;
 
+    // Hosted ATS platforms. jobs.gem.com carries "jobs" in the hostname, not
+    // the path, so the careers-path patterns below never matched it and the
+    // sidebar never appeared.
+    if (/(^|\.)(gem\.com|workable\.com|smartrecruiters\.com|myworkdayjobs\.com|jobvite\.com|icims\.com|breezy\.hr|recruitee\.com|teamtailor\.com|careerpuck\.com|comeet\.com|rippling\.com|paylocity\.com|dover\.com|pinpointhq\.com|jazzhr\.com|bamboohr\.com)$/i.test(host)) return true;
+
     // ATS embed query params
     if (params.has('gh_jid') || params.has('ashby_jid') || params.has('lever_job_id')) return true;
 
