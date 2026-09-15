@@ -118,6 +118,17 @@ async function initSchema() {
   `);
   await q(`CREATE INDEX IF NOT EXISTS idx_evidence_user ON evidence (user_email)`);
 
+  // Small key/value store for settings that must outlive a deploy. The sourcing
+  // schedule lived in logs/schedule.json on the ephemeral disk, so every deploy
+  // reset it to disabled and silently stopped the nightly run.
+  await q(`
+    CREATE TABLE IF NOT EXISTS app_settings (
+      key TEXT PRIMARY KEY,
+      value JSONB NOT NULL,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
+
   await q(`
     CREATE TABLE IF NOT EXISTS magic_links (
       token TEXT PRIMARY KEY,
@@ -466,6 +477,21 @@ async function deleteEvidence(userEmail, id) {
   await q(`DELETE FROM evidence WHERE id = $1 AND user_email = $2`, [id, userEmail]);
 }
 
+// ── Settings ──────────────────────────────────────────────────────────────────
+
+async function getSetting(key, fallback = null) {
+  const row = await q1(`SELECT value FROM app_settings WHERE key = $1`, [key]);
+  return row ? row.value : fallback;
+}
+
+async function setSetting(key, value) {
+  await q(`
+    INSERT INTO app_settings (key, value) VALUES ($1,$2)
+    ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()
+  `, [key, JSON.stringify(value)]);
+  return value;
+}
+
 // ── Magic links ───────────────────────────────────────────────────────────────
 
 async function createMagicLink(email, token, expiresAt) {
@@ -495,6 +521,7 @@ module.exports = {
   getProfile, getProfileByUserEmail, setProfile, getProfiledUsers,
   saveKit, getKit, getKits, deleteKit, deleteKitsForUser, countKits,
   getEvidence, addEvidenceQuestions, setEvidenceAnswer, deleteEvidence,
+  getSetting, setSetting,
   getUser, getOrCreateUser, addUserCredits, deductUserCredits, applyStripePayment,
   createMagicLink, getMagicLink, useMagicLink,
 };

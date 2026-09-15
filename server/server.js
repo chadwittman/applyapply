@@ -21,7 +21,7 @@ process.on('uncaughtException', (err) => {
 
 const app = express();
 const PORT = process.env.PORT || 5000;
-const VERSION = '0.4.3';
+const VERSION = '0.5.0';
 const IS_PRODUCTION = process.env.NODE_ENV === 'production';
 const APP_ORIGIN = process.env.APP_ORIGIN || 'http://localhost:5000';
 const ALLOWED_WEB_ORIGINS = new Set(
@@ -2449,16 +2449,26 @@ app.post('/clear', async (req, res) => {
 
 // ── Schedule ──────────────────────────────────────────────────────────────────
 
-const SCHEDULE_FILE = path.join(__dirname, '../logs/schedule.json');
+const SCHEDULE_DEFAULT = { hour: 8, minute: 0, enabled: false };
+
+// Kept in Postgres, not on disk — the container filesystem is wiped on every
+// deploy, which used to reset this to disabled and stop the nightly run with
+// no indication anything had changed. Cached so the render paths stay sync.
+let scheduleCache = { ...SCHEDULE_DEFAULT };
 
 function loadSchedule() {
-  try { return JSON.parse(fs.readFileSync(SCHEDULE_FILE, 'utf-8')); }
-  catch { return { hour: 8, minute: 0, enabled: false }; }
+  return scheduleCache;
 }
 
-function saveScheduleFile(s) {
-  if (!fs.existsSync(path.join(__dirname, '../logs'))) fs.mkdirSync(path.join(__dirname, '../logs'), { recursive: true });
-  fs.writeFileSync(SCHEDULE_FILE, JSON.stringify(s, null, 2));
+async function refreshSchedule() {
+  scheduleCache = await db.getSetting('schedule', SCHEDULE_DEFAULT).catch(() => SCHEDULE_DEFAULT);
+  return scheduleCache;
+}
+
+async function saveSchedule(s) {
+  scheduleCache = s;
+  await db.setSetting('schedule', s);
+  return s;
 }
 
 let cronTask = null;
@@ -2514,10 +2524,10 @@ function startCron() {
 
 app.get('/schedule', (req, res) => res.json(loadSchedule()));
 
-app.post('/schedule', (req, res) => {
+app.post('/schedule', async (req, res) => {
   const { hour, minute, enabled } = req.body;
   const s = { hour: hour ?? 8, minute: minute ?? 0, enabled: enabled ?? true };
-  saveScheduleFile(s);
+  await saveSchedule(s);
   startCron();
   res.json({ ok: true, schedule: s });
 });
@@ -4240,7 +4250,11 @@ if (require.main === module) {
         const count = await db.countKits().catch(() => 0);
         console.log(`${count} kits in database`);
         console.log(`AI: ${keys ? `enabled via ${keys.provider} (haiku)` : 'disabled — no API key found'}\n`);
+        await refreshSchedule();
         startCron();
+        if (scheduleCache.enabled) {
+          console.log(`Nightly sourcing armed for ${String(scheduleCache.hour).padStart(2,'0')}:${String(scheduleCache.minute).padStart(2,'0')}`);
+        }
       });
     });
 }
