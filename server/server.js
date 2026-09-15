@@ -21,7 +21,7 @@ process.on('uncaughtException', (err) => {
 
 const app = express();
 const PORT = process.env.PORT || 5000;
-const VERSION = '0.11.1';
+const VERSION = '0.12.0';
 const IS_PRODUCTION = process.env.NODE_ENV === 'production';
 const APP_ORIGIN = process.env.APP_ORIGIN || 'http://localhost:5000';
 const ALLOWED_WEB_ORIGINS = new Set(
@@ -2624,6 +2624,11 @@ async function runScheduledSourcing(row) {
   });
   child.stdout.pipe(ls);
   child.stderr.pipe(ls);
+  // Also to the container log. The file lives on the ephemeral disk and is
+  // gone after any deploy, so without this a failed run leaves no record at
+  // all and there is nothing to diagnose from.
+  child.stdout.on('data', d => process.stdout.write(`[source:${email}] ${d}`));
+  child.stderr.on('data', d => process.stderr.write(`[source:${email}] ${d}`));
   sourcingPids.set(email, child.pid);
   child.unref();
 
@@ -2756,6 +2761,9 @@ app.post('/source/run', apiLimiter, async (req, res) => {
   child.stdout.pipe(mainLogStream);
   child.stderr.pipe(logStream);
   child.stderr.pipe(mainLogStream);
+  // Mirror to the container log so a failure survives the ephemeral disk.
+  child.stdout.on('data', d => process.stdout.write(`[source] ${d}`));
+  child.stderr.on('data', d => process.stderr.write(`[source] ${d}`));
   sourcingPids.set(pidKey, child.pid);
   child.unref();
   const runEmail = userEmail;
@@ -3083,6 +3091,13 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;backgrou
 .live-line.check{color:#a8a8a8;font-style:italic}
 .live-line.excl{color:#c05353}
 .live-line.info{color:#9a9a9a}
+#run-failed{display:none;border:1px solid #5a1d1d;background:#0d0505;padding:16px 18px;margin:0 24px 14px}
+.rf-title{font-size:14px;font-weight:700;color:#f87171;margin-bottom:6px}
+.rf-sub{font-size:12px;color:#c9c9c9;line-height:1.7;margin-bottom:12px;max-width:620px}
+.rf-log{background:#080808;border:1px solid #1e1e1e;padding:10px 12px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;line-height:1.6;color:#b9b9b9;white-space:pre-wrap;max-height:220px;overflow:auto;margin-bottom:12px}
+.rf-actions{display:flex;gap:8px;align-items:center}
+.rf-btn{padding:7px 14px;background:#fff;color:#0a0a0a;border:none;font-size:12px;font-weight:700;cursor:pointer;font-family:inherit}
+.rf-btn.secondary{background:transparent;color:#c9c9c9;border:1px solid #2a2a2a}
 </style>
 </head>
 <body>
@@ -3158,6 +3173,22 @@ ${alertBanners.join('\n')}
     <button class="run-confirm-btn" id="run-confirm-btn" onclick="confirmRun()">Run sourcing</button>
   </div>
 </div>
+${!savedRoles.length ? `<div style="border:1px solid #3a2a00;background:#0d0800;padding:12px 18px;margin:0 24px 14px">
+  <div style="font-size:12px;color:#f59e0b;font-weight:700;margin-bottom:4px">No target roles set</div>
+  <div style="font-size:11px;color:#c9c9c9;line-height:1.7">Sourcing searches for the job titles on your profile, so without them it falls back to a generic list and the results will be poor. <a href="/setup" style="color:#60a5fa">Set your target roles →</a></div>
+</div>` : ''}
+
+<div id="run-failed">
+  <div class="rf-title">Sourcing run failed</div>
+  <div class="rf-sub" id="rf-sub"></div>
+  <div class="rf-log" id="rf-log"></div>
+  <div class="rf-actions">
+    <button class="rf-btn" onclick="toggleSourcePanel()">Try again</button>
+    <button class="rf-btn secondary" onclick="document.getElementById('run-failed').style.display='none'">Dismiss</button>
+    <span style="font-size:11px;color:#8f8f8f">Credits for a failed run are refunded automatically.</span>
+  </div>
+</div>
+
 <div id="live-panel">
   <div class="live-phases" id="live-phases">
     <div class="live-phase" id="ph1">1 · scraping</div>
@@ -3508,6 +3539,7 @@ function startLive(){
   document.getElementById('run-btn').textContent='running…';
   setPhase(1);
 
+  var panel=document.getElementById('run-failed');if(panel)panel.style.display='none';
   var sawOutput=false;
   var startedAt=Date.now();
   liveNote('Run started. Connecting to the browser session…','info');
@@ -3534,13 +3566,7 @@ function startLive(){
       var quick=Date.now()-startedAt<15000;
       if(!sawOutput&&quick){
         document.getElementById('topbar-meta').textContent='run failed';
-        liveNote('The run ended immediately without producing output. Fetching the log…','excl');
-        try{
-          const log=await fetch(BASE+'/source/log',{headers:authHeaders()}).then(r=>r.text());
-          var tail=(log||'').trim().split('\\n').slice(-12).join('\\n');
-          liveNote(tail||'No log output was captured.','excl');
-        }catch{ liveNote('Could not read the run log.','excl'); }
-        liveNote('Your credits for this run are refunded automatically when it exits non-zero.','info');
+        showRunFailure();
         return;
       }
       document.getElementById('topbar-meta').textContent='run complete';
@@ -3548,6 +3574,30 @@ function startLive(){
       setTimeout(()=>location.reload(),2500);
     }catch{}
   },3000);
+}
+
+async function showRunFailure(){
+  var panel=document.getElementById('run-failed');
+  var sub=document.getElementById('rf-sub');
+  var logEl=document.getElementById('rf-log');
+  document.getElementById('live-panel').style.display='none';
+  panel.style.display='block';
+  sub.textContent='The run exited within seconds without producing any output, so nothing was searched.';
+  logEl.textContent='Loading the run log…';
+  panel.scrollIntoView({behavior:'smooth',block:'start'});
+  var text='';
+  try{ text=await fetch(BASE+'/source/log',{headers:authHeaders()}).then(function(r){return r.text();}); }catch(e){}
+  text=(text||'').trim();
+  logEl.textContent=text?text.split(String.fromCharCode(10)).slice(-16).join(String.fromCharCode(10))
+                        :'No log output was captured. The run process died before it could write anything.';
+  // Name the cause where the log makes it obvious — far more useful than the raw tail.
+  var hints=[];
+  if(/HYPERBROWSER|hbKey|hyperbrowser/i.test(text)) hints.push('Hyperbrowser rejected the session or the key is wrong.');
+  if(/Cannot find module|ERR_MODULE_NOT_FOUND|playwright/i.test(text)) hints.push('A dependency is missing on the server.');
+  if(/ANTHROPIC|api key/i.test(text)) hints.push('The Claude API key was rejected.');
+  if(/ECONNREFUSED|ETIMEDOUT|network/i.test(text)) hints.push('A network call failed.');
+  if(!text) hints.push('Nothing was logged at all, which usually means the process failed to start.');
+  if(hints.length) sub.textContent+=' ' + hints.join(' ');
 }
 
 // One-off message into the live feed, so the panel is never silent.
