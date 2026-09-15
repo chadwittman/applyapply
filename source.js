@@ -379,15 +379,45 @@ async function runBrowserSources(claudeKey, hbKey) {
         if (source.apiMode) {
           await page.goto(source.url, { waitUntil: 'networkidle', timeout: 30000 });
           await page.waitForTimeout(source.waitMs);
-          const apiData = await page.evaluate(async ({ endpoint, body }) => {
-            const r = await fetch(endpoint, {
-              method: 'POST',
-              headers: { 'content-type': 'application/json', 'accept': 'application/json', 'x-csrf-token': document.querySelector('meta[name=csrf-token]')?.content || '' },
-              body: JSON.stringify(body),
-            });
-            const d = await r.json();
-            return (d.jobs || []).map(j => ({ role: j.title || '', company: j.companyName || '', url: j.applyUrl || '', location: j.remote ? 'Remote' : (j.location?.name || '') }));
+          // These boards moved to server rendering: the old JSON endpoint now
+          // answers 404 with an HTML page, so the API call is tried and the
+          // rendered DOM is read when it fails. Verified against a16z, where
+          // the API returns 404 and the DOM yields 25 jobs.
+          let apiData = await page.evaluate(async ({ endpoint, body }) => {
+            try {
+              const r = await fetch(endpoint, {
+                method: 'POST',
+                headers: { 'content-type': 'application/json', 'accept': 'application/json', 'x-csrf-token': document.querySelector('meta[name=csrf-token]')?.content || '' },
+                body: JSON.stringify(body),
+              });
+              if (!r.ok || !/json/.test(r.headers.get('content-type') || '')) return null;
+              const d = await r.json();
+              return (d.jobs || []).map(j => ({ role: j.title || '', company: j.companyName || '', url: j.applyUrl || '', location: j.remote ? 'Remote' : (j.location?.name || '') }));
+            } catch { return null; }
           }, source.apiMode);
+
+          if (!apiData || !apiData.length) {
+            apiData = await page.evaluate(() => {
+              const seen = new Set();
+              const out = [];
+              for (const a of document.querySelectorAll('a[href*="/jobs/"]')) {
+                let path;
+                try { path = new URL(a.href).pathname; } catch { continue; }
+                const m = path.match(/^\/jobs\/([^/]+)\/([^/]+)/);
+                if (!m || seen.has(a.href)) continue;
+                const role = (a.innerText || '').trim().replace(/\s+/g, ' ');
+                if (!role || role.length < 3) continue;
+                seen.add(a.href);
+                const company = m[1].replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+                const block = a.closest('li,article,div');
+                const blockText = (block?.innerText || '').replace(/\s+/g, ' ');
+                out.push({ role, company, url: a.href, location: /remote/i.test(blockText) ? 'Remote' : '' });
+              }
+              return out;
+            });
+            if (apiData.length) item('·', `${source.name} — API gone, read ${apiData.length} from the page`);
+          }
+          apiData = apiData || [];
           const allApiJobs = apiData.filter(j => j.url?.startsWith('http')).map(j => ({ ...j, fit_score: j.fit_score || 7 }));
           const found = allApiJobs.filter(j => ROLE_RE.test(j.role));
           log(` ${apiData.length} total, ${found.length} matches`);
