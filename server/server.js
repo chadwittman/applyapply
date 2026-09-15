@@ -21,7 +21,7 @@ process.on('uncaughtException', (err) => {
 
 const app = express();
 const PORT = process.env.PORT || 5000;
-const VERSION = '0.9.0';
+const VERSION = '0.9.1';
 const IS_PRODUCTION = process.env.NODE_ENV === 'production';
 const APP_ORIGIN = process.env.APP_ORIGIN || 'http://localhost:5000';
 const ALLOWED_WEB_ORIGINS = new Set(
@@ -3479,7 +3479,7 @@ function startLive(){
         liveNote('The run ended immediately without producing output. Fetching the log…','excl');
         try{
           const log=await fetch(BASE+'/source/log',{headers:authHeaders()}).then(r=>r.text());
-          var tail=(log||'').trim().split('\n').slice(-12).join('\n');
+          var tail=(log||'').trim().split('\\n').slice(-12).join('\\n');
           liveNote(tail||'No log output was captured.','excl');
         }catch{ liveNote('Could not read the run log.','excl'); }
         liveNote('Your credits for this run are refunded automatically when it exits non-zero.','info');
