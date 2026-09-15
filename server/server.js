@@ -21,7 +21,7 @@ process.on('uncaughtException', (err) => {
 
 const app = express();
 const PORT = process.env.PORT || 5000;
-const VERSION = '0.3.2';
+const VERSION = '0.3.3';
 const IS_PRODUCTION = process.env.NODE_ENV === 'production';
 const APP_ORIGIN = process.env.APP_ORIGIN || 'http://localhost:5000';
 const ALLOWED_WEB_ORIGINS = new Set(
@@ -3570,7 +3570,7 @@ a{text-decoration:none;color:inherit}
     </div>
 
     <div class="section">
-      <div class="section-hd"><span class="section-label">Resume for this role</span></div>
+      <div class="section-hd"><span class="section-label">Tailored resume</span></div>
       <div id="resumeSection"></div>
     </div>
   </div>
@@ -3580,7 +3580,7 @@ a{text-decoration:none;color:inherit}
 <div class="retry-drawer" id="retryDrawer">
   <textarea id="retryNote" rows="2" placeholder="What's wrong with it? Be specific. &quot;Make the cover note less formal&quot;, &quot;lean into the Filmhub angle more&quot;, etc."></textarea>
   <div class="retry-row">
-    <span class="retry-hint">Costs 10 credits — rewrites the whole kit.</span>
+    <span class="retry-hint">Costs ${CREDIT_COSTS.generate} credits — rewrites the whole kit.</span>
     <button class="btn btn-ghost" onclick="closeRetry()">Never mind</button>
     <button class="btn btn-primary" onclick="doRetry()">Cook it again →</button>
   </div>
@@ -3598,6 +3598,7 @@ a{text-decoration:none;color:inherit}
 var JOB_URL = ${JSON.stringify(jobUrl)};
 var kitData = null;
 var resumeData = null;
+var RESUME_COST = ${CREDIT_COSTS.resume};
 var activeRecorder = null;
 
 function getSession() { try { return localStorage.getItem('aa_session') || ''; } catch { return ''; } }
@@ -3822,7 +3823,12 @@ function renderResumeSection() {
         '</div>' +
       '</div>';
   } else {
-    el.innerHTML = '<button class="btn-primary" style="padding:9px 18px;font-size:12px" onclick="generateResume(false)">Generate tailored resume — 8 credits</button>';
+    el.innerHTML =
+      '<div style="font-size:12px;color:#888;line-height:1.6;margin-bottom:12px">' +
+        'Your own resume works fine for most applications. This rewrites it for this specific role, ' +
+        'reordering and rewording your real bullets to match what the posting asks for. It never invents experience.' +
+      '</div>' +
+      '<button class="btn-primary" style="padding:9px 18px;font-size:12px" onclick="generateResume(false)">Generate tailored resume — ' + RESUME_COST + ' credits</button>';
   }
 }
 

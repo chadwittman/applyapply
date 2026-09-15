@@ -24,8 +24,34 @@ chrome.storage.sync.get(['mode', 'serverUrl', 'apiKey', 'profile'], (s) => {
         }
       }
     }).catch(() => {});
+    serverFetch('/credits').then(res => {
+      if (res.ok && res.data?.costs) { COSTS = res.data.costs; applyCostLabels(); }
+    }).catch(() => {});
   }
 });
+
+// Credit prices live on the server; duplicating them here would drift.
+let COSTS = null;
+const COST_BUTTONS = {
+  'jaa-fill':       { base: 'Fill form',       key: 'analyze' },
+  'jaa-gen-cl':     { base: 'Cover letter',    key: 'cover_letter' },
+  'jaa-gen-resume': { base: 'Tailored resume', key: 'resume' },
+};
+
+function withCost(id, base) {
+  const b = COST_BUTTONS[id];
+  const c = b && COSTS ? COSTS[b.key] : null;
+  return c ? `${base || b.base} · ${c} cr` : (base || b?.base || '');
+}
+
+function applyCostLabels() {
+  if (!COSTS || !shadow) return;
+  for (const id of Object.keys(COST_BUTTONS)) {
+    const el = shadow.getElementById(id);
+    // Leave a button alone mid-action ("Generating…") or after it flips to Regenerate.
+    if (el && el.textContent === COST_BUTTONS[id].base) el.textContent = withCost(id);
+  }
+}
 
 function serverFetch(path, options = {}) {
   const headers = { ...(options.headers || {}) };
@@ -379,7 +405,7 @@ function buildHTML(serverDown) {
     <div class="act-row">
       <button class="fill-btn" id="jaa-fill">Fill form</button>
       <button class="cl-btn" id="jaa-gen-cl">Cover letter</button>
-      <button class="cl-btn" id="jaa-gen-resume">Resume</button>
+      <button class="cl-btn" id="jaa-gen-resume">Tailored resume</button>
       <button class="cl-btn" id="jaa-regen" title="Regenerate application from scratch">↺</button>
     </div>
     <div class="fill-note" id="jaa-note"></div>
@@ -797,9 +823,9 @@ function bindEvents() {
         });
         if (!res.ok) throw new Error(res.data?.error || 'failed');
         renderResume(res.data, resumeOut);
-        genResumeBtn.textContent = 'Regenerate';
+        genResumeBtn.textContent = withCost('jaa-gen-resume', 'Regenerate');
       } catch (e) {
-        genResumeBtn.textContent = 'Resume';
+        genResumeBtn.textContent = withCost('jaa-gen-resume');
         resumeOut.innerHTML = '';
         const err = document.createElement('div');
         err.style.cssText = 'font-size:10px;color:#b91c1c;padding:6px 0';
@@ -833,6 +859,8 @@ function bindEvents() {
       }
     });
   }
+
+  applyCostLabels();
 }
 
 // ── AI fill ─────────────────────────────────────────────────────────────────
@@ -1356,7 +1384,7 @@ function renderResume(resume, out) {
 
   const label = document.createElement('span');
   label.className = 'sec-label';
-  label.textContent = 'Resume for this role';
+  label.textContent = 'Tailored resume';
 
   const chev = document.createElement('span');
   chev.className = 'chev';
