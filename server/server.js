@@ -21,7 +21,7 @@ process.on('uncaughtException', (err) => {
 
 const app = express();
 const PORT = process.env.PORT || 5000;
-const VERSION = '0.6.0';
+const VERSION = '0.7.0';
 const IS_PRODUCTION = process.env.NODE_ENV === 'production';
 const APP_ORIGIN = process.env.APP_ORIGIN || 'http://localhost:5000';
 const ALLOWED_WEB_ORIGINS = new Set(
@@ -2455,6 +2455,9 @@ const SCHEDULE_TZ = process.env.SCHEDULE_TZ || 'America/Chicago';
 const SCHEDULE_DEFAULT = { hour: 8, minute: 0, enabled: false };
 
 let cronTask = null;
+let prefetchTask = null;
+const PREFETCH_HOUR = Number(process.env.PREFETCH_HOUR ?? 2);
+const PREFETCH_MINUTE = Number(process.env.PREFETCH_MINUTE ?? 0);
 
 function startCron() {
   if (cronTask) { cronTask.stop(); cronTask = null; }
@@ -2473,6 +2476,46 @@ function startCron() {
     }
   }, { timezone: SCHEDULE_TZ });
   console.log(`[cron] per-user scheduler armed (${SCHEDULE_TZ})`);
+
+  // Warm the shared cache before anyone's run. One session at 02:00 covers
+  // every distinct role set, so the individual runs afterwards need no browser
+  // and cost us nothing to serve.
+  if (prefetchTask) prefetchTask.stop();
+  prefetchTask = cron.schedule(`${PREFETCH_MINUTE} ${PREFETCH_HOUR} * * *`, runNightlyPrefetch,
+    { timezone: SCHEDULE_TZ });
+  console.log(`[cron] nightly prefetch armed for ${String(PREFETCH_HOUR).padStart(2,'0')}:${String(PREFETCH_MINUTE).padStart(2,'0')} ${SCHEDULE_TZ}`);
+}
+
+// Distinct role sets across everyone scheduled — the Google sources key on
+// role titles, so one pass per distinct set covers all of them.
+async function runNightlyPrefetch() {
+  let rows = [];
+  try { rows = await db.getAllEnabledSchedules(); }
+  catch (e) { return console.error('[prefetch] schedules:', e.message); }
+  if (!rows.length) return console.log('[prefetch] nobody scheduled, skipping');
+
+  const byRoles = new Map();
+  for (const row of rows) {
+    const profile = await getProfileByUserEmail(row.user_email).catch(() => null);
+    const roles = profile?.target_roles || '';
+    const key = db.roleKeyFor(roles);
+    if (!byRoles.has(key)) byRoles.set(key, roles);
+  }
+
+  console.log(`[prefetch] warming ${byRoles.size} distinct role set(s) for ${rows.length} scheduled user(s)`);
+  const { spawn } = require('child_process');
+  for (const roles of byRoles.values()) {
+    await new Promise(resolve => {
+      const child = spawn('node', [path.join(__dirname, '../source.js')], {
+        cwd: path.join(__dirname, '..'),
+        stdio: ['ignore', 'pipe', 'pipe'],
+        env: { ...process.env, JAA_PREFETCH_ONLY: '1', ...(roles ? { JAA_TARGET_ROLES: roles } : {}) },
+      });
+      child.stdout.on('data', d => process.stdout.write(`[prefetch] ${d}`));
+      child.stderr.on('data', d => process.stderr.write(`[prefetch] ${d}`));
+      child.on('exit', code => { console.log(`[prefetch] role set done, exit ${code}`); resolve(); });
+    });
+  }
 }
 
 async function runScheduledSourcing(row) {

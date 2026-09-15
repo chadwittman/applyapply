@@ -4,7 +4,12 @@
 
 const fs = require('fs');
 const path = require('path');
-const { insertRun, upsertJob, getSeenUrls, getProfileByUserEmail } = require('./server/db');
+const { insertRun, upsertJob, getSeenUrls, getProfileByUserEmail, cacheKeyFor, roleKeyFor, getCachedSources, putCachedSource } = require('./server/db');
+
+// Board results are identical for everyone; Google results vary only by role
+// titles. Sharing them means one fetch serves every user who wants that
+// combination, and a run whose sources are all cached needs no browser at all.
+const SOURCE_CACHE_HOURS = Number(process.env.SOURCE_CACHE_HOURS || 20);
 
 const BASE = __dirname;
 const SOURCED_FILE = path.join(BASE, 'sourced-jobs.json');
@@ -320,11 +325,38 @@ async function runBrowserSources(claudeKey, hbKey) {
       log(`   Running ${HB_SOURCES.length} of ${buildHBSources().length} sources`);
     } catch {}
   }
+  const results = [];
+
+  // Only allScanned is cacheable — `jobs` is filtered by this user's role
+  // regex, so it gets recomputed locally from the shared raw results.
+  const keyOf = src => cacheKeyFor(src.name, ROLE_TITLES, !!src.apiMode);
+  let misses = HB_SOURCES;
+  try {
+    const cached = await getCachedSources(HB_SOURCES.map(keyOf), SOURCE_CACHE_HOURS);
+    misses = [];
+    for (const source of HB_SOURCES) {
+      const hit = cached[keyOf(source)];
+      if (!hit) { misses.push(source); continue; }
+      const all = hit.allScanned || [];
+      const found = all.filter(j => ROLE_RE.test(j.role));
+      item('·', `${source.name} — shared cache, ${all.length} scanned, ${found.length} match`);
+      results.push({ source: source.name, searched: hit.searched, rawCount: hit.rawCount, jobs: found, allScanned: all, fromCache: true });
+    }
+  } catch (e) {
+    log(`   cache unavailable (${e.message}) — fetching everything`);
+    misses = HB_SOURCES;
+  }
+
+  if (!misses.length) {
+    log('   Every source already cached — skipping the browser session entirely');
+    return results;
+  }
+  HB_SOURCES = misses;
+
   const sess = await createHBSession(hbKey);
   log(`   HB session: ${sess.id}`);
   const { chromium } = await import('/Users/chaztyler/node_modules/playwright/index.mjs');
   let browser;
-  const results = [];
 
   try {
     browser = await chromium.connectOverCDP(sess.wsEndpoint);
@@ -503,6 +535,21 @@ Rules:
     await closeHBSession(hbKey, sess.id);
   }
 
+  // Share whatever was actually fetched so the next user this window doesn't
+  // pay for a browser session to get the same thing.
+  for (const r of results) {
+    if (r.fromCache || !r.allScanned?.length) continue;
+    const src = HB_SOURCES.find(x => x.name === r.source);
+    try {
+      await putCachedSource(
+        cacheKeyFor(r.source, ROLE_TITLES, !!src?.apiMode),
+        r.source,
+        src?.apiMode ? '*' : roleKeyFor(ROLE_TITLES),
+        { searched: r.searched, rawCount: r.rawCount, allScanned: r.allScanned }
+      );
+    } catch (e) { log(`   cache write failed for ${r.source}: ${e.message}`); }
+  }
+
   return results;
 }
 
@@ -550,6 +597,12 @@ async function main() {
   if (!hbKey) { log('   No HYPERBROWSER_API_KEY — skipping browser sources'); }
   else try {
     hbResultsRaw = await runBrowserSources(key, hbKey);
+    // Prefetch mode only warms the shared cache — no user, no jobs, no run row.
+    if (process.env.JAA_PREFETCH_ONLY === '1') {
+      const total = hbResultsRaw.reduce((n, r) => n + (r.allScanned?.length || 0), 0);
+      log(`\nPrefetch complete — ${hbResultsRaw.length} sources, ${total} listings cached`);
+      return;
+    }
     for (const { source: srcName, searched, rawCount, jobs, allScanned } of hbResultsRaw) {
         const dupes = jobs.filter(j => seenUrls.has(j.url));
         const lowFit = jobs.filter(j => !seenUrls.has(j.url) && (j.fit_score || 5) < 6);

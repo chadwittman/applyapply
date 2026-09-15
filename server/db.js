@@ -143,6 +143,20 @@ async function initSchema() {
     )
   `);
 
+  // Shared source results. Board scrapes return the same jobs for everyone, and
+  // the Google sources vary only by role titles — so the key is source + role
+  // set. One fetch serves every user who wants that combination.
+  await q(`
+    CREATE TABLE IF NOT EXISTS source_cache (
+      cache_key TEXT PRIMARY KEY,
+      source TEXT NOT NULL,
+      role_key TEXT NOT NULL DEFAULT '',
+      payload JSONB NOT NULL,
+      fetched_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
+  await q(`CREATE INDEX IF NOT EXISTS idx_source_cache_fetched ON source_cache (fetched_at)`);
+
   await q(`
     CREATE TABLE IF NOT EXISTS magic_links (
       token TEXT PRIMARY KEY,
@@ -491,6 +505,38 @@ async function deleteEvidence(userEmail, id) {
   await q(`DELETE FROM evidence WHERE id = $1 AND user_email = $2`, [id, userEmail]);
 }
 
+// ── Source cache ──────────────────────────────────────────────────────────────
+
+// Role titles decide the Google query, so they are part of the identity of a
+// cached result. Normalized so "Head of Product, VP Product" and
+// "vp product,  head of product" share one entry.
+function roleKeyFor(roleTitles) {
+  return String(roleTitles || '')
+    .split(',').map(r => r.trim().toLowerCase()).filter(Boolean).sort().join('|');
+}
+
+function cacheKeyFor(source, roleTitles, sharedAcrossRoles = false) {
+  return sharedAcrossRoles ? `${source}::*` : `${source}::${roleKeyFor(roleTitles)}`;
+}
+
+async function getCachedSources(keys, maxAgeHours = 20) {
+  if (!keys.length) return {};
+  const rows = await q(
+    `SELECT cache_key, payload FROM source_cache
+     WHERE cache_key = ANY($1) AND fetched_at > NOW() - ($2 || ' hours')::interval`,
+    [keys, String(maxAgeHours)]
+  );
+  return Object.fromEntries(rows.map(r => [r.cache_key, r.payload]));
+}
+
+async function putCachedSource(cacheKey, source, roleKey, payload) {
+  await q(`
+    INSERT INTO source_cache (cache_key, source, role_key, payload, fetched_at)
+    VALUES ($1,$2,$3,$4,NOW())
+    ON CONFLICT (cache_key) DO UPDATE SET payload = EXCLUDED.payload, fetched_at = NOW()
+  `, [cacheKey, source, roleKey, JSON.stringify(payload)]);
+}
+
 // ── Schedules ─────────────────────────────────────────────────────────────────
 
 async function getSchedule(userEmail) {
@@ -516,6 +562,10 @@ async function getDueSchedules(hour, minute) {
     WHERE enabled = true AND hour = $1 AND minute = $2
       AND (last_run_at IS NULL OR last_run_at < NOW() - INTERVAL '23 hours')
   `, [hour, minute]);
+}
+
+async function getAllEnabledSchedules() {
+  return q(`SELECT * FROM schedules WHERE enabled = true`);
 }
 
 async function markScheduleRun(userEmail) {
@@ -567,7 +617,8 @@ module.exports = {
   saveKit, getKit, getKits, deleteKit, deleteKitsForUser, countKits,
   getEvidence, addEvidenceQuestions, setEvidenceAnswer, deleteEvidence,
   getSetting, setSetting,
-  getSchedule, setSchedule, getDueSchedules, markScheduleRun,
+  getSchedule, setSchedule, getDueSchedules, markScheduleRun, getAllEnabledSchedules,
+  roleKeyFor, cacheKeyFor, getCachedSources, putCachedSource,
   getUser, getOrCreateUser, addUserCredits, deductUserCredits, applyStripePayment,
   createMagicLink, getMagicLink, useMagicLink,
 };
