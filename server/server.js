@@ -21,7 +21,7 @@ process.on('uncaughtException', (err) => {
 
 const app = express();
 const PORT = process.env.PORT || 5000;
-const VERSION = '0.15.0';
+const VERSION = '0.16.0';
 const IS_PRODUCTION = process.env.NODE_ENV === 'production';
 const APP_ORIGIN = process.env.APP_ORIGIN || 'http://localhost:5000';
 const ALLOWED_WEB_ORIGINS = new Set(
@@ -2800,8 +2800,12 @@ app.post('/source/run', apiLimiter, async (req, res) => {
 
   const totalCredits = selectedSources.reduce((n, s) => n + s.credits, 0);
 
-  // Manual credit check (replaces requireCredits since cost is dynamic)
+  // Manual credit check (replaces requireCredits since cost is dynamic).
+  // authFromRequest returns null when there is no session, and dereferencing
+  // that threw before anything spawned — so in production, where requests are
+  // never "local", a run could never start at all.
   const auth = authFromRequest(req);
+  if (!auth) return res.status(401).json({ error: 'Sign in required' });
   if (auth.type === 'jwt') {
     const user = await db.getUser(auth.email);
     if (!user) return res.status(401).json({ error: 'user not found' });
@@ -3629,7 +3633,7 @@ async function confirmRun(){
   try{
     const d=await fetch(BASE+'/source/run',{
       method:'POST',
-      headers:{'content-type':'application/json'},
+      headers:Object.assign({'content-type':'application/json'},authHeaders()),
       body:JSON.stringify({sources:selected,roles}),
     }).then(r=>r.json());
     if(d.status==='already_running'){
@@ -3689,7 +3693,7 @@ function startLive(userInitiated){
   // Poll status to detect completion
   statusPoller=setInterval(async()=>{
     try{
-      const st=await fetch(BASE+'/source/status',{cache:'no-store'}).then(r=>r.json());
+      const st=await fetch(BASE+'/source/status',{cache:'no-store',headers:authHeaders()}).then(r=>r.json());
       if(st.active)return;
       clearInterval(statusPoller);
       clearInterval(window.__jaaTick);
@@ -3772,14 +3776,14 @@ function liveNote(text,cls){
 }
 
 // On page load — auto-connect if a run is already in progress
-fetch(BASE+'/source/status',{cache:'no-store'}).then(r=>r.json()).then(st=>{
+fetch(BASE+'/source/status',{cache:'no-store',headers:authHeaders()}).then(r=>r.json()).then(st=>{
   if(st.active) startLive(false);
 }).catch(()=>{});
 
 checkTargetRoles();
 
 function trackOpen(url){
-  fetch(BASE+'/track/open',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({url})}).catch(()=>{});
+  fetch(BASE+'/track/open',{method:'POST',headers:Object.assign({'Content-Type':'application/json'},authHeaders()),body:JSON.stringify({url})}).catch(()=>{});
 }
 
 async function submitMissed(){
@@ -3789,7 +3793,7 @@ async function submitMissed(){
   if(!url){status.textContent='paste a URL first';return;}
   status.textContent='adding…';
   try{
-    const d=await fetch(BASE+'/audit/missed',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({url})}).then(r=>r.json());
+    const d=await fetch(BASE+'/audit/missed',{method:'POST',headers:Object.assign({'Content-Type':'application/json'},authHeaders()),body:JSON.stringify({url})}).then(r=>r.json());
     if(d.status==='already_exists'){status.textContent='already in the pipeline';}
     else{status.textContent='added'+(d.company?' ('+d.company+')':'');input.value='';}
   }catch{status.textContent='error — check server';}
