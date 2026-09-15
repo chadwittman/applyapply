@@ -21,7 +21,7 @@ process.on('uncaughtException', (err) => {
 
 const app = express();
 const PORT = process.env.PORT || 5000;
-const VERSION = '0.7.1';
+const VERSION = '0.8.0';
 const IS_PRODUCTION = process.env.NODE_ENV === 'production';
 const APP_ORIGIN = process.env.APP_ORIGIN || 'http://localhost:5000';
 const ALLOWED_WEB_ORIGINS = new Set(
@@ -2980,6 +2980,16 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;backgrou
 .role-chip input[type=checkbox]{accent-color:#3b82f6;width:11px;height:11px;flex-shrink:0;cursor:pointer;margin:0}
 .role-chip.checked{border-color:#2a3a2a;background:#080d08;color:#aaa}
 .role-chip-custom{margin-top:6px;display:flex;align-items:center;gap:6px}
+.bulk-row{display:flex;align-items:center;gap:6px;margin-bottom:6px}
+.bulk-btn{padding:2px 8px;background:#0d0d0d;border:1px solid #2a2a2a;color:#b9b9b9;font-size:10px;cursor:pointer;font-family:inherit;letter-spacing:.04em}
+.bulk-btn:hover{color:#fff;border-color:#666}
+.bulk-hint{font-size:10px;color:#8f8f8f;margin-left:4px}
+.runs-tbl{width:100%;border-collapse:collapse;font-size:11px}
+.runs-tbl th{text-align:left;color:#8f8f8f;font-weight:600;padding:4px 10px 6px 0;border-bottom:1px solid #1a1a1a;letter-spacing:.04em;text-transform:uppercase;font-size:9px}
+.runs-tbl td{padding:5px 10px 5px 0;color:#ccc;border-bottom:1px solid #0f0f0f}
+.only-btn{display:none;margin-left:6px;font-size:9px;color:#8f8f8f;border:1px solid #2a2a2a;padding:0 4px;letter-spacing:.04em}
+.role-chip:hover .only-btn{display:inline}
+.only-btn:hover{color:#fff;border-color:#666}
 .role-chip-custom input[type=text]{flex:1;background:#111;border:1px solid #1e1e1e;color:#ccc;font-size:11px;padding:4px 8px;outline:none;font-family:inherit}
 .role-chip-custom input[type=text]::placeholder{color:#9a9a9a}
 .src-sel-grid{display:flex;flex-direction:column;gap:6px;margin-bottom:12px}
@@ -3024,9 +3034,15 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;backgrou
   <span class="topbar-meta" id="topbar-meta">${runMeta}</span>
   <span class="topbar-sched" id="sched-label" onclick="toggleSchedPanel()" style="cursor:pointer;text-decoration:underline;text-underline-offset:3px" title="Set up nightly sourcing">${schedText}</span>
   <span id="balance-display" style="font-size:10px;color:#8f8f8f"></span>
+  <button class="run-btn" id="runs-btn" onclick="toggleRunsPanel()" style="background:none;border:1px solid #2a2a2a;color:#b9b9b9">history</button>
   <button class="run-btn" id="run-btn" onclick="toggleSourcePanel()">run sourcing</button>
 </div>
 ${alertBanners.join('\n')}
+<div id="runs-panel" style="display:none;border-bottom:1px solid #181818;padding:16px 24px;background:#060606">
+  <div class="panel-section-label">Previous runs</div>
+  <div id="runs-body"></div>
+</div>
+
 <div id="sched-panel" style="display:none;border-bottom:1px solid #181818;padding:16px 24px;background:#060606">
   <div class="panel-section-label">Nightly sourcing</div>
   <div style="font-size:11px;color:#c4c4c4;line-height:1.7;margin-bottom:12px;max-width:560px">
@@ -3053,16 +3069,29 @@ ${alertBanners.join('\n')}
 
 <div id="source-panel">
   <div class="panel-section-label">Roles</div>
+  <div class="bulk-row">
+    <button type="button" class="bulk-btn" onclick="setAllRoles(true)">all</button>
+    <button type="button" class="bulk-btn" onclick="setAllRoles(false)">none</button>
+    <span class="bulk-hint" id="role-count"></span>
+  </div>
   <div class="role-grid" id="role-grid">${PRESET_ROLES.map(r => {
     const chk = !savedRoles.length || savedRoles.includes(r.toLowerCase());
-    return '<label class="role-chip' + (chk?' checked':'') + '" onclick="this.classList.toggle(\'checked\')">'
-      + '<input type="checkbox"' + (chk?' checked':'') + ' value="' + r + '">'
-      + r + '</label>';
+    const esc = r.replace(/'/g, "&apos;");
+    return '<label class="role-chip' + (chk?' checked':'') + '" onclick="toggleChip(event,this)">'
+      + '<input type="checkbox"' + (chk?' checked':'') + ' value="' + esc + '">'
+      + r
+      + '<span class="only-btn" onclick="onlyRole(event,this)">only</span>'
+      + '</label>';
   }).join('')}</div>
   <div class="role-chip-custom">
     <input type="text" id="role-custom" placeholder="custom title…">
   </div>
   <div class="panel-section-label" style="margin-top:16px">Sources</div>
+  <div class="bulk-row">
+    <button type="button" class="bulk-btn" onclick="setAllSources(true)">all</button>
+    <button type="button" class="bulk-btn" onclick="setAllSources(false)">none</button>
+    <span class="bulk-hint" id="src-count"></span>
+  </div>
   <div class="src-sel-grid" id="src-sel-grid">
     <!-- populated by JS -->
   </div>
@@ -3292,10 +3321,73 @@ function saveSchedule(){
   }).catch(function(){});
 }
 
+function toggleChip(e,el){
+  if(e.target&&e.target.classList.contains('only-btn'))return;
+  var cb=el.querySelector('input');cb.checked=!cb.checked;
+  el.classList.toggle('checked',cb.checked);updateCounts();
+}
+function onlyRole(e,el){
+  e.stopPropagation();
+  var chip=el.closest('.role-chip');
+  document.querySelectorAll('#role-grid .role-chip').forEach(function(c){
+    var on=c===chip;c.classList.toggle('checked',on);c.querySelector('input').checked=on;
+  });
+  updateCounts();
+}
+function setAllRoles(on){
+  document.querySelectorAll('#role-grid .role-chip').forEach(function(c){
+    c.classList.toggle('checked',on);c.querySelector('input').checked=on;
+  });
+  updateCounts();
+}
+function setAllSources(on){
+  document.querySelectorAll('#src-sel-grid input[type=checkbox]').forEach(function(i){i.checked=on;});
+  updateCounts();
+  if(typeof updateTotal==='function')updateTotal();
+}
+function updateCounts(){
+  var r=document.querySelectorAll('#role-grid .role-chip.checked').length;
+  var rt=document.querySelectorAll('#role-grid .role-chip').length;
+  var rc=document.getElementById('role-count');if(rc)rc.textContent=r+' of '+rt+' selected';
+  var sc=document.getElementById('src-count');
+  if(sc){
+    var on=document.querySelectorAll('#src-sel-grid input[type=checkbox]:checked').length;
+    var tot=document.querySelectorAll('#src-sel-grid input[type=checkbox]').length;
+    sc.textContent=on+' of '+tot+' selected';
+  }
+}
+
+// ── Run history ──────────────────────────────────────────────────────────────
+function toggleRunsPanel(){
+  var el=document.getElementById('runs-panel');
+  var open=el.style.display!=='none';
+  el.style.display=open?'none':'block';
+  if(!open)loadRuns();
+}
+function loadRuns(){
+  var body=document.getElementById('runs-body');
+  body.innerHTML='<div style="font-size:11px;color:#8f8f8f">Loading…</div>';
+  fetch(BASE+'/runs',{headers:authHeaders()}).then(function(r){return r.ok?r.json():[];}).then(function(rows){
+    if(!rows.length){body.innerHTML='<div style="font-size:11px;color:#8f8f8f">No runs yet. Your first one will show up here.</div>';return;}
+    body.innerHTML='<table class="runs-tbl"><tr><th>When</th><th>Sources</th><th>Found</th><th>Added</th><th>Excluded</th><th>Took</th></tr>'
+      +rows.map(function(r){
+        var when=r.run_at?new Date(r.run_at).toLocaleString():(r.date||'');
+        var secs=r.duration_ms?Math.round(r.duration_ms/1000)+'s':'—';
+        return '<tr><td>'+when+'</td><td>'+(r.sources||0)+'</td><td>'+(r.found||0)+'</td>'
+          +'<td style="color:#4ade80">'+(r.added||0)+'</td><td>'+(r.excluded||0)+'</td><td>'+secs+'</td></tr>';
+      }).join('')+'</table>';
+  }).catch(function(){body.innerHTML='<div style="font-size:11px;color:#c05353">Could not load runs.</div>';});
+}
+
 function toggleSourcePanel(){
   const panel=document.getElementById('source-panel');
   const visible=panel.style.display!=='none'&&panel.style.display!=='';
-  if(!visible){loadCatalog();loadBalance();panel.style.display='block';}
+  if(!visible){
+    var rp=document.getElementById('runs-panel');if(rp)rp.style.display='none';
+    var sc=document.getElementById('sched-panel');if(sc)sc.style.display='none';
+    loadCatalog();loadBalance();panel.style.display='block';
+    setTimeout(updateCounts,300);
+  }
   else panel.style.display='none';
 }
 
@@ -3345,7 +3437,13 @@ async function confirmRun(){
 }
 
 function startLive(){
+  // Hand the screen over to the run: the config panel staying open on top was
+  // why a started run read as nothing happening.
+  var sp=document.getElementById('source-panel');if(sp)sp.style.display='none';
+  var sc=document.getElementById('sched-panel');if(sc)sc.style.display='none';
+  var rp=document.getElementById('runs-panel');if(rp)rp.style.display='none';
   document.getElementById('live-panel').style.display='';
+  document.getElementById('live-panel').scrollIntoView({behavior:'smooth',block:'start'});
   document.getElementById('sdot').className='sdot active';
   document.getElementById('topbar-meta').textContent='sourcing in progress…';
   document.getElementById('run-btn').disabled=true;

@@ -9,7 +9,7 @@ function setMode(mode) {
   SERVER = mode === 'local' ? LOCAL_URL : CLOUD_URL;
   document.getElementById('mode-cloud').className = 'mode-btn' + (mode === 'cloud' ? ' active' : '');
   document.getElementById('mode-local').className = 'mode-btn' + (mode === 'local' ? ' active' : '');
-  document.getElementById('btn-audit').href = `${SERVER}/audit`;
+  document.getElementById('btn-audit').href = `${SERVER}/sourcing`;
   checkHealth();
 }
 
@@ -69,7 +69,7 @@ chrome.storage.sync.get(['mode', 'apiKey', 'profile', 'userEmail'], ({ mode, api
     setAuthState(false);
   }
 
-  document.getElementById('btn-audit').href = `${SERVER}/audit`;
+  document.getElementById('btn-audit').href = `${SERVER}/sourcing`;
   checkHealth();
 });
 
@@ -137,13 +137,11 @@ document.getElementById('btn-apply').addEventListener('click', () => {
 
 // ── Source & audit ────────────────────────────────────────────────────────────
 
-document.getElementById('btn-audit').addEventListener('click', async (e) => {
-  const href = e.currentTarget.href;
-  try {
-    const status = await apiFetch('/source/status').then(r => r.json());
-    if (!status.active) await apiFetch('/source/run', { method: 'POST' });
-  } catch {}
-});
+// Opens the sourcing page so the run can be configured and priced first.
+// This used to POST /source/run directly, which started a full run — every
+// default source, no confirmation — and now that runs cost credits that spent
+// them on a single click from a button labelled "Find new jobs".
+
 
 // ── Settings toggle ───────────────────────────────────────────────────────────
 
