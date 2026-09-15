@@ -22,6 +22,9 @@ chrome.storage.sync.get(['mode', 'serverUrl', 'apiKey', 'profile'], (s) => {
         for (const [k, v] of Object.entries(res.data)) {
           if (v != null && v !== '' && k in DEFAULTS) DEFAULTS[k] = v;
         }
+        // The profile arrives after the first scan, so re-run it now that
+        // there are values to offer.
+        try { injectCopyButtons(); } catch {}
       }
     }).catch(() => {});
     serverFetch('/credits').then(res => {
@@ -1828,11 +1831,14 @@ function repositionCopyBtns() {
 
 function tryInjectCopyBtn(el) {
   if (el.dataset.jaaCopyDone) return;
-  el.dataset.jaaCopyDone = '1';
 
   const label = getFieldLabel(el);
   const value = getValueForField(label, el.name || el.id || '');
+  // Only mark it done once a button actually exists. Marking on entry meant a
+  // field scanned before the profile loaded or a kit was generated stayed
+  // flagged forever, so no copy button and no ⌥↩ target ever appeared for it.
   if (!value) return;
+  el.dataset.jaaCopyDone = '1';
 
   if (el.tagName === 'TEXTAREA') {
     const wrapper = el.parentElement;
