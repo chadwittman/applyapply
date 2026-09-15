@@ -33,23 +33,39 @@ chrome.storage.sync.get(['mode', 'serverUrl', 'apiKey', 'profile'], (s) => {
 // Credit prices live on the server; duplicating them here would drift.
 let COSTS = null;
 const COST_BUTTONS = {
+  'jaa-generate':   { base: 'Generate application', key: 'generate' },
   'jaa-fill':       { base: 'Fill form',       key: 'analyze' },
   'jaa-gen-cl':     { base: 'Cover letter',    key: 'cover_letter' },
   'jaa-gen-resume': { base: 'Tailored resume', key: 'resume' },
 };
 
-function withCost(id, base) {
+// Price goes on its own line in small type — crammed onto one line these
+// four buttons wrapped into an unreadable block.
+function setBtn(id, main, showCost = true) {
+  const el = shadow?.getElementById(id);
+  if (!el) return;
   const b = COST_BUTTONS[id];
-  const c = b && COSTS ? COSTS[b.key] : null;
-  return c ? `${base || b.base} · ${c} cr` : (base || b?.base || '');
+  const label = main || b?.base || '';
+  const cost = showCost && b && COSTS ? COSTS[b.key] : null;
+  el.textContent = '';
+  const m = document.createElement('span');
+  m.textContent = label;
+  el.appendChild(m);
+  if (cost) {
+    const c = document.createElement('span');
+    c.className = 'b-cost';
+    c.textContent = cost + (cost === 1 ? ' credit' : ' credits');
+    el.appendChild(c);
+  }
+  el.dataset.label = label;
 }
 
 function applyCostLabels() {
   if (!COSTS || !shadow) return;
   for (const id of Object.keys(COST_BUTTONS)) {
     const el = shadow.getElementById(id);
-    // Leave a button alone mid-action ("Generating…") or after it flips to Regenerate.
-    if (el && el.textContent === COST_BUTTONS[id].base) el.textContent = withCost(id);
+    // Leave a button alone mid-action ("Generating…") or once it says Regenerate.
+    if (el && (el.dataset.label || el.textContent.trim()) === COST_BUTTONS[id].base) setBtn(id);
   }
 }
 
@@ -323,11 +339,12 @@ function buildHTML(serverDown) {
 .x-btn:hover{color:#aaa;}
 
 .act{padding:11px 14px;border-bottom:1px solid #ebebeb;flex-shrink:0;}
-.act-row{display:flex;gap:6px;}
+.act-row{display:flex;gap:6px;flex-wrap:wrap;}
 .fill-btn{
-  flex:1;padding:9px;background:#0a0a0a;color:#fff;border:none;
+  flex:1 1 96px;padding:7px 9px;background:#0a0a0a;color:#fff;border:none;
   font-size:11px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;
   cursor:pointer;font-family:inherit;
+  display:flex;flex-direction:column;align-items:center;justify-content:center;gap:1px;line-height:1.25;
 }
 .fill-btn:hover{background:#222;}
 .fill-btn:disabled{background:#ccc;cursor:not-allowed;}
@@ -365,11 +382,14 @@ function buildHTML(serverDown) {
 .qa-mic{background:#0a0a0a;color:#fff;border:none;border-radius:50%;width:22px;height:22px;font-size:10px;cursor:pointer;display:flex;align-items:center;justify-content:center;flex-shrink:0;}
 
 .cl-btn{
-  padding:9px 12px;
+  flex:1 1 92px;padding:7px 9px;
   background:none;color:#9a9a9a;border:1px solid #e8e8e8;
   font-size:10px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;
-  cursor:pointer;font-family:inherit;text-align:center;transition:all .15s;white-space:nowrap;
+  cursor:pointer;font-family:inherit;text-align:center;transition:all .15s;
+  display:flex;flex-direction:column;align-items:center;justify-content:center;gap:1px;line-height:1.25;
 }
+.b-cost{font-size:8px;font-weight:500;letter-spacing:.03em;text-transform:none;opacity:.6;}
+#jaa-regen{flex:0 0 auto;padding:7px 11px;font-size:12px;}
 .cl-btn:hover{color:#0a0a0a;border-color:#ccc;}
 .cl-btn:disabled{color:#ccc;cursor:not-allowed;}
 .cl-out{padding:14px;border-bottom:1px solid #ebebeb;font-size:11px;line-height:1.7;color:#0a0a0a;white-space:pre-wrap;background:#fafafa;transition:background .12s;}
@@ -377,9 +397,10 @@ function buildHTML(serverDown) {
 
 .gen-wrap{padding:16px 14px;border-bottom:1px solid #ebebeb;}
 .gen-btn{
-  width:100%;padding:10px;background:#0a0a0a;color:#fff;border:none;
+  width:100%;padding:9px 10px;background:#0a0a0a;color:#fff;border:none;
   font-size:11px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;
   cursor:pointer;font-family:inherit;
+  display:flex;flex-direction:column;align-items:center;justify-content:center;gap:1px;line-height:1.25;
 }
 .gen-btn:hover{background:#222;}
 .gen-btn:disabled{background:#ccc;cursor:not-allowed;}
@@ -592,7 +613,7 @@ function bindEvents() {
   if (fillBtn) {
     fillBtn.addEventListener('click', async () => {
       fillBtn.disabled = true;
-      fillBtn.textContent = 'Filling…';
+      setBtn('jaa-fill', 'Filling…', false);
       if (note) note.textContent = '';
       let result;
       try {
@@ -600,7 +621,7 @@ function bindEvents() {
       } catch {
         try { result = deterministicFill(currentApp); } catch { result = { filled: 0, skipped: 0 }; }
       }
-      fillBtn.textContent = 'Re-fill';
+      setBtn('jaa-fill', 'Re-fill');
       fillBtn.disabled = false;
       injectCopyButtons();
       if (note) note.textContent = result?.filled > 0
@@ -616,7 +637,7 @@ function bindEvents() {
   if (regenBtn) {
     regenBtn.addEventListener('click', async () => {
       regenBtn.disabled = true;
-      regenBtn.textContent = '…';
+      regenBtn.textContent = '↻'; regenBtn.style.opacity = '.5';
       const note = shadow.getElementById('jaa-note');
       if (note) note.textContent = 'Regenerating…';
       await fetchIframeQuestions();
@@ -637,7 +658,7 @@ function bindEvents() {
         if (sidebar) { isOpen = true; sidebar.classList.add('open'); }
       } catch (e) {
         regenBtn.disabled = false;
-        regenBtn.textContent = '↺';
+        regenBtn.textContent = '↺'; regenBtn.style.opacity = '';
         if (note) note.textContent = 'Regenerate failed — try again';
       }
     });
@@ -813,7 +834,7 @@ function bindEvents() {
   const resumeOut = shadow.getElementById('jaa-resume-out');
   if (genResumeBtn && resumeOut) {
     genResumeBtn.addEventListener('click', async () => {
-      genResumeBtn.textContent = 'Tailoring…';
+      setBtn('jaa-gen-resume', 'Tailoring…', false);
       genResumeBtn.disabled = true;
       try {
         const res = await serverFetch('/resume-tailor', {
@@ -823,9 +844,9 @@ function bindEvents() {
         });
         if (!res.ok) throw new Error(res.data?.error || 'failed');
         renderResume(res.data, resumeOut);
-        genResumeBtn.textContent = withCost('jaa-gen-resume', 'Regenerate');
+        setBtn('jaa-gen-resume', 'Regenerate');
       } catch (e) {
-        genResumeBtn.textContent = withCost('jaa-gen-resume');
+        setBtn('jaa-gen-resume');
         resumeOut.innerHTML = '';
         const err = document.createElement('div');
         err.style.cssText = 'font-size:10px;color:#b91c1c;padding:6px 0';
@@ -840,7 +861,7 @@ function bindEvents() {
   const clOut = shadow.getElementById('jaa-cl-out');
   if (genClBtn && clOut) {
     genClBtn.addEventListener('click', async () => {
-      genClBtn.textContent = 'Generating…';
+      setBtn('jaa-gen-cl', 'Generating…', false);
       genClBtn.disabled = true;
       try {
         const res = await serverFetch('/cover-letter', {
@@ -850,11 +871,11 @@ function bindEvents() {
         });
         if (!res.ok) throw new Error('failed');
         renderCoverLetter(res.data.text, clOut);
-        genClBtn.textContent = 'Regenerate';
+        setBtn('jaa-gen-cl', 'Regenerate');
         genClBtn.disabled = false;
       } catch {
         clOut.textContent = 'Error — try again';
-        genClBtn.textContent = 'Cover letter';
+        setBtn('jaa-gen-cl');
         genClBtn.disabled = false;
       }
     });
@@ -966,7 +987,18 @@ function deterministicFill(app) {
       || selName.includes('phone-country')
       || (combined.trim() === 'country' && sel.closest('div,fieldset')?.querySelector('input[type="tel"], input[name*="phone"]'));
     if (isPhoneCountry) {
-      const plusOne = [...sel.options].find(o => o.text.trim() === '+1' || o.value === '+1' || o.value === '1');
+      // These dropdowns almost never label the option exactly "+1" — it's
+      // "United States +1", "🇺🇸 United States (+1)", "US +1". Matching the
+      // bare string failed on essentially every real ATS. Note \+1(?!\d) so
+      // the NANP territories (+1284, +1876…) don't win the match.
+      const opts = [...sel.options];
+      const txt = o => (o.text || '').trim();
+      const plusOne =
+           opts.find(o => /united states/i.test(txt(o)) && /\+1(?!\d)/.test(txt(o)))
+        || opts.find(o => /^\+?1$/.test(txt(o)) || o.value === '+1' || o.value === '1')
+        || opts.find(o => /\+1(?!\d)/.test(txt(o)))
+        || opts.find(o => /^united states/i.test(txt(o)))
+        || opts.find(o => ['US', 'USA'].includes(String(o.value).toUpperCase()));
       if (plusOne && sel.value !== plusOne.value) {
         sel.value = plusOne.value;
         sel.dispatchEvent(new Event('change', { bubbles: true }));
@@ -1303,7 +1335,7 @@ async function fetchIframeQuestions() {
 async function generateApp(btn) {
   const status = shadow.getElementById('jaa-gen-status');
   btn.disabled = true;
-  btn.textContent = 'Generating…';
+  setBtn('jaa-generate', 'Generating…', false);
   if (status) status.textContent = 'Scraping page and calling AI…';
 
   await fetchIframeQuestions();
@@ -1338,7 +1370,7 @@ async function generateApp(btn) {
     autoGenerateCoverLetter();
   } catch (e) {
     btn.disabled = false;
-    btn.textContent = 'Generate application';
+    setBtn('jaa-generate');
     if (status) status.textContent = `Error: ${e.message}`;
   }
 }
@@ -1347,7 +1379,7 @@ async function autoGenerateCoverLetter() {
   const genClBtn = shadow?.getElementById('jaa-gen-cl');
   const clOut = shadow?.getElementById('jaa-cl-out');
   if (!clOut || !currentApp?.id) return;
-  if (genClBtn) { genClBtn.textContent = 'Generating…'; genClBtn.disabled = true; }
+  if (genClBtn) { setBtn('jaa-gen-cl', 'Generating…', false); genClBtn.disabled = true; }
   try {
     const res = await serverFetch('/cover-letter', {
       method: 'POST',
@@ -1356,9 +1388,9 @@ async function autoGenerateCoverLetter() {
     });
     if (!res.ok) throw new Error('failed');
     renderCoverLetter(res.data.text, clOut);
-    if (genClBtn) { genClBtn.textContent = 'Regenerate'; genClBtn.disabled = false; }
+    if (genClBtn) { setBtn('jaa-gen-cl', 'Regenerate'); genClBtn.disabled = false; }
   } catch {
-    if (genClBtn) { genClBtn.textContent = 'Cover letter'; genClBtn.disabled = false; }
+    if (genClBtn) { setBtn('jaa-gen-cl'); genClBtn.disabled = false; }
   }
 }
 
