@@ -1386,11 +1386,17 @@ function renderResume(resume, out) {
   label.className = 'sec-label';
   label.textContent = 'Tailored resume';
 
+  const pdfBtn = document.createElement('button');
+  pdfBtn.textContent = 'PDF';
+  pdfBtn.style.cssText = 'font-size:9px;padding:2px 7px;background:none;border:1px solid #2a2a2a;color:#666;cursor:pointer;font-family:inherit;letter-spacing:.04em';
+  pdfBtn.addEventListener('click', e => { e.stopPropagation(); printResume(resume); });
+
   const chev = document.createElement('span');
   chev.className = 'chev';
   chev.textContent = '▸';
   const actionsHd = document.createElement('div');
   actionsHd.className = 'sec-actions';
+  actionsHd.appendChild(pdfBtn);
   actionsHd.appendChild(chev);
   hd.appendChild(label);
   hd.appendChild(actionsHd);
@@ -1498,6 +1504,43 @@ function renderCoverLetter(text, clOut) {
   sec.appendChild(hd);
   sec.appendChild(body);
   clOut.appendChild(sec);
+}
+
+function printResume(r) {
+  const w = window.open('', '_blank');
+  if (!w) return;
+  const esc = t => String(t == null ? '' : t)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  const roles = (r.experience || []).map(e => `
+    <section>
+      <div class="role"><span class="co">${esc(e.company)}</span><span class="dates">${esc(e.dates)}</span></div>
+      <div class="title">${esc(e.title)}</div>
+      <ul>${(e.bullets || []).map(b => `<li>${esc(b)}</li>`).join('')}</ul>
+    </section>`).join('');
+  w.document.write(`<!DOCTYPE html><html><head><title>${esc(r.name || 'Resume')}</title>
+<style>
+  @page { margin: 0.6in; }
+  body { font-family: Georgia, 'Times New Roman', serif; font-size: 10.5pt; line-height: 1.45; color: #111; max-width: 7.2in; margin: 0 auto; }
+  h1 { font-size: 19pt; letter-spacing: -.02em; margin: 0 0 4pt; }
+  .summary { margin: 0 0 14pt; }
+  section { margin-bottom: 12pt; page-break-inside: avoid; }
+  .role { display: flex; justify-content: space-between; align-items: baseline; border-bottom: 1px solid #ddd; padding-bottom: 2pt; }
+  .co { font-weight: bold; font-size: 11.5pt; }
+  .dates { font-size: 9pt; color: #555; }
+  .title { font-style: italic; margin: 2pt 0 4pt; }
+  ul { margin: 0; padding-left: 15pt; }
+  li { margin-bottom: 3pt; }
+  .skills { margin-top: 12pt; font-size: 10pt; }
+  .skills b { font-variant: small-caps; letter-spacing: .04em; }
+</style></head><body>
+  <h1>${esc(r.name || '')}</h1>
+  <p class="summary">${esc(r.summary || '')}</p>
+  ${roles}
+  ${r.skills && r.skills.length ? `<div class="skills"><b>Skills</b> &nbsp;${esc(r.skills.join(' · '))}</div>` : ''}
+</body></html>`);
+  w.document.close();
+  w.focus();
+  setTimeout(() => w.print(), 400);
 }
 
 function printCoverLetter(text) {
