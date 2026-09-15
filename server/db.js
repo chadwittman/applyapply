@@ -99,6 +99,25 @@ async function initSchema() {
   await q(`CREATE INDEX IF NOT EXISTS idx_kits_user_email ON kits (user_email)`);
   await q(`CREATE INDEX IF NOT EXISTS idx_kits_url ON kits (url)`);
 
+  // Evidence gathered by interviewing the candidate about work their resume
+  // doesn't show. A resume is written for the role you had, so applying across
+  // a boundary (CEO -> PM) leaves the relevant experience unstated. Tailoring
+  // may only reuse what already exists, so this is the one honest way to add
+  // real material rather than letting the model invent it.
+  await q(`
+    CREATE TABLE IF NOT EXISTS evidence (
+      id SERIAL PRIMARY KEY,
+      user_email TEXT NOT NULL,
+      question TEXT NOT NULL,
+      answer TEXT,
+      theme TEXT,
+      job_url TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
+  await q(`CREATE INDEX IF NOT EXISTS idx_evidence_user ON evidence (user_email)`);
+
   await q(`
     CREATE TABLE IF NOT EXISTS magic_links (
       token TEXT PRIMARY KEY,
@@ -410,6 +429,43 @@ async function countKits() {
   return row?.n || 0;
 }
 
+// ── Evidence (interview answers) ──────────────────────────────────────────────
+
+async function getEvidence(userEmail, { answeredOnly = false } = {}) {
+  const sql = answeredOnly
+    ? `SELECT * FROM evidence WHERE user_email = $1 AND answer IS NOT NULL AND answer <> '' ORDER BY created_at`
+    : `SELECT * FROM evidence WHERE user_email = $1 ORDER BY created_at`;
+  return q(sql, [userEmail]);
+}
+
+async function addEvidenceQuestions(userEmail, items) {
+  for (const it of items) {
+    // Same question twice adds nothing — the point is to fill gaps, not re-ask.
+    const dupe = await q1(
+      `SELECT id FROM evidence WHERE user_email = $1 AND lower(question) = lower($2)`,
+      [userEmail, it.question]
+    );
+    if (dupe) continue;
+    await q(
+      `INSERT INTO evidence (user_email, question, theme, job_url) VALUES ($1,$2,$3,$4)`,
+      [userEmail, it.question, it.theme || null, it.job_url || null]
+    );
+  }
+  return getEvidence(userEmail);
+}
+
+async function setEvidenceAnswer(userEmail, id, answer) {
+  return q1(
+    `UPDATE evidence SET answer = $3, updated_at = NOW()
+     WHERE id = $1 AND user_email = $2 RETURNING *`,
+    [id, userEmail, answer]
+  );
+}
+
+async function deleteEvidence(userEmail, id) {
+  await q(`DELETE FROM evidence WHERE id = $1 AND user_email = $2`, [id, userEmail]);
+}
+
 // ── Magic links ───────────────────────────────────────────────────────────────
 
 async function createMagicLink(email, token, expiresAt) {
@@ -438,6 +494,7 @@ module.exports = {
   recordDecision, getDecisionSummary,
   getProfile, getProfileByUserEmail, setProfile, getProfiledUsers,
   saveKit, getKit, getKits, deleteKit, deleteKitsForUser, countKits,
+  getEvidence, addEvidenceQuestions, setEvidenceAnswer, deleteEvidence,
   getUser, getOrCreateUser, addUserCredits, deductUserCredits, applyStripePayment,
   createMagicLink, getMagicLink, useMagicLink,
 };

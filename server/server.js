@@ -21,7 +21,7 @@ process.on('uncaughtException', (err) => {
 
 const app = express();
 const PORT = process.env.PORT || 5000;
-const VERSION = '0.3.3';
+const VERSION = '0.4.0';
 const IS_PRODUCTION = process.env.NODE_ENV === 'production';
 const APP_ORIGIN = process.env.APP_ORIGIN || 'http://localhost:5000';
 const ALLOWED_WEB_ORIGINS = new Set(
@@ -105,6 +105,7 @@ const CREDIT_COSTS = {
   cover_letter: 8,
   resume: 8,
   analyze: 3,
+  interview: 3,
   voice: 2,
 };
 
@@ -1333,6 +1334,14 @@ Numbers beat adjectives. Name the companies."></textarea>
   </div>
 </div>
 
+<div class="sec">
+  <div class="sec-label">Interview</div>
+  <div class="hint" style="margin-bottom:14px;line-height:1.7">Your resume was written for the roles you held. If you're targeting something different, the work that matters most is often missing from it entirely. These questions dig it out, and every answer feeds every future application and tailored resume.</div>
+  <div id="interviewList"></div>
+  <button type="button" id="genQBtn" onclick="generateQuestions()" style="padding:9px 16px;background:#0a0a0a;border:1px solid #333;color:#fff;font-size:13px;cursor:pointer;font-family:inherit">Find my gaps &amp; ask me — ${CREDIT_COSTS.interview} credits</button>
+  <div class="hint" id="interviewStatus" style="margin-top:8px;min-height:16px"></div>
+</div>
+
 <div class="save-row">
   <button class="btn" id="saveBtn" onclick="save()">Save profile</button>
   <div id="status"></div>
@@ -1365,6 +1374,88 @@ async function load(){
   }catch(e){authEl.textContent='Could not load profile.';}
 }
 load();
+loadInterview();
+
+function esc(t){return String(t==null?'':t).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
+
+var EVIDENCE=[];
+var BTN_S='padding:5px 10px;background:#0a0a0a;border:1px solid #2a2a2a;color:#aaa;font-size:11px;cursor:pointer;font-family:inherit';
+
+async function loadInterview(){
+  const key=getKey(); if(!key) return;
+  try{ const r=await fetch('/interview',{headers:{'x-api-key':key}});
+    if(r.ok){ EVIDENCE=await r.json(); renderInterview(); } }catch(e){}
+}
+
+function renderInterview(){
+  const el=document.getElementById('interviewList');
+  if(!el) return;
+  if(!EVIDENCE.length){ el.innerHTML=''; return; }
+  el.innerHTML=EVIDENCE.map(function(e){
+    return '<div class="field">'
+      +'<label>'+esc(e.question)+'</label>'
+      +'<textarea id="ans-'+e.id+'" style="min-height:74px" placeholder="Your own words. Specifics beat adjectives — what you owned, what shipped, what moved.">'+esc(e.answer||'')+'</textarea>'
+      +'<div style="display:flex;gap:8px;margin-top:6px;align-items:center">'
+      +'<button type="button" style="'+BTN_S+'" onclick="voiceAnswer(this,'+e.id+')">🎤 Speak it</button>'
+      +'<button type="button" style="'+BTN_S+'" onclick="saveAnswer('+e.id+')">Save answer</button>'
+      +'<span class="hint" id="st-'+e.id+'"></span>'
+      +'</div></div>';
+  }).join('');
+}
+
+async function generateQuestions(){
+  const key=getKey(); const st=document.getElementById('interviewStatus');
+  const btn=document.getElementById('genQBtn');
+  if(!key){ st.textContent='Sign in first'; return; }
+  btn.disabled=true; const orig=btn.textContent; btn.textContent='Looking for gaps…';
+  st.textContent='Comparing your resume against what you are targeting…';
+  try{
+    const r=await fetch('/interview/questions',{method:'POST',headers:{'x-api-key':key,'content-type':'application/json'},body:'{}'});
+    const j=await r.json();
+    if(!r.ok){ st.textContent=j.error||'Failed'; st.style.color='#f87171'; }
+    else { EVIDENCE=j.questions||[]; renderInterview(); st.textContent='Answer what you can. Blank ones are just skipped.'; st.style.color=''; }
+  }catch(e){ st.textContent='Error: '+e.message; st.style.color='#f87171'; }
+  btn.disabled=false; btn.textContent=orig;
+}
+
+async function saveAnswer(id){
+  const key=getKey(); const ta=document.getElementById('ans-'+id); const st=document.getElementById('st-'+id);
+  if(!key||!ta) return;
+  st.textContent='Saving…';
+  try{
+    const r=await fetch('/interview/answer',{method:'POST',headers:{'x-api-key':key,'content-type':'application/json'},body:JSON.stringify({id:id,answer:ta.value})});
+    st.textContent=r.ok?'Saved':'Failed';
+    if(r.ok){ const row=EVIDENCE.find(function(e){return e.id===id;}); if(row) row.answer=ta.value; }
+  }catch(e){ st.textContent='Failed'; }
+  setTimeout(function(){ st.textContent=''; },2000);
+}
+
+function voiceAnswer(btn,id){
+  const SR=window.SpeechRecognition||window.webkitSpeechRecognition;
+  if(!SR){ alert('Voice needs Chrome.'); return; }
+  const ta=document.getElementById('ans-'+id); const st=document.getElementById('st-'+id);
+  const rec=new SR(); rec.continuous=true; rec.interimResults=false;
+  let chunks=[];
+  btn.textContent='⏹ Stop'; st.textContent='Listening…';
+  rec.onresult=function(ev){ for(let i=ev.resultIndex;i<ev.results.length;i++) chunks.push(ev.results[i][0].transcript); };
+  rec.onerror=function(){ btn.textContent='🎤 Speak it'; st.textContent=''; };
+  rec.onend=async function(){
+    btn.textContent='🎤 Speak it';
+    const raw=chunks.join(' ').trim();
+    if(!raw){ st.textContent=''; return; }
+    st.textContent='Cleaning up…';
+    const key=getKey();
+    const q=EVIDENCE.find(function(e){return e.id===id;});
+    try{
+      const r=await fetch('/voice',{method:'POST',headers:{'x-api-key':key,'content-type':'application/json'},body:JSON.stringify({transcript:raw,question:q?q.question:''})});
+      const j=await r.json();
+      ta.value=(ta.value?ta.value+'\n\n':'')+((r.ok&&j.text)?j.text:raw);
+    }catch(e){ ta.value=(ta.value?ta.value+'\n\n':'')+raw; }
+    st.textContent=''; saveAnswer(id);
+  };
+  btn.onclick=function(){ rec.stop(); btn.onclick=function(){ voiceAnswer(btn,id); }; };
+  rec.start();
+}
 
 async function uploadResume(file){
   const rs=document.getElementById('resumeStatus');
@@ -1921,7 +2012,7 @@ ${form_questions.map((q, i) => `${i + 1}. ${q}`).join('\n')}`
   const prompt = `Generate a job application for ${candidateName} applying to this role.${noteInstruction}
 
 CANDIDATE BACKGROUND:
-${bio}
+${bio}${await evidenceBlock(userEmail)}
 
 CANDIDATE'S STATED SALARY EXPECTATION: ${salaryAsk || 'not specified — infer a reasonable ask from the role level and any range in the posting'}
 
@@ -2109,17 +2200,18 @@ app.post('/resume-tailor', requireCredits('resume'), async (req, res) => {
 
   const prompt = `Rewrite this candidate's resume experience for ${appData.role} at ${appData.company}.
 
-ORIGINAL RESUME — the only source of real facts (companies, titles, dates, numbers). Do not invent, merge, or drop any role. Do not invent a number, metric, or outcome not present here:
-${profile.resume_text.slice(0, 6000)}
+ORIGINAL RESUME — the primary source of real facts (companies, titles, dates, numbers). Do not invent, merge, or drop any role. Do not invent a number, metric, or outcome that appears in neither the resume nor the additional evidence below:
+${profile.resume_text.slice(0, 6000)}${await evidenceBlock(reqUserEmail(req))}
 
 WHY THIS ROLE / WHAT TO EMPHASIZE (from an earlier pass on this same application):
 ${t.why_role || t.headline || 'No additional context — use judgment based on the role title.'}
 
 Rules:
 - Every company, title, and date range in your output must match the original resume exactly.
-- You may reorder bullets within a role and reword them for clarity and to mirror relevant language from "WHY THIS ROLE" — but every fact must trace back to the original resume.
+- You may reorder bullets within a role and reword them for clarity and to mirror relevant language from "WHY THIS ROLE" — but every fact must trace back to the original resume or to the additional evidence.
+- Work described in the additional evidence belongs to the role the candidate held at that time. Turn it into bullets under that role. This is the point of it: it is real work their resume left out, and for a candidate crossing a role boundary it is often the most relevant material they have.
 - Cut bullets irrelevant to this role if the original has many; keep the strongest 3-5 per role.
-- Do not add a role, company, or credential that isn't in the original resume.
+- Do not add a role, company, or credential that appears in neither the resume nor the evidence.
 
 Return ONLY valid JSON, no markdown:
 {
@@ -2140,6 +2232,110 @@ Return ONLY valid JSON, no markdown:
     console.error('Resume tailor error:', e.message);
     res.status(500).json({ error: e.message });
   }
+});
+
+// Interview answers are the candidate's own words about real work, so they are
+// safe to treat as source material — same standing as the resume, not invention.
+async function evidenceBlock(userEmail) {
+  if (!userEmail) return '';
+  const rows = await db.getEvidence(userEmail, { answeredOnly: true }).catch(() => []);
+  if (!rows.length) return '';
+  return `\n\nADDITIONAL EVIDENCE — the candidate's own answers about work not covered by their resume. Treat these as true and usable, exactly like the resume:\n` +
+    rows.map(r => `Q: ${r.question}\nA: ${r.answer}`).join('\n\n');
+}
+
+// ── Interview ────────────────────────────────────────────────────────────────
+// A resume is written for the role you had. Crossing a role boundary (CEO ->
+// PM) leaves the relevant work unstated, and tailoring may only reuse what is
+// already there — so ask for the missing material instead of inventing it.
+
+app.get('/interview', async (req, res) => {
+  const userEmail = reqUserEmail(req);
+  if (!userEmail) return res.status(401).json({ error: 'Sign in required' });
+  res.json(await db.getEvidence(userEmail));
+});
+
+app.post('/interview/questions', requireCredits('interview'), async (req, res) => {
+  const userEmail = reqUserEmail(req);
+  if (!userEmail) return res.status(401).json({ error: 'Sign in required' });
+  if (!keys) return res.status(503).json({ error: 'No API key' });
+
+  const profile = await resolveProfile(req);
+  if (!profile.resume_text && !profile.bio) {
+    return res.status(422).json({ error: 'Add your resume or bio at /setup first — there is nothing to compare against yet.' });
+  }
+
+  // Optional: scope the gap analysis to one posting instead of the target roles.
+  let target = profile.target_roles || profile.career_type || 'the roles they are targeting';
+  let jobUrl = null;
+  const { appId } = req.body || {};
+  if (appId) {
+    const kit = await loadKit(appId, userEmail);
+    if (kit && kit !== 'forbidden') {
+      target = `${kit.role} at ${kit.company}`;
+      jobUrl = kit.url || null;
+    }
+  }
+
+  const existing = await db.getEvidence(userEmail);
+  const asked = existing.map(e => e.question);
+
+  const prompt = `This candidate is targeting: ${target}
+
+Their resume was written for the roles they HELD, so work that matters for the target is often missing from it entirely, or buried under a title that hides it.
+
+RESUME:
+${(profile.resume_text || '').slice(0, 5000) || '(none uploaded)'}
+
+BIO:
+${profile.bio || '(none)'}
+
+${asked.length ? `ALREADY ASKED — do not repeat these or ask a near-duplicate:\n${asked.map(a => `- ${a}`).join('\n')}` : ''}
+
+Find where the evidence a hiring manager for this target would look for is thin or absent, then write 4-6 questions that would surface real work this person did but did not put on their resume.
+
+Rules:
+- Anchor every question to something specific and named in their background. "You were CEO at ELDRICK — which product decisions did you personally own?" not "Tell me about your product experience."
+- Go after the delta: what the target demands that this resume does not currently evidence. If they are crossing a role boundary, mine the adjacent work inside their old title.
+- Ask for specifics they can actually answer: what they owned, what shipped, what they decided, what moved.
+- One gap per question. No compound questions.
+- No questions answerable from the resume as written.
+
+Return ONLY valid JSON, no markdown:
+{"questions":[{"question":"<question>","theme":"product|growth|leadership|technical|other"}]}`;
+
+  try {
+    const raw = await callClaude(prompt, 1500, 'claude-sonnet-4-6');
+    const match = raw.match(/\{[\s\S]*\}/);
+    if (!match) throw new Error('No JSON in response');
+    const parsed = JSON.parse(match[0]);
+    const items = (parsed.questions || [])
+      .filter(q => q.question)
+      .map(q => ({ question: String(q.question).trim(), theme: q.theme || null, job_url: jobUrl }));
+    if (!items.length) throw new Error('No questions produced');
+    const all = await db.addEvidenceQuestions(userEmail, items);
+    res.json({ questions: all });
+  } catch (e) {
+    console.error('Interview questions error:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post('/interview/answer', async (req, res) => {
+  const userEmail = reqUserEmail(req);
+  if (!userEmail) return res.status(401).json({ error: 'Sign in required' });
+  const { id, answer } = req.body || {};
+  if (!id) return res.status(400).json({ error: 'id required' });
+  const row = await db.setEvidenceAnswer(userEmail, id, (answer || '').trim());
+  if (!row) return res.status(404).json({ error: 'Not found' });
+  res.json(row);
+});
+
+app.delete('/interview/:id', async (req, res) => {
+  const userEmail = reqUserEmail(req);
+  if (!userEmail) return res.status(401).json({ error: 'Sign in required' });
+  await db.deleteEvidence(userEmail, req.params.id);
+  res.json({ ok: true });
 });
 
 // Clean up voice transcript
