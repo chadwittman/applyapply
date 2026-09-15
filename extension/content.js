@@ -1005,9 +1005,7 @@ function deterministicFill(app) {
         || opts.find(o => /^united states/i.test(txt(o)))
         || opts.find(o => ['US', 'USA'].includes(String(o.value).toUpperCase()));
       if (plusOne && sel.value !== plusOne.value) {
-        sel.value = plusOne.value;
-        sel.dispatchEvent(new Event('change', { bubbles: true }));
-        filled++;
+        if (setSelectVal(sel, plusOne.value)) filled++;
       }
       continue;
     }
@@ -1015,7 +1013,7 @@ function deterministicFill(app) {
     // How did you hear — pick LinkedIn option
     if (/how.*hear|how.*find|referral.*source|source.*hire|where.*hear|where.*learn|how.*learn/.test(combined)) {
       const li = [...sel.options].find(o => /linkedin/i.test(o.text));
-      if (li) { sel.value = li.value; sel.dispatchEvent(new Event('change', { bubbles: true })); filled++; }
+      if (li && setSelectVal(sel, li.value)) filled++;
       continue;
     }
 
@@ -1025,9 +1023,7 @@ function deterministicFill(app) {
         /^united states$/i.test(o.text.trim()) || o.value === 'US' || o.value === 'USA' || o.value === 'United States'
       );
       if (us && !sel.value) {
-        sel.value = us.value;
-        sel.dispatchEvent(new Event('change', { bubbles: true }));
-        filled++;
+        if (setSelectVal(sel, us.value)) filled++;
       }
       continue;
     }
@@ -1380,6 +1376,17 @@ function highlightResumeField() {
       setTimeout(() => { zone.style.outline = orig; }, 4000);
     }
   }, 400);
+}
+
+function setSelectVal(sel, value) {
+  if (!sel || sel.disabled) return false;
+  const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value')?.set;
+  try {
+    if (setter) setter.call(sel, value); else sel.value = value;
+  } catch { return false; }
+  sel.dispatchEvent(new Event('input', { bubbles: true }));
+  sel.dispatchEvent(new Event('change', { bubbles: true }));
+  return true;
 }
 
 function setVal(el, value) {
