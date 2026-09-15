@@ -21,7 +21,7 @@ process.on('uncaughtException', (err) => {
 
 const app = express();
 const PORT = process.env.PORT || 5000;
-const VERSION = '0.11.0';
+const VERSION = '0.11.1';
 const IS_PRODUCTION = process.env.NODE_ENV === 'production';
 const APP_ORIGIN = process.env.APP_ORIGIN || 'http://localhost:5000';
 const ALLOWED_WEB_ORIGINS = new Set(
@@ -4641,6 +4641,12 @@ document.addEventListener('keydown', function(e) {
 // handlers log actionable context; clients receive a stable error contract.
 app.use((error, _req, res, _next) => {
   if (error?.message === 'Origin not allowed') return res.status(403).json({ error: 'Origin not allowed' });
+  // A malformed request body is the caller's fault, not a server fault.
+  // Returning 500 for it hides real failures in the same bucket.
+  if (error?.type === 'entity.parse.failed' || error instanceof SyntaxError && 'body' in error) {
+    return res.status(400).json({ error: 'Malformed JSON body' });
+  }
+  if (error?.type === 'entity.too.large') return res.status(413).json({ error: 'Request body too large' });
   console.error('[request error]', error);
   res.status(500).json({ error: 'Internal server error' });
 });
