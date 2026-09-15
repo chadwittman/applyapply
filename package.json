@@ -5,7 +5,8 @@
     "node": ">=20 <23"
   },
   "scripts": {
-    "build": "npm --prefix server install --omit=dev",
-    "start": "npm --prefix server start"
+    "build": "node server/check-templates.js && npm --prefix server install --omit=dev",
+    "start": "npm --prefix server start",
+    "check": "node server/check-templates.js"
   }
 }

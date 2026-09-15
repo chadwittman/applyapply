@@ -21,7 +21,7 @@ process.on('uncaughtException', (err) => {
 
 const app = express();
 const PORT = process.env.PORT || 5000;
-const VERSION = '0.4.0';
+const VERSION = '0.4.1';
 const IS_PRODUCTION = process.env.NODE_ENV === 'production';
 const APP_ORIGIN = process.env.APP_ORIGIN || 'http://localhost:5000';
 const ALLOWED_WEB_ORIGINS = new Set(
@@ -1449,8 +1449,8 @@ function voiceAnswer(btn,id){
     try{
       const r=await fetch('/voice',{method:'POST',headers:{'x-api-key':key,'content-type':'application/json'},body:JSON.stringify({transcript:raw,question:q?q.question:''})});
       const j=await r.json();
-      ta.value=(ta.value?ta.value+'\n\n':'')+((r.ok&&j.text)?j.text:raw);
-    }catch(e){ ta.value=(ta.value?ta.value+'\n\n':'')+raw; }
+      ta.value=(ta.value?ta.value+'\\n\\n':'')+((r.ok&&j.text)?j.text:raw);
+    }catch(e){ ta.value=(ta.value?ta.value+'\\n\\n':'')+raw; }
     st.textContent=''; saveAnswer(id);
   };
   btn.onclick=function(){ rec.stop(); btn.onclick=function(){ voiceAnswer(btn,id); }; };
