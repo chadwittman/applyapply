@@ -1806,14 +1806,29 @@ function makeFillBtn(el, value) {
   return btn;
 }
 
+// Some forms (Gem, for one) render inputs with no name, id, placeholder or
+// aria-label at all — the visible label lives several wrappers up. Walk up and
+// take the nearest ancestor that holds this control alone, since a container
+// with several controls describes the group rather than this field.
+function labelFromAncestors(el) {
+  let node = el.parentElement;
+  for (let i = 0; i < 5 && node; i++, node = node.parentElement) {
+    if (node.querySelectorAll('input:not([type=hidden]),textarea,select').length > 1) return '';
+    const txt = (node.innerText || '').trim().replace(/\s+/g, ' ');
+    if (txt && txt.length <= 80) return txt.replace(/\s*\*\s*$/, '').trim();
+  }
+  return '';
+}
+
 function getFieldLabel(el) {
-  if (el.tagName === 'TEXTAREA') return getLabelForTextarea(el) || '';
+  if (el.tagName === 'TEXTAREA') return getLabelForTextarea(el) || labelFromAncestors(el) || '';
   const labelledById = el.getAttribute('aria-labelledby');
   return (
     el.getAttribute('aria-label') ||
     (labelledById && document.getElementById(labelledById)?.textContent?.trim()) ||
     (el.id && document.querySelector(`label[for="${CSS.escape(el.id)}"]`)?.textContent?.replace(/\*/g,'').trim()) ||
-    el.getAttribute('placeholder') || ''
+    el.getAttribute('placeholder') ||
+    labelFromAncestors(el) || ''
   );
 }
 
