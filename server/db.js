@@ -170,6 +170,33 @@ async function upsertJob(job) {
       job.location||null, job.notes||'', job.user_email||null]);
 }
 
+// Insert a pipeline row for a directly-generated kit. jobs has two keys that
+// must both stay unique — id (PK) and url — but a statement can only declare
+// one ON CONFLICT target. The AI derives id from company+role, so the same role
+// reached via two different URLs (an aggregator listing and the company's own
+// careers page) produces the same id with a different url, which upsertJob's
+// ON CONFLICT (url) does not catch. Resolve the id collision before inserting.
+async function ensureJob(job) {
+  const byUrl = await q1(`SELECT id FROM jobs WHERE url = $1`, [job.url]);
+  if (byUrl) return byUrl.id;
+
+  let id = job.id;
+  const taken = await q1(`SELECT url FROM jobs WHERE id = $1`, [id]);
+  if (taken) {
+    const suffix = require('crypto').createHash('sha1').update(job.url).digest('hex').slice(0, 6);
+    id = `${id}-${suffix}`;
+  }
+
+  await q(`
+    INSERT INTO jobs (id, url, company, role, ats, source, run_id, found_at, status, tier, fit_score, location, notes, user_email)
+    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
+    ON CONFLICT (url) DO NOTHING
+  `, [id, job.url, job.company, job.role, job.ats||null, job.source||null, job.run_id||null,
+      job.found_at, job.status||'new', job.tier||null, job.fit_score||null,
+      job.location||null, job.notes||'', job.user_email||null]);
+  return id;
+}
+
 async function setJobStatus(url, status, extra = {}) {
   await q(`
     UPDATE jobs SET status = $1, applied_at = COALESCE($2, applied_at),
@@ -337,6 +364,16 @@ async function applyStripePayment(eventId, email, credits) {
 // ── Kits ──────────────────────────────────────────────────────────────────────
 
 async function saveKit(kit) {
+  // The same role reached from two URLs (an aggregator listing and the
+  // company's own careers page) yields the same AI-derived id. Keep every URL
+  // this kit has been seen at, so looking it up from either one still hits
+  // instead of quietly regenerating and charging for it twice.
+  const prior = await q1(`SELECT data FROM kits WHERE id = $1`, [kit.id]);
+  if (prior?.data) {
+    const known = new Set([prior.data.url, ...(prior.data.urls || []), ...(kit.urls || [])].filter(Boolean));
+    known.delete(kit.url);
+    if (known.size) kit = { ...kit, urls: [...known] };
+  }
   await q(`
     INSERT INTO kits (id, url, user_email, data)
     VALUES ($1,$2,$3,$4)
@@ -344,6 +381,7 @@ async function saveKit(kit) {
       url = EXCLUDED.url, user_email = EXCLUDED.user_email,
       data = EXCLUDED.data, updated_at = NOW()
   `, [kit.id, kit.url || null, kit.user_email || null, JSON.stringify(kit)]);
+  return kit;
 }
 
 async function getKit(id) {
@@ -396,7 +434,7 @@ module.exports = {
   initSchema,
   PROFILE_FIELDS,
   insertRun, getRuns, getRun,
-  insertJob, upsertJob, setJobStatus, setKitGenerated, getJobByUrl, getJobs, getJobsForRun, getSeenUrls, getStatusCounts,
+  insertJob, upsertJob, ensureJob, setJobStatus, setKitGenerated, getJobByUrl, getJobs, getJobsForRun, getSeenUrls, getStatusCounts,
   recordDecision, getDecisionSummary,
   getProfile, getProfileByUserEmail, setProfile, getProfiledUsers,
   saveKit, getKit, getKits, deleteKit, deleteKitsForUser, countKits,

@@ -21,7 +21,7 @@ process.on('uncaughtException', (err) => {
 
 const app = express();
 const PORT = process.env.PORT || 5000;
-const VERSION = '0.3.0';
+const VERSION = '0.3.1';
 const IS_PRODUCTION = process.env.NODE_ENV === 'production';
 const APP_ORIGIN = process.env.APP_ORIGIN || 'http://localhost:5000';
 const ALLOWED_WEB_ORIGINS = new Set(
@@ -1886,7 +1886,7 @@ app.post('/generate', apiLimiter, requireCredits('generate'), async (req, res) =
       console.log(`Cache hit: ${cached.company} — ${cached.role}`);
       // Backfill the pipeline row for kits generated before this existed, or
       // generated directly (extension, URL-prepend) with no sourcing row.
-      db.upsertJob({
+      db.ensureJob({
         id: cached.id, url, company: cached.company, role: cached.role,
         ats: cached.ats || null, source: 'direct', found_at: new Date().toISOString(),
         status: 'new', tier: cached.tier || null, fit_score: cached.fit_score || null,
@@ -2000,12 +2000,14 @@ Concrete over abstract: "built a pipeline that drove 4.5x revenue per title as C
 
     // Save to applications/
     if (userEmail) generated.user_email = userEmail;
-    await db.saveKit(generated);
+    // saveKit merges in any URLs this kit was previously reached at
+    const stored = await db.saveKit(generated);
+    Object.assign(generated, stored);
 
     // Ensure a pipeline row exists for this URL — kits generated directly
     // (extension, URL-prepend) never went through sourcing, so without this
     // they're invisible on /pipeline and kit_generated_at never sets.
-    await db.upsertJob({
+    await db.ensureJob({
       id: generated.id,
       url,
       company: generated.company,
