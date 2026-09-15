@@ -157,6 +157,18 @@ async function initSchema() {
   `);
   await q(`CREATE INDEX IF NOT EXISTS idx_source_cache_fetched ON source_cache (fetched_at)`);
 
+  // The uploaded PDF itself, kept out of profiles so a SELECT * on a profile
+  // does not drag several megabytes along with it.
+  await q(`
+    CREATE TABLE IF NOT EXISTS resume_files (
+      user_email TEXT PRIMARY KEY,
+      filename TEXT NOT NULL,
+      mime TEXT NOT NULL DEFAULT 'application/pdf',
+      bytes BYTEA NOT NULL,
+      uploaded_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
+
   await q(`
     CREATE TABLE IF NOT EXISTS magic_links (
       token TEXT PRIMARY KEY,
@@ -522,6 +534,26 @@ async function deleteEvidence(userEmail, id) {
   await q(`DELETE FROM evidence WHERE id = $1 AND user_email = $2`, [id, userEmail]);
 }
 
+// ── Resume file ───────────────────────────────────────────────────────────────
+
+async function saveResumeFile(userEmail, filename, mime, buffer) {
+  await q(`
+    INSERT INTO resume_files (user_email, filename, mime, bytes, uploaded_at)
+    VALUES ($1,$2,$3,$4,NOW())
+    ON CONFLICT (user_email) DO UPDATE SET
+      filename = EXCLUDED.filename, mime = EXCLUDED.mime,
+      bytes = EXCLUDED.bytes, uploaded_at = NOW()
+  `, [userEmail, filename, mime, buffer]);
+}
+
+async function getResumeFile(userEmail) {
+  return q1(`SELECT filename, mime, bytes, uploaded_at FROM resume_files WHERE user_email = $1`, [userEmail]);
+}
+
+async function getResumeFileMeta(userEmail) {
+  return q1(`SELECT filename, uploaded_at, octet_length(bytes) AS size FROM resume_files WHERE user_email = $1`, [userEmail]);
+}
+
 // ── Source cache ──────────────────────────────────────────────────────────────
 
 // Role titles decide the Google query, so they are part of the identity of a
@@ -632,6 +664,7 @@ module.exports = {
   recordDecision, getDecisionSummary,
   getProfile, getProfileByUserEmail, setProfile, getProfiledUsers,
   saveKit, getKit, getKits, deleteKit, deleteKitsForUser, countKits,
+  saveResumeFile, getResumeFile, getResumeFileMeta,
   getEvidence, addEvidenceQuestions, addAnsweredEvidence, setEvidenceAnswer, deleteEvidence,
   getSetting, setSetting,
   getSchedule, setSchedule, getDueSchedules, markScheduleRun, getAllEnabledSchedules,

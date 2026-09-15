@@ -1033,10 +1033,28 @@ function deterministicFill(app) {
     // Phone country code — prefer "+1" (US dial code) over "United States"
     // Catches explicit labels AND Greenhouse's "Country" dropdown next to a phone input (name="phone_country")
     const selName = (sel.name || '').toLowerCase();
+    // A "Country" select sitting next to a phone input is the dial code, not
+    // country of residence. The old check only looked one container up, which
+    // missed Greenhouse's nesting and filled "United States" where the field
+    // wanted "+1". Widen the search, and treat a list whose options are dial
+    // codes as a phone-country select regardless of how it is labelled.
+    const optionsLookLikeDialCodes = (() => {
+      const texts = [...sel.options].slice(0, 12).map(o => (o.text || '').trim());
+      const withPlus = texts.filter(t => /\+\d{1,4}/.test(t)).length;
+      return texts.length > 2 && withPlus >= Math.min(3, texts.length - 1);
+    })();
+    const nearPhoneInput = (() => {
+      let node = sel.parentElement;
+      for (let i = 0; i < 5 && node; i++, node = node.parentElement) {
+        if (node.querySelector('input[type="tel"], input[name*="phone" i], input[id*="phone" i], input[aria-label*="phone" i]')) return true;
+      }
+      return false;
+    })();
     const isPhoneCountry = /phone.*country|country.*code|dial.*code|calling.*code|phone.*prefix/.test(combined)
       || selName.includes('phone_country')
       || selName.includes('phone-country')
-      || (combined.trim() === 'country' && sel.closest('div,fieldset')?.querySelector('input[type="tel"], input[name*="phone"]'));
+      || optionsLookLikeDialCodes
+      || (/^country/.test(combined.trim()) && nearPhoneInput);
     if (isPhoneCountry) {
       // These dropdowns almost never label the option exactly "+1" — it's
       // "United States +1", "🇺🇸 United States (+1)", "US +1". Matching the
@@ -1606,12 +1624,55 @@ function renderResume(resume, out) {
     if (cov.gaps?.length) {
       const g = document.createElement('div');
       g.style.color = '#555';
-      g.textContent = 'Not evidenced: ' + cov.gaps.join(' · ');
+      g.textContent = 'Not evidenced — answer any of these and it saves to your profile:';
       box.appendChild(g);
+
+      // Each gap becomes a question to answer in place. The answer is stored as
+      // profile evidence, so it strengthens every later application rather than
+      // only patching this resume.
+      cov.gaps.forEach((gap, i) => {
+        const wrap = document.createElement('div');
+        wrap.style.cssText = 'margin-top:6px';
+        const q = document.createElement('div');
+        q.style.cssText = 'color:#333;margin-bottom:3px';
+        q.textContent = gap;
+        const ta = document.createElement('textarea');
+        ta.placeholder = 'What you actually did. Specifics beat adjectives.';
+        ta.style.cssText = 'width:100%;min-height:44px;font-size:10px;font-family:inherit;padding:5px;border:1px solid #e0e0e0;resize:vertical;outline:none';
+        const save = document.createElement('button');
+        save.textContent = 'Record';
+        save.className = 'attach-btn';
+        const st = document.createElement('span');
+        st.style.cssText = 'font-size:9px;color:#777;margin-left:6px';
+        save.addEventListener('click', async () => {
+          if (!ta.value.trim()) { st.textContent = 'Write something first'; return; }
+          st.textContent = 'Saving…';
+          try {
+            const r = await serverFetch('/interview/context', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ question: gap, answer: ta.value }),
+            });
+            st.textContent = r.ok ? 'Saved to profile' : 'Could not save';
+          } catch { st.textContent = 'Could not save'; }
+        });
+        wrap.appendChild(q); wrap.appendChild(ta); wrap.appendChild(save); wrap.appendChild(st);
+        box.appendChild(wrap);
+      });
+
+      const rerun = document.createElement('button');
+      rerun.className = 'attach-btn';
+      rerun.style.marginTop = '10px';
+      rerun.textContent = 'Regenerate with what I recorded';
+      rerun.addEventListener('click', () => {
+        const btn = shadow?.getElementById('jaa-gen-resume');
+        if (btn) btn.click();
+      });
+      box.appendChild(rerun);
     }
     if (cov.improve) {
       const imp = document.createElement('div');
-      imp.style.cssText = 'color:#777;margin-top:4px';
+      imp.style.cssText = 'color:#777;margin-top:6px';
       imp.textContent = cov.improve;
       box.appendChild(imp);
     }

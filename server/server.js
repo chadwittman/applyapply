@@ -21,7 +21,7 @@ process.on('uncaughtException', (err) => {
 
 const app = express();
 const PORT = process.env.PORT || 5000;
-const VERSION = '0.12.0';
+const VERSION = '0.13.0';
 const IS_PRODUCTION = process.env.NODE_ENV === 'production';
 const APP_ORIGIN = process.env.APP_ORIGIN || 'http://localhost:5000';
 const ALLOWED_WEB_ORIGINS = new Set(
@@ -1126,6 +1126,14 @@ app.post('/resume/parse', apiLimiter, async (req, res) => {
     const text = data.text.replace(/\s{3,}/g, '\n\n').trim();
     if (!text) return res.status(422).json({ error: 'Could not extract text from PDF' });
 
+    // Keep the file itself. Only the extracted text was stored before, so the
+    // original could never be reviewed or re-downloaded once uploaded.
+    if (req.userEmail) {
+      db.saveResumeFile(req.userEmail, req.file.originalname || 'resume.pdf',
+        req.file.mimetype || 'application/pdf', req.file.buffer)
+        .catch(e => console.error('[resume file]', e.message));
+    }
+
     if (!keys) return res.json({ text });
     const prompt = `Extract structured profile information from this resume. Return ONLY a valid JSON object — no preamble, no markdown fences — with these fields (omit any you cannot confidently determine from the resume):
 
@@ -1175,6 +1183,23 @@ ${text.slice(0, 6000)}`;
   });
 });
 
+app.get('/resume/file', async (req, res) => {
+  const userEmail = reqUserEmail(req);
+  if (!userEmail) return res.status(401).json({ error: 'Sign in required' });
+  const row = await db.getResumeFile(userEmail);
+  if (!row) return res.status(404).json({ error: 'No resume on file' });
+  res.setHeader('Content-Type', row.mime || 'application/pdf');
+  res.setHeader('Content-Disposition', `attachment; filename="${(row.filename || 'resume.pdf').replace(/"/g, '')}"`);
+  res.send(row.bytes);
+});
+
+app.get('/resume/meta', async (req, res) => {
+  const userEmail = reqUserEmail(req);
+  if (!userEmail) return res.status(401).json({ error: 'Sign in required' });
+  const row = await db.getResumeFileMeta(userEmail);
+  res.json(row || {});
+});
+
 // ── Setup page ────────────────────────────────────────────────────────────────
 
 app.get('/setup', (req, res) => {
@@ -1209,6 +1234,12 @@ input:focus,textarea:focus,select:focus{border-color:#555}
 input::placeholder,textarea::placeholder{color:#a8a8a8}
 select option{background:#111}
 textarea{min-height:200px;resize:vertical;line-height:1.65}
+.role-pick{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px}
+.role-pill{padding:4px 9px;background:#0a0a0a;border:1px solid #222;color:#8f8f8f;font-size:11px;cursor:pointer;font-family:inherit}
+.role-pill:hover{border-color:#555;color:#ccc}
+.role-pill.on{background:#0d1a0d;border-color:#2a3a2a;color:#4ade80}
+.resume-file{display:flex;align-items:center;gap:10px;font-size:12px;color:#b9b9b9;margin-top:10px}
+.resume-file a{color:#60a5fa;text-decoration:underline}
 .resume-drop{border:1px solid #222;padding:24px;text-align:center;cursor:pointer;transition:border-color .15s;margin-bottom:0}
 .resume-drop:hover,.resume-drop.drag{border-color:#fff}
 .resume-drop-label{font-size:15px;font-weight:600;margin-bottom:4px}
@@ -1243,6 +1274,10 @@ textarea{min-height:200px;resize:vertical;line-height:1.65}
     <textarea id="resume_text" style="display:none"></textarea>
     <div class="resume-drop-label">Drop your resume PDF here, or <span class="resume-drop-browse" onclick="document.getElementById('resumeFile').click()">browse</span></div>
     <div id="resumeStatus"></div>
+  </div>
+  <div class="resume-file" id="resumeFileRow" style="display:none">
+    <span id="resumeFileName"></span>
+    <a href="/resume/file" id="resumeDownload">Download to review ↓</a>
   </div>
 </div>
 
@@ -1305,8 +1340,9 @@ textarea{min-height:200px;resize:vertical;line-height:1.65}
   </div>
   <div class="field">
     <label>Target role titles</label>
+    <div class="role-pick">${PRESET_ROLES.map(r => `<button type="button" class="role-pill" onclick="toggleRole(this)">${r}</button>`).join('')}</div>
     <input id="target_roles" placeholder="Head of Product, VP of Product, Founding PM"/>
-    <div class="hint">Comma-separated. The sourcing agent searches for these exact titles.</div>
+    <div class="hint">Click the titles you want, or type your own. The sourcing agent searches for these exact titles, so leaving this empty gives poor results.</div>
   </div>
   <div class="field">
     <label>Location preference</label>
@@ -1371,12 +1407,43 @@ async function load(){
     const p=await r.json();
     authEl.textContent=p.email?'Signed in as '+p.email:'Signed in';
     for(const f of FIELDS)setField(f,p[f]);
+    syncRolePills();
   }catch(e){authEl.textContent='Could not load profile.';}
 }
 load();
 loadInterview();
+showResumeFile();
 
 function esc(t){return String(t==null?'':t).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
+
+// Role pills drive the comma list, so the field can be filled by clicking.
+function toggleRole(btn){
+  btn.classList.toggle('on');
+  var picked=[].slice.call(document.querySelectorAll('.role-pill.on')).map(function(b){return b.textContent.trim();});
+  var input=document.getElementById('target_roles');
+  var typed=input.value.split(',').map(function(x){return x.trim();}).filter(Boolean);
+  var preset=[].slice.call(document.querySelectorAll('.role-pill')).map(function(b){return b.textContent.trim();});
+  var custom=typed.filter(function(t){return preset.indexOf(t)===-1;});
+  input.value=picked.concat(custom).join(', ');
+}
+
+function syncRolePills(){
+  var input=document.getElementById('target_roles');
+  if(!input)return;
+  var have=input.value.split(',').map(function(x){return x.trim().toLowerCase();}).filter(Boolean);
+  document.querySelectorAll('.role-pill').forEach(function(b){
+    b.classList.toggle('on', have.indexOf(b.textContent.trim().toLowerCase())>=0);
+  });
+}
+
+function showResumeFile(){
+  fetch('/resume/meta',{headers:{'x-api-key':getKey()}}).then(function(r){return r.ok?r.json():null;}).then(function(m){
+    if(!m||!m.filename)return;
+    document.getElementById('resumeFileRow').style.display='flex';
+    var kb=m.size?Math.round(m.size/1024)+' KB · ':'';
+    document.getElementById('resumeFileName').textContent=m.filename+' ('+kb+'uploaded '+new Date(m.uploaded_at).toLocaleDateString()+')';
+  }).catch(function(){});
+}
 
 var EVIDENCE=[];
 var BTN_S='padding:5px 10px;background:#0a0a0a;border:1px solid #2a2a2a;color:#aaa;font-size:11px;cursor:pointer;font-family:inherit';
@@ -1470,6 +1537,8 @@ async function uploadResume(file){
     let filled=0;
     for(const f of fillable){if(j[f]){setField(f,j[f]);filled++;}}
     if(j.text)document.getElementById('resume_text').value=j.text;
+    syncRolePills();
+    showResumeFile();
     rs.textContent=filled?filled+' fields filled — career type and target roles are AI guesses, worth a look before you save.':'Could not extract structured fields — check the values above, or try again.';
     rs.style.color=filled?'#4ade80':'#f87171';
   }catch(e){rs.textContent='Error: '+e.message;rs.style.color='#f87171';}
