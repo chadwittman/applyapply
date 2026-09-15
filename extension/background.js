@@ -101,7 +101,9 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg.type === 'INJECT_SUBMIT_HOOK') {
     if (!sender.tab?.id) return;
     chrome.scripting.executeScript({
-      target: { tabId: sender.tab.id, allFrames: false },
+      // Hook the frame that asked. The submit POST happens inside the embedded
+      // ATS iframe, not the top frame.
+      target: { tabId: sender.tab.id, frameIds: [sender.frameId ?? 0] },
       world: 'MAIN',
       func: () => {
         if (window.__jaaHookedMain) return;
@@ -322,7 +324,7 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
   const ats = atsFromUrl(url);
 
   const doInject = () =>
-    chrome.scripting.executeScript({ target: { tabId }, files: ['vendor/jspdf.umd.min.js', 'content.js'] })
+    chrome.scripting.executeScript({ target: { tabId, allFrames: true }, files: ['vendor/jspdf.umd.min.js', 'content.js'] })
       .then(() => console.log('[applyapply] injected into', url))
       .catch(err => console.warn('[applyapply] inject failed:', err.message, url));
 

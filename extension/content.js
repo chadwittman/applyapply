@@ -660,7 +660,7 @@ function bindEvents() {
         injectWidget(false);
         injectCopyButtons();
         const sidebar = shadow?.getElementById('jaa-sidebar');
-        if (sidebar) { isOpen = true; sidebar.classList.add('open'); }
+        if (sidebar) { isOpen = true; sidebar.classList.add('open'); setBodyPush(true); }
       } catch (e) {
         regenBtn.disabled = false;
         regenBtn.textContent = '↺'; regenBtn.style.opacity = '';
@@ -1438,7 +1438,7 @@ async function generateApp(btn) {
 
     // Open the sidebar to show results
     const sidebar = shadow?.getElementById('jaa-sidebar');
-    if (sidebar) { isOpen = true; sidebar.classList.add('open'); }
+    if (sidebar) { isOpen = true; sidebar.classList.add('open'); setBodyPush(true); }
 
     // Auto-generate cover letter
     autoGenerateCoverLetter();
@@ -1740,6 +1740,10 @@ function getValueForField(label, name) {
   if (/legal.*(name|first|last)|(first.*last|full.name)|your.name/.test(l) || (l.includes('first') && l.includes('last'))) return `${p.first_name} ${p.last_name}`;
   if (/email/.test(l)) return p.email || '';
   if (/phone|mobile|cell/.test(l)) return p.phone || '';
+  // Greenhouse ships this as input_text, not a dropdown, so the select-handling
+  // path never saw it and the skip list below excluded it from the text path —
+  // it could only ever come out blank.
+  if (/how.*(did|do).*(hear|find|learn)|where.*(hear|learn).*(about|of)|referral.*source|source.*hire/.test(l)) return 'LinkedIn';
   if (/linkedin/.test(l)) return p.linkedin || '';
   if (/github/.test(l)) return p.github || '';
   if (/twitter|x\.com/.test(l)) return p.twitter || '';
@@ -1967,7 +1971,9 @@ new MutationObserver(() => checkForSubmission())
 // Must run via chrome.scripting (world: MAIN) from the background script —
 // an appended <script> tag with inline code is blocked outright by any page
 // CSP without 'unsafe-inline' (e.g. Databricks' own careers page).
-if (!IN_FRAME && !window.__jaaHooked) {
+// Each frame hooks its own window — the embedded ATS form submits from the
+// iframe, so restricting this to the top frame missed real submissions.
+if (!window.__jaaHooked) {
   window.__jaaHooked = true;
   try { chrome.runtime.sendMessage({ type: 'INJECT_SUBMIT_HOOK' }); } catch {}
   document.addEventListener('jaa-submitted', () => {
