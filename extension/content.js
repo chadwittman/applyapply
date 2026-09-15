@@ -421,6 +421,9 @@ function buildHTML(serverDown) {
 
 .job-link{display:block;padding:12px 14px;font-size:11px;color:#9a9a9a;text-decoration:none;border-top:1px solid #ebebeb;}
 .job-link:hover{color:#0a0a0a;}
+.attach-btn{margin-top:8px;padding:5px 10px;background:#0a0a0a;color:#fff;border:none;font-size:10px;font-weight:600;letter-spacing:.04em;cursor:pointer;font-family:inherit;}
+.attach-btn:hover{background:#333;}
+.attach-btn:disabled{background:#ccc;cursor:default;}
 </style>
 
 <div class="sidebar" id="jaa-sidebar">
@@ -525,6 +528,8 @@ ${a.warm_path ? `<div class="sec">
 </div>` : ''}
 
 <a class="job-link" href="${a.url}" target="_blank">Open job posting ↗</a>
+<a class="job-link" href="${SERVER}/setup" target="_blank">Profile &amp; settings ↗</a>
+<a class="job-link" href="${SERVER}/pipeline" target="_blank">Pipeline ↗</a>
 
 ${quickAnswerSection()}
 ${quickCopySection(a)}`;
@@ -558,7 +563,9 @@ function noAppBody() {
   ${locBadgeHTML}<button id="jaa-generate" class="gen-btn">Generate application</button>
   <div id="jaa-gen-status" class="gen-status"></div>
 </div>
-${quickAnswerSection()}`;
+${quickAnswerSection()}
+<a class="job-link" href="${SERVER}/setup" target="_blank">Profile &amp; settings ↗</a>
+<a class="job-link" href="${SERVER}/pipeline" target="_blank">Pipeline ↗</a>`;
 }
 
 function quickAnswerSection() {
@@ -1560,11 +1567,23 @@ function renderResume(resume, out) {
   pdfBtn.style.cssText = 'font-size:9px;padding:2px 7px;background:none;border:1px solid #2a2a2a;color:#666;cursor:pointer;font-family:inherit;letter-spacing:.04em';
   pdfBtn.addEventListener('click', e => { e.stopPropagation(); printResume(resume); });
 
+  const attachBtn = document.createElement('button');
+  attachBtn.textContent = 'Attach';
+  attachBtn.title = 'Attach this resume to the upload field on this page';
+  attachBtn.style.cssText = pdfBtn.style.cssText;
+  attachBtn.addEventListener('click', e => {
+    e.stopPropagation();
+    const out = attachResumeToForm(resume);
+    attachBtn.textContent = out.ok ? '✓ Attached' : (out.why || 'Failed');
+    setTimeout(() => { attachBtn.textContent = 'Attach'; }, out.ok ? 2500 : 4000);
+  });
+
   const chev = document.createElement('span');
   chev.className = 'chev';
   chev.textContent = '▸';
   const actionsHd = document.createElement('div');
   actionsHd.className = 'sec-actions';
+  actionsHd.appendChild(attachBtn);
   actionsHd.appendChild(pdfBtn);
   actionsHd.appendChild(chev);
   hd.appendChild(label);
@@ -1700,12 +1719,10 @@ function renderCoverLetter(text, clOut) {
   clOut.appendChild(sec);
 }
 
-// Saves straight to Downloads. jsPDF is bundled with the extension rather than
-// pulled from a CDN, because a content script loading a remote script trips the
-// page's CSP on exactly the sites we run on.
-function printResume(r) {
+// Builds the PDF once; callers either save it or hand the bytes to the page.
+function buildResumeDoc(r) {
   const JsPDF = window.jspdf?.jsPDF;
-  if (!JsPDF) { alert('PDF library missing — reload the extension.'); return; }
+  if (!JsPDF) return null;  // caller reports it; this is used by save and attach both
   const doc = new JsPDF({ unit: 'pt', format: 'letter' });
   const M = 54, W = doc.internal.pageSize.getWidth() - M * 2;
   const BOTTOM = doc.internal.pageSize.getHeight() - M;
@@ -1754,7 +1771,47 @@ function printResume(r) {
   }
 
   const slug = ((r.name || 'resume') + '-' + (r.company || '')).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
-  doc.save(slug + '.pdf');
+  return { doc, filename: slug + '.pdf' };
+}
+
+// Saves straight to Downloads. jsPDF is bundled with the extension rather than
+// pulled from a CDN, because a content script loading a remote script trips the
+// page's CSP on exactly the sites we run on.
+function printResume(r) {
+  const built = buildResumeDoc(r);
+  if (!built) { alert('PDF library missing — reload the extension at chrome://extensions.'); return; }
+  built.doc.save(built.filename);
+}
+
+// Attaches the generated PDF to the form's file input directly. A content
+// script can populate input.files through a DataTransfer, so there is no need
+// for the user to download the file and pick it back off disk — and no need for
+// filesystem access or a desktop app. Verified against a live Gem form, whose
+// input is hidden behind a styled button, which is exactly the case a human
+// would struggle with.
+function attachResumeToForm(r) {
+  const built = buildResumeDoc(r);
+  if (!built) return { ok: false, why: 'Reload extension' };
+
+  const inputs = [...document.querySelectorAll('input[type=file]')].filter(i => !i.disabled);
+  const resumeInput = inputs.find(i => {
+    const hay = `${i.accept || ''} ${i.name || ''} ${i.id || ''} ${getFieldLabel(i) || ''}`.toLowerCase();
+    return /pdf|resume|cv/.test(hay);
+  }) || inputs[0];
+  if (!resumeInput) return { ok: false, why: 'No file upload field on this page' };
+
+  try {
+    const blob = built.doc.output('blob');
+    const file = new File([blob], built.filename, { type: 'application/pdf' });
+    const dt = new DataTransfer();
+    dt.items.add(file);
+    resumeInput.files = dt.files;
+    resumeInput.dispatchEvent(new Event('input', { bubbles: true }));
+    resumeInput.dispatchEvent(new Event('change', { bubbles: true }));
+    return { ok: resumeInput.files.length === 1, filename: built.filename };
+  } catch (e) {
+    return { ok: false, why: e.message };
+  }
 }
 
 function printCoverLetter(text) {
