@@ -2449,6 +2449,9 @@ app.post('/clear', async (req, res) => {
 
 // ── Schedule ──────────────────────────────────────────────────────────────────
 
+// Cron already pins this timezone; naming it once keeps the schedule, the
+// startup log and the UI label from drifting apart.
+const SCHEDULE_TZ = process.env.SCHEDULE_TZ || 'America/Chicago';
 const SCHEDULE_DEFAULT = { hour: 8, minute: 0, enabled: false };
 
 // Kept in Postgres, not on disk — the container filesystem is wiped on every
@@ -2518,8 +2521,8 @@ function startCron() {
       });
     }); // end toRun.forEach
     }).catch(e => console.error('[cron] getProfiledUsers:', e.message));
-  }, { timezone: 'America/Chicago' });
-  console.log(`[cron] scheduled daily at ${String(s.hour).padStart(2,'0')}:${String(s.minute).padStart(2,'0')} CT`);
+  }, { timezone: SCHEDULE_TZ });
+  console.log(`[cron] scheduled daily at ${String(s.hour).padStart(2,'0')}:${String(s.minute).padStart(2,'0')} ${SCHEDULE_TZ}`);
 }
 
 app.get('/schedule', (req, res) => res.json(loadSchedule()));
