@@ -379,12 +379,14 @@ function buildHTML(serverDown) {
     <div class="act-row">
       <button class="fill-btn" id="jaa-fill">Fill form</button>
       <button class="cl-btn" id="jaa-gen-cl">Cover letter</button>
+      <button class="cl-btn" id="jaa-gen-resume">Resume</button>
       <button class="cl-btn" id="jaa-regen" title="Regenerate application from scratch">↺</button>
     </div>
     <div class="fill-note" id="jaa-note"></div>
   </div>` : ''}
   <div class="body">
     <div id="jaa-cl-out"></div>
+    <div id="jaa-resume-out"></div>
     ${a ? appHTML(a) : noAppBody()}
   </div>
 </div>`;
@@ -780,6 +782,33 @@ function bindEvents() {
       });
     });
   });
+
+  const genResumeBtn = shadow.getElementById('jaa-gen-resume');
+  const resumeOut = shadow.getElementById('jaa-resume-out');
+  if (genResumeBtn && resumeOut) {
+    genResumeBtn.addEventListener('click', async () => {
+      genResumeBtn.textContent = 'Tailoring…';
+      genResumeBtn.disabled = true;
+      try {
+        const res = await serverFetch('/resume-tailor', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ appId: currentApp.id }),
+        });
+        if (!res.ok) throw new Error(res.data?.error || 'failed');
+        renderResume(res.data, resumeOut);
+        genResumeBtn.textContent = 'Regenerate';
+      } catch (e) {
+        genResumeBtn.textContent = 'Resume';
+        resumeOut.innerHTML = '';
+        const err = document.createElement('div');
+        err.style.cssText = 'font-size:10px;color:#b91c1c;padding:6px 0';
+        err.textContent = e.message;
+        resumeOut.appendChild(err);
+      }
+      genResumeBtn.disabled = false;
+    });
+  }
 
   const genClBtn = shadow.getElementById('jaa-gen-cl');
   const clOut = shadow.getElementById('jaa-cl-out');
@@ -1303,6 +1332,76 @@ async function autoGenerateCoverLetter() {
   } catch {
     if (genClBtn) { genClBtn.textContent = 'Cover letter'; genClBtn.disabled = false; }
   }
+}
+
+function resumeToText(r) {
+  const lines = [r.name || '', '', r.summary || '', ''];
+  (r.experience || []).forEach(e => {
+    lines.push(`${e.company || ''} — ${e.title || ''}`);
+    if (e.dates) lines.push(e.dates);
+    (e.bullets || []).forEach(b => lines.push('• ' + b));
+    lines.push('');
+  });
+  if (r.skills?.length) lines.push('Skills: ' + r.skills.join(', '));
+  return lines.join('\n');
+}
+
+function renderResume(resume, out) {
+  out.innerHTML = '';
+  const text = resumeToText(resume);
+
+  const hd = document.createElement('div');
+  hd.className = 'sec-hd';
+  hd.style.cssText = 'cursor:pointer';
+
+  const label = document.createElement('span');
+  label.className = 'sec-label';
+  label.textContent = 'Resume for this role';
+
+  const chev = document.createElement('span');
+  chev.className = 'chev';
+  chev.textContent = '▸';
+  const actionsHd = document.createElement('div');
+  actionsHd.className = 'sec-actions';
+  actionsHd.appendChild(chev);
+  hd.appendChild(label);
+  hd.appendChild(actionsHd);
+
+  const body = document.createElement('div');
+  body.className = 'sec-body';
+  body.style.display = 'none';
+
+  const prose = document.createElement('div');
+  prose.className = 'prose';
+  prose.style.cssText = 'cursor:pointer;white-space:pre-wrap';
+  prose.title = 'Click to copy';
+  prose.textContent = text;
+
+  const hint = document.createElement('div');
+  hint.style.cssText = 'font-size:9px;color:#555;padding:4px 0 8px;letter-spacing:.06em;text-transform:uppercase';
+  hint.textContent = 'click to copy';
+
+  prose.addEventListener('click', () => {
+    navigator.clipboard.writeText(text).then(() => {
+      hint.textContent = '✓ copied'; hint.style.color = '#16a34a';
+      setTimeout(() => { hint.textContent = 'click to copy'; hint.style.color = '#555'; }, 2000);
+    });
+  });
+
+  body.appendChild(prose);
+  body.appendChild(hint);
+
+  hd.addEventListener('click', () => {
+    const open = body.style.display !== 'none';
+    body.style.display = open ? 'none' : '';
+    chev.textContent = open ? '▸' : '▾';
+  });
+
+  const sec = document.createElement('div');
+  sec.className = 'sec';
+  sec.appendChild(hd);
+  sec.appendChild(body);
+  out.appendChild(sec);
 }
 
 function renderCoverLetter(text, clOut) {

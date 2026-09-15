@@ -21,7 +21,7 @@ process.on('uncaughtException', (err) => {
 
 const app = express();
 const PORT = process.env.PORT || 5000;
-const VERSION = '0.3.1';
+const VERSION = '0.3.2';
 const IS_PRODUCTION = process.env.NODE_ENV === 'production';
 const APP_ORIGIN = process.env.APP_ORIGIN || 'http://localhost:5000';
 const ALLOWED_WEB_ORIGINS = new Set(
@@ -3310,12 +3310,22 @@ function renderDetail(j) {
   html += '<div class="pr-body">';
   if (j.fit_score) html += '<div class="pr-fit"><span class="pr-fit-n">' + j.fit_score + '</span><span class="pr-fit-d">/10</span><span class="pr-fit-l">fit</span></div>';
   html += '<div class="pr-btns">';
-  html += '<button class="pr-open-btn" onclick="openAndGenerate(listItems[' + selIdx + '])"><span class="pr-open-key">&crarr;</span> Open &amp; generate kit</button>';
+  // A kit already exists for this job — link straight to it. Prepending our own
+  // origin to the job URL loads the cached kit, so reopening costs nothing.
+  if (j.kit_generated_at) {
+    html += '<button class="pr-open-btn" onclick="viewKit(listItems[' + selIdx + '])">View kit</button>';
+  }
+  html += '<button class="pr-open-btn" onclick="openAndGenerate(listItems[' + selIdx + '])"><span class="pr-open-key">&crarr;</span> ' + (j.kit_generated_at ? 'Open job page' : 'Open &amp; generate kit') + '</button>';
   if (j.status !== 'skipped') html += '<button class="pr-skip-btn" onclick="doAction(&apos;skipped&apos;)"><span class="pr-open-key">S</span> Skip</button>';
   if (j.status === 'skipped') html += '<button class="pr-skip-btn" onclick="doAction(&apos;new&apos;)"><span class="pr-open-key">U</span> Undo</button>';
   html += '</div>';
   html += '</div>';
   document.getElementById('pl-right').innerHTML = html;
+}
+
+// Our own origin prepended to the job URL serves the cached kit — free, no regeneration.
+function viewKit(j) {
+  window.open(location.origin + '/' + j.url, '_blank');
 }
 
 async function openAndGenerate(j) {
