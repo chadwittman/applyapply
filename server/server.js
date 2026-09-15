@@ -21,7 +21,7 @@ process.on('uncaughtException', (err) => {
 
 const app = express();
 const PORT = process.env.PORT || 5000;
-const VERSION = '0.4.1';
+const VERSION = '0.4.2';
 const IS_PRODUCTION = process.env.NODE_ENV === 'production';
 const APP_ORIGIN = process.env.APP_ORIGIN || 'http://localhost:5000';
 const ALLOWED_WEB_ORIGINS = new Set(
@@ -4015,7 +4015,7 @@ function renderResumeSection() {
         (resumeData.skills && resumeData.skills.length ? '<div style="font-size:11px;color:#888;margin-top:4px"><b style="color:#fff">Skills:</b> ' + esc(resumeData.skills.join(', ')) + '</div>' : '') +
         '<div class="gen-actions" style="margin-top:14px">' +
           '<button class="icon-btn" onclick="generateResume(true)">Regenerate</button>' +
-          '<button class="icon-btn" onclick="downloadResumePDF()">Download PDF</button>' +
+          '<button class="icon-btn" onclick="downloadResumePDF()">PDF</button>' +
         '</div>' +
       '</div>';
   } else {
@@ -4049,51 +4049,40 @@ function generateResume(force) {
 
 function downloadResumePDF() {
   if (!resumeData) return;
-  function generate() {
-    var doc = new window.jspdf.jsPDF();
-    var margin = 20;
-    var pageW = doc.internal.pageSize.getWidth() - margin * 2;
-    var y = 24;
-    doc.setFontSize(15); doc.setFont(undefined, 'bold');
-    doc.text(resumeData.name || '', margin, y); y += 8;
-    doc.setFontSize(10); doc.setFont(undefined, 'normal');
-    if (resumeData.summary) {
-      var sLines = doc.splitTextToSize(resumeData.summary, pageW);
-      sLines.forEach(function(line) { doc.text(line, margin, y); y += 5; });
-      y += 4;
-    }
-    (resumeData.experience || []).forEach(function(e) {
-      if (y > 265) { doc.addPage(); y = 22; }
-      doc.setFontSize(11); doc.setFont(undefined, 'bold');
-      doc.text((e.company || '') + ' — ' + (e.title || ''), margin, y); y += 5;
-      doc.setFontSize(9); doc.setFont(undefined, 'italic');
-      doc.text(e.dates || '', margin, y); y += 6;
-      doc.setFont(undefined, 'normal'); doc.setFontSize(10);
-      (e.bullets || []).forEach(function(b) {
-        var bLines = doc.splitTextToSize('• ' + b, pageW - 4);
-        bLines.forEach(function(line) {
-          if (y > 272) { doc.addPage(); y = 22; }
-          doc.text(line, margin + 2, y); y += 5;
-        });
-      });
-      y += 4;
-    });
-    if (resumeData.skills && resumeData.skills.length) {
-      if (y > 265) { doc.addPage(); y = 22; }
-      doc.setFontSize(10); doc.setFont(undefined, 'bold');
-      doc.text('Skills', margin, y); y += 5;
-      doc.setFont(undefined, 'normal');
-      var skLines = doc.splitTextToSize(resumeData.skills.join(', '), pageW);
-      skLines.forEach(function(line) { doc.text(line, margin, y); y += 5; });
-    }
-    var slug = ((resumeData.company || '') + '-' + (resumeData.role || '')).toLowerCase().replace(/[^a-z0-9]+/g, '-');
-    doc.save(slug + '-resume.pdf');
-  }
-  if (window.jspdf) { generate(); return; }
-  var s = document.createElement('script');
-  s.src = 'https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js';
-  s.onload = generate;
-  document.head.appendChild(s);
+  var r = resumeData;
+  var w = window.open('', '_blank');
+  if (!w) return;
+  var roles = (r.experience || []).map(function(e) {
+    var bullets = (e.bullets || []).map(function(b) { return '<li>' + esc(b) + '</li>'; }).join('');
+    return '<section>'
+      + '<div class="role"><span class="co">' + esc(e.company) + '</span><span class="dates">' + esc(e.dates) + '</span></div>'
+      + '<div class="title">' + esc(e.title) + '</div>'
+      + '<ul>' + bullets + '</ul>'
+      + '</section>';
+  }).join('');
+  var skills = (r.skills && r.skills.length)
+    ? '<div class="skills"><b>Skills</b> &nbsp;' + esc(r.skills.join(' \u00b7 ')) + '</div>'
+    : '';
+  var css = '@page { margin: 0.6in; }'
+    + 'body { font-family: Georgia, "Times New Roman", serif; font-size: 10.5pt; line-height: 1.45; color: #111; max-width: 7.2in; margin: 0 auto; }'
+    + 'h1 { font-size: 19pt; letter-spacing: -.02em; margin: 0 0 4pt; }'
+    + '.summary { margin: 0 0 14pt; }'
+    + 'section { margin-bottom: 12pt; page-break-inside: avoid; }'
+    + '.role { display: flex; justify-content: space-between; align-items: baseline; border-bottom: 1px solid #ddd; padding-bottom: 2pt; }'
+    + '.co { font-weight: bold; font-size: 11.5pt; }'
+    + '.dates { font-size: 9pt; color: #555; }'
+    + '.title { font-style: italic; margin: 2pt 0 4pt; }'
+    + 'ul { margin: 0; padding-left: 15pt; } li { margin-bottom: 3pt; }'
+    + '.skills { margin-top: 12pt; font-size: 10pt; } .skills b { font-variant: small-caps; letter-spacing: .04em; }';
+  w.document.write('<!DOCTYPE html><html><head><title>' + esc(r.name || 'Resume') + '</title>'
+    + '<style>' + css + '</style></head><body>'
+    + '<h1>' + esc(r.name || '') + '</h1>'
+    + '<p class="summary">' + esc(r.summary || '') + '</p>'
+    + roles + skills
+    + '</body></html>');
+  w.document.close();
+  w.focus();
+  setTimeout(function() { w.print(); }, 400);
 }
 
 function downloadKit() {
