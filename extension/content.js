@@ -639,9 +639,16 @@ function bindEvents() {
       setBtn('jaa-fill', 'Re-fill');
       fillBtn.disabled = false;
       injectCopyButtons();
-      if (note) note.textContent = result?.filled > 0
-        ? `${result.filled} filled · ${result.skipped} manual`
-        : 'Nothing matched — try re-fill';
+      if (note) {
+        if (result?.filled > 0) {
+          note.textContent = `${result.filled} filled · ${result.skipped} manual`
+            + (currentApp ? '' : ' · generate a kit for the written answers');
+        } else if (!currentApp) {
+          note.textContent = 'No fields matched. Generate a kit for this job to answer its questions.';
+        } else {
+          note.textContent = 'Nothing matched — try re-fill';
+        }
+      }
     });
   }
 
@@ -911,6 +918,7 @@ function captureScreenshot() {
 }
 
 async function aiFill(app) {
+  if (!app?.id) throw new Error('no-kit');
   const fields = scanPageFields();
 
   // Capture the form visually so Claude can see what's actually rendered
@@ -948,9 +956,13 @@ async function aiFill(app) {
 
 // ── Deterministic fill ───────────────────────────────────────────────────────
 
+// Works with or without a generated kit. Contact details come from the
+// profile, so there is no reason to refuse to fill them just because no kit
+// exists yet — previously app was dereferenced directly and threw, which the
+// caller swallowed and reported as "Nothing matched".
 function deterministicFill(app) {
-  const p = mergeProfile(app.profile);
-  const t = app.tailored;
+  const p = mergeProfile(app?.profile);
+  const t = app?.tailored || {};
   let filled = 0, skipped = 0;
 
   const rules = [
@@ -1078,6 +1090,17 @@ function findFieldByRule({ test, textarea }) {
   for (const el of document.querySelectorAll('input,textarea')) {
     const attr = (el.name || el.id || el.placeholder || '').toLowerCase().replace(/[-_]/g, ' ');
     if (test(attr)) return el;
+  }
+  // Last resort: the same resolver the copy buttons use, which can read a label
+  // out of an ancestor. Filling had its own label logic that looked only at
+  // <label>, name, id and placeholder, so on a form carrying none of those it
+  // matched nothing while the copy buttons on the very same fields worked.
+  for (const el of document.querySelectorAll('input,textarea')) {
+    if (textarea && el.tagName !== 'TEXTAREA') continue;
+    if (el.type === 'radio' || el.type === 'checkbox' || el.disabled || el.readOnly) continue;
+    if (el.offsetParent === null) continue;
+    const l = (getFieldLabel(el) || '').toLowerCase().replace(/\*/g, '').trim();
+    if (l && test(l)) return el;
   }
   return null;
 }
