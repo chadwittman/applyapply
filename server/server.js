@@ -8,6 +8,7 @@ const pdfParse = require('pdf-parse');
 const jwt = require('jsonwebtoken');
 const crypto = require('crypto');
 const rateLimit = require('express-rate-limit');
+const { zipDirectory } = require('./zip');
 const { getProfileByUserEmail, setProfile, getUser, getOrCreateUser, addUserCredits, deductUserCredits, createMagicLink, getMagicLink, useMagicLink, PROFILE_FIELDS: DB_PROFILE_FIELDS } = require('./db');
 const db = require('./db');
 
@@ -21,7 +22,7 @@ process.on('uncaughtException', (err) => {
 
 const app = express();
 const PORT = process.env.PORT || 5000;
-const VERSION = '0.22.0';
+const VERSION = '0.23.0';
 const IS_PRODUCTION = process.env.NODE_ENV === 'production';
 const APP_ORIGIN = process.env.APP_ORIGIN || 'http://localhost:5000';
 const ALLOWED_WEB_ORIGINS = new Set(
@@ -55,12 +56,16 @@ app.use('/brand', express.static(path.join(__dirname, '../brand'), {
 
 // Canonical origin for absolute URLs in social tags. Crawlers do not run
 // JavaScript and will not follow a relative og:image.
+function escapeHtml(v) {
+  return String(v).replace(/&/g, '&amp;').replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
 function metaHead({ title, desc, path: urlPath = '/', noindex = false }) {
   const origin = APP_ORIGIN.replace(/\/$/, '');
   const url = origin + urlPath;
   const img = origin + '/brand/og.png';
-  const esc = v => String(v).replace(/&/g, '&amp;').replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  const esc = escapeHtml;
   return `<title>${esc(title)}</title>
 <meta name="description" content="${esc(desc)}">
 <link rel="canonical" href="${esc(url)}">
@@ -88,12 +93,86 @@ ${noindex ? '<meta name="robots" content="noindex,nofollow">' : '<meta name="rob
 
 // Only the marketing surface should be crawled; everything else is a signed-in
 // app page and is marked noindex in its head as well.
+// The extension is not on the Web Store yet, so this is how it reaches a
+// second machine or an early user: a zip built from the same folder that is
+// deployed, so it can never drift from what is running.
+let extZipCache = null;
+function extensionZip() {
+  if (extZipCache) return extZipCache;
+  const dir = path.join(__dirname, '../extension');
+  const version = JSON.parse(fs.readFileSync(path.join(dir, 'manifest.json'), 'utf8')).version;
+  extZipCache = { version, buf: zipDirectory(dir) };
+  return extZipCache;
+}
+
+app.get('/extension.zip', (req, res) => {
+  try {
+    const { version, buf } = extensionZip();
+    res.setHeader('Content-Type', 'application/zip');
+    res.setHeader('Content-Disposition',
+      `attachment; filename="applyapply-extension-${version}.zip"`);
+    res.setHeader('Content-Length', buf.length);
+    res.setHeader('Cache-Control', 'no-cache');
+    res.send(buf);
+  } catch (e) {
+    console.error('[extension.zip]', e.message);
+    res.status(500).send('Could not build the extension archive');
+  }
+});
+
+app.get('/extension', (req, res) => {
+  let version = '';
+  try { version = extensionZip().version; } catch {}
+  res.setHeader('Cache-Control', 'no-store');
+  res.send(`<!DOCTYPE html><html><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+${metaHead({title:'Install the extension — applyapply', desc:'Add applyapply to Chrome. It fills job application forms with your generated apply kit.', path:'/extension'})}
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#000;color:#fff;-webkit-font-smoothing:antialiased}
+a{text-decoration:none;color:inherit}
+${NAV_CSS}
+.wrap{max-width:660px;margin:0 auto;padding:56px 24px 120px}
+h1{font-size:30px;font-weight:800;letter-spacing:-.04em;margin-bottom:10px}
+.sub{font-size:14px;color:#fff;margin-bottom:34px;line-height:1.6}
+.dl{display:inline-flex;align-items:center;gap:12px;background:#fff;color:#000;font-size:15px;font-weight:700;padding:15px 28px;letter-spacing:-.01em}
+.dl:hover{background:#e5e5e5}
+.ver{font-size:12px;color:#8f8f8f;margin-top:12px}
+ol{margin:40px 0 0;padding:0;list-style:none;counter-reset:step}
+li{counter-increment:step;position:relative;padding:0 0 22px 46px;font-size:14px;line-height:1.65}
+li::before{content:counter(step);position:absolute;left:0;top:-1px;width:28px;height:28px;background:#fff;color:#000;font-size:13px;font-weight:700;display:flex;align-items:center;justify-content:center}
+li b{font-weight:700}
+code{background:#111;border:1px solid #1e1e1e;padding:2px 7px;font-size:13px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+.note{margin-top:34px;padding:18px;border:1px solid #1e1e1e;background:#080808;font-size:13px;line-height:1.65}
+</style></head><body>
+<div class="topbar"><a href="/" class="logo">applyapply</a><div class="nav">${navHTML('/extension')}</div></div>
+<div class="wrap">
+  <h1>Install the extension</h1>
+  <div class="sub">It opens on a job posting, fills the form from your apply kit, and attaches your tailored resume.</div>
+
+  <a class="dl" href="/extension.zip" download>Download for Chrome</a>
+  <div class="ver">Version ${escapeHtml(version)} &middot; works in Chrome, Edge, Brave and Arc</div>
+
+  <ol>
+    <li>Unzip the download, then move the unzipped folder somewhere permanent &mdash; your home folder is fine. Chrome loads the extension from that folder every time it starts, so moving or deleting it later uninstalls the extension.</li>
+    <li>Open <code>chrome://extensions</code> in a new tab.</li>
+    <li>Turn on <b>Developer mode</b> using the switch in the top right.</li>
+    <li>Click <b>Load unpacked</b> and pick that folder &mdash; the one with <code>manifest.json</code> directly inside it.</li>
+    <li>Click the applyapply icon in your toolbar and <b>Sign in</b>. The same account and credits you already have.</li>
+  </ol>
+
+  <div class="note">Developer mode is only needed because applyapply is not in the Chrome Web Store yet. Once it is listed, installing is one click and Chrome keeps it updated and synced across your machines on its own.</div>
+</div>
+</body></html>`);
+});
+
 app.get('/robots.txt', (req, res) => {
   const origin = APP_ORIGIN.replace(/\/$/, '');
   res.type('text/plain').send([
     'User-agent: *',
     'Allow: /$',
     'Allow: /buy',
+    'Allow: /extension',
     'Allow: /brand/',
     'Disallow: /pipeline',
     'Disallow: /sourcing',
@@ -116,7 +195,7 @@ app.get('/sitemap.xml', (req, res) => {
   res.type('application/xml').send(
     `<?xml version="1.0" encoding="UTF-8"?>\n` +
     `<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n` +
-    ['/', '/buy'].map(u =>
+    ['/', '/buy', '/extension'].map(u =>
       `  <url><loc>${origin}${u}</loc><lastmod>${day}</lastmod></url>`).join('\n') +
     `\n</urlset>\n`);
 });
@@ -326,6 +405,7 @@ function navHTML(active = '') {
     ['/pipeline', 'Pipeline'],
     ['/sourcing', 'Sourcing'],
     ['/setup', 'Profile'],
+    ['/extension', 'Extension'],
     ['/buy', 'Credits'],
   ];
   return items.map(([href, label]) =>
@@ -864,7 +944,7 @@ app.get('/auth/verify', async (req, res) => {
         <ol style="color:#333;font-size:14px;padding-left:20px;line-height:2">
           <li><a href="${origin}/setup" style="color:#2563eb">Set up your profile</a> — paste your resume, fill in your background. This is what the AI reads to write your applications.</li>
           <li><a href="${origin}/sourcing" style="color:#2563eb">Run sourcing</a> — pick your sources and let the agent find matching roles.</li>
-          <li>Install the Chrome extension — open it on any job page and hit Generate. The kit writes itself.</li>
+          <li><a href="${origin}/extension" style="color:#2563eb">Install the Chrome extension</a> — open it on any job page and hit Generate. The kit writes itself.</li>
         </ol>
         <p style="color:#aaa;font-size:12px;margin-top:24px">You have 0 credits to start. <a href="${origin}/buy" style="color:#2563eb">Buy credits</a> to run sourcing and generate apply kits.</p>
       </div>`,
