@@ -21,7 +21,7 @@ process.on('uncaughtException', (err) => {
 
 const app = express();
 const PORT = process.env.PORT || 5000;
-const VERSION = '0.21.1';
+const VERSION = '0.22.0';
 const IS_PRODUCTION = process.env.NODE_ENV === 'production';
 const APP_ORIGIN = process.env.APP_ORIGIN || 'http://localhost:5000';
 const ALLOWED_WEB_ORIGINS = new Set(
@@ -46,6 +46,80 @@ if (IS_PRODUCTION && !process.env.DATABASE_URL) {
 if (IS_PRODUCTION && !process.env.STRIPE_PRICE_ID) {
   throw new Error('STRIPE_PRICE_ID must be set in production');
 }
+
+// Brand assets: icons, the social card, and the web app manifest. Cached hard
+// because every filename is stable and the art rarely changes.
+app.use('/brand', express.static(path.join(__dirname, '../brand'), {
+  maxAge: '30d', immutable: false, fallthrough: true,
+}));
+
+// Canonical origin for absolute URLs in social tags. Crawlers do not run
+// JavaScript and will not follow a relative og:image.
+function metaHead({ title, desc, path: urlPath = '/', noindex = false }) {
+  const origin = APP_ORIGIN.replace(/\/$/, '');
+  const url = origin + urlPath;
+  const img = origin + '/brand/og.png';
+  const esc = v => String(v).replace(/&/g, '&amp;').replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  return `<title>${esc(title)}</title>
+<meta name="description" content="${esc(desc)}">
+<link rel="canonical" href="${esc(url)}">
+${noindex ? '<meta name="robots" content="noindex,nofollow">' : '<meta name="robots" content="index,follow">'}
+<link rel="icon" href="/brand/favicon.ico" sizes="any">
+<link rel="icon" type="image/png" href="/brand/icon-32.png" sizes="32x32">
+<link rel="icon" type="image/png" href="/brand/icon-192.png" sizes="192x192">
+<link rel="apple-touch-icon" href="/brand/icon-180.png">
+<link rel="manifest" href="/brand/site.webmanifest">
+<meta name="theme-color" content="#0a0a0a">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="applyapply">
+<meta property="og:title" content="${esc(title)}">
+<meta property="og:description" content="${esc(desc)}">
+<meta property="og:url" content="${esc(url)}">
+<meta property="og:image" content="${esc(img)}">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="applyapply — job applications, done for you.">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="${esc(title)}">
+<meta name="twitter:description" content="${esc(desc)}">
+<meta name="twitter:image" content="${esc(img)}">`;
+}
+
+// Only the marketing surface should be crawled; everything else is a signed-in
+// app page and is marked noindex in its head as well.
+app.get('/robots.txt', (req, res) => {
+  const origin = APP_ORIGIN.replace(/\/$/, '');
+  res.type('text/plain').send([
+    'User-agent: *',
+    'Allow: /$',
+    'Allow: /buy',
+    'Allow: /brand/',
+    'Disallow: /pipeline',
+    'Disallow: /sourcing',
+    'Disallow: /setup',
+    'Disallow: /login',
+    'Disallow: /auth/',
+    'Disallow: /checkout',
+    'Disallow: /admin/',
+    'Disallow: /https://',
+    'Disallow: /http://',
+    '',
+    `Sitemap: ${origin}/sitemap.xml`,
+    '',
+  ].join('\n'));
+});
+
+app.get('/sitemap.xml', (req, res) => {
+  const origin = APP_ORIGIN.replace(/\/$/, '');
+  const day = new Date().toISOString().slice(0, 10);
+  res.type('application/xml').send(
+    `<?xml version="1.0" encoding="UTF-8"?>\n` +
+    `<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n` +
+    ['/', '/buy'].map(u =>
+      `  <url><loc>${origin}${u}</loc><lastmod>${day}</lastmod></url>`).join('\n') +
+    `\n</urlset>\n`);
+});
 
 app.set('trust proxy', 1);
 app.disable('x-powered-by');
@@ -274,7 +348,7 @@ app.get('/', (req, res) => {
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>applyapply</title>
+${metaHead({title:'applyapply — job applications, done for you', desc:'Agents find the roles overnight, AI writes the apply kit, and the Chrome extension fills the form. Stop retyping your resume into every job board.', path:'/'})}
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
 body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#000;color:#fff;line-height:1.5;-webkit-font-smoothing:antialiased}
@@ -694,7 +768,7 @@ app.get('/login', (req, res) => {
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Sign in — applyapply</title>
+${metaHead({title:'Sign in — applyapply', desc:'Sign in with a magic link. No password to remember.', path:'/login', noindex:true})}
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
 body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#000;color:#fff;display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:100vh;-webkit-font-smoothing:antialiased}
@@ -811,7 +885,7 @@ app.get('/auth/success', (req, res) => {
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Signed in — applyapply</title>
+${metaHead({title:'Signed in — applyapply', desc:'You are signed in.', path:'/auth/success', noindex:true})}
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
 body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#000;color:#fff;display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:100vh;-webkit-font-smoothing:antialiased}
@@ -894,7 +968,7 @@ app.get('/buy', (req, res) => {
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>applyapply — buy credits</title>
+${metaHead({title:'Buy credits — applyapply', desc:'Credits pay for sourcing runs and generated apply kits. No subscription.', path:'/buy'})}
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
 body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#000;color:#fff;min-height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;-webkit-font-smoothing:antialiased}
@@ -992,7 +1066,7 @@ app.get('/checkout/success', async (req, res) => {
 
   res.send(`<!DOCTYPE html>
 <html lang="en">
-<head><meta charset="utf-8"><title>applyapply — you're in</title>
+<head><meta charset="utf-8">${metaHead({title:"You're in — applyapply", desc:'Your credits are ready.', path:'/checkout/success', noindex:true})}
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
 body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:#0a0a0a;color:#ccc;min-height:100vh;display:flex;align-items:center;justify-content:center}
@@ -1246,7 +1320,7 @@ app.get('/setup', (req, res) => {
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Profile — applyapply</title>
+${metaHead({title:'Profile — applyapply', desc:'Your background, target roles and resume. This is what the AI reads.', path:'/setup', noindex:true})}
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
 body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#000;color:#fff;padding:0;-webkit-font-smoothing:antialiased}
@@ -3147,7 +3221,7 @@ app.get('/sourcing', async (req, res) => {
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>sourcing</title>
+${metaHead({title:'Sourcing — applyapply', desc:'Send the agents out to find roles that match your profile.', path:'/sourcing', noindex:true})}
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
 body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:#0a0a0a;color:#ccc;font-size:13px;min-height:100vh}
@@ -3993,7 +4067,7 @@ app.get('/pipeline', async (req, res) => {
   const allJobs = userEmail ? await db.getJobs(null, 2000, userEmail) : [];
   const jobsJson = JSON.stringify(allJobs).replace(/<\/script>/gi, '<\\/script>');
 
-  res.send(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>Pipeline — applyapply</title>
+  res.send(`<!DOCTYPE html><html><head><meta charset="utf-8">${metaHead({title:'Pipeline — applyapply', desc:'Everything sourced for you, and what is left to work through.', path:'/pipeline', noindex:true})}
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
 html,body{height:100%}
@@ -4457,7 +4531,7 @@ app.use((req, res, next) => {
 
   res.setHeader('Cache-Control', 'no-store');
   res.send(`<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>applyapply — kit incoming</title>
+${metaHead({title:'Apply kit — applyapply', desc:'Your tailored application for this role.', path:'/', noindex:true})}
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
 body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#000;color:#fff;min-height:100vh;-webkit-font-smoothing:antialiased}

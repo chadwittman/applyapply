@@ -1,0 +1,14 @@
+{
+  "name": "applyapply",
+  "short_name": "applyapply",
+  "description": "Job applications, done for you.",
+  "start_url": "/pipeline",
+  "display": "standalone",
+  "background_color": "#0a0a0a",
+  "theme_color": "#0a0a0a",
+  "icons": [
+    { "src": "/brand/icon-192.png", "type": "image/png", "sizes": "192x192" },
+    { "src": "/brand/icon-512.png", "type": "image/png", "sizes": "512x512" },
+    { "src": "/brand/icon-512.png", "type": "image/png", "sizes": "512x512", "purpose": "maskable" }
+  ]
+}
