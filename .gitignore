@@ -18,3 +18,7 @@ reddit_scrape_tmp*.mjs
 reddit_single_tmp.mjs
 PROFILE.md
 TRACKER.md
+
+# Build output and the local sqlite scratch database
+dist/
+data/

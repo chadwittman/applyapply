@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "applyapply",
-  "version": "1.9.24",
+  "version": "1.9.25",
   "description": "Auto-fill job applications with AI-generated apply kits",
   "permissions": [
     "activeTab",
@@ -19,6 +19,7 @@
     "https://jobs.lever.co/*",
     "https://instacart.careers/*",
     "https://applyapply-production.up.railway.app/*",
+    "https://applyapply.xyz/*",
     "http://localhost:5000/*",
     "*://*/*"
   ],
@@ -61,7 +62,8 @@
   "externally_connectable": {
     "matches": [
       "http://localhost:5000/*",
-      "https://applyapply-production.up.railway.app/*"
+      "https://applyapply-production.up.railway.app/*",
+      "https://applyapply.xyz/*"
     ]
   }
 }

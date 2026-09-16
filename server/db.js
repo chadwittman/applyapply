@@ -3,7 +3,13 @@ if (!process.env.DATABASE_URL) {
   throw new Error('DATABASE_URL is required to start the ApplyApply server');
 }
 
-const pool = new Pool({ connectionString: process.env.DATABASE_URL, ssl: { rejectUnauthorized: false } });
+// Railway's Postgres requires TLS; a local Postgres typically refuses it
+// outright, which made it impossible to run the server against a scratch
+// database. DATABASE_SSL=off opts out for local development and tests.
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  ssl: process.env.DATABASE_SSL === 'off' ? false : { rejectUnauthorized: false },
+});
 
 async function q(sql, params = []) {
   const { rows } = await pool.query(sql, params);
@@ -73,6 +79,17 @@ async function initSchema() {
       status_updated_at TIMESTAMPTZ
     )
   `);
+
+  // A job URL was UNIQUE across the whole table, which silently made the
+  // product single-user: the first account to source a posting owned the only
+  // row for it, and every later account's run reported the job as added while
+  // inserting nothing. Uniqueness belongs per user, not per install.
+  // COALESCE keeps legacy rows with a null owner in one bucket, since NULL
+  // never equals NULL in a unique constraint.
+  await q(`ALTER TABLE jobs DROP CONSTRAINT IF EXISTS jobs_url_key`);
+  await q(`CREATE UNIQUE INDEX IF NOT EXISTS jobs_owner_url_idx
+           ON jobs (COALESCE(user_email, ''), url)`);
+  await q(`CREATE INDEX IF NOT EXISTS idx_jobs_user_email ON jobs (user_email)`);
 
   await q(`
     CREATE TABLE IF NOT EXISTS decisions (
@@ -211,12 +228,23 @@ async function getRun(id) {
 
 // ── Jobs ──────────────────────────────────────────────────────────────────────
 
+// jobs.id is a readable slug derived from company + role + date, so two users
+// who source the same posting on the same day produce the same id and collide
+// on the primary key. Qualify it by owner. Rows with no owner keep the bare id
+// so existing ids are unchanged.
+function jobIdFor(id, userEmail) {
+  if (!userEmail) return id;
+  const tag = require('crypto').createHash('sha1').update(userEmail).digest('hex').slice(0, 6);
+  return `${id}--${tag}`;
+}
+
+
 async function insertJob(job) {
   await q(`
     INSERT INTO jobs (id, url, company, role, ats, source, run_id, found_at, status, tier, fit_score, location, notes, user_email)
     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
-    ON CONFLICT (url) DO NOTHING
-  `, [job.id, job.url, job.company, job.role, job.ats||null, job.source||null, job.run_id||null,
+    ON CONFLICT (COALESCE(user_email, ''), url) DO NOTHING
+  `, [jobIdFor(job.id, job.user_email), job.url, job.company, job.role, job.ats||null, job.source||null, job.run_id||null,
       job.found_at, job.status||'new', job.tier||null, job.fit_score||null,
       job.location||null, job.notes||'', job.user_email||null]);
 }
@@ -225,17 +253,16 @@ async function upsertJob(job) {
   await q(`
     INSERT INTO jobs (id, url, company, role, ats, source, run_id, found_at, status, tier, fit_score, location, notes, user_email)
     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
-    ON CONFLICT (url) DO UPDATE SET
+    ON CONFLICT (COALESCE(user_email, ''), url) DO UPDATE SET
       company    = EXCLUDED.company,
       role       = EXCLUDED.role,
       source     = COALESCE(jobs.source, EXCLUDED.source),
       tier       = EXCLUDED.tier,
       fit_score  = EXCLUDED.fit_score,
       location   = EXCLUDED.location,
-      user_email = COALESCE(jobs.user_email, EXCLUDED.user_email),
       updated_at = NOW()
     WHERE jobs.status = 'new'
-  `, [job.id, job.url, job.company, job.role, job.ats||null, job.source||null, job.run_id||null,
+  `, [jobIdFor(job.id, job.user_email), job.url, job.company, job.role, job.ats||null, job.source||null, job.run_id||null,
       job.found_at, job.status||'new', job.tier||null, job.fit_score||null,
       job.location||null, job.notes||'', job.user_email||null]);
 }
@@ -247,10 +274,12 @@ async function upsertJob(job) {
 // careers page) produces the same id with a different url, which upsertJob's
 // ON CONFLICT (url) does not catch. Resolve the id collision before inserting.
 async function ensureJob(job) {
-  const byUrl = await q1(`SELECT id FROM jobs WHERE url = $1`, [job.url]);
+  const byUrl = await q1(
+    `SELECT id FROM jobs WHERE url = $1 AND COALESCE(user_email, '') = COALESCE($2, '')`,
+    [job.url, job.user_email || null]);
   if (byUrl) return byUrl.id;
 
-  let id = job.id;
+  let id = jobIdFor(job.id, job.user_email);
   const taken = await q1(`SELECT url FROM jobs WHERE id = $1`, [id]);
   if (taken) {
     const suffix = require('crypto').createHash('sha1').update(job.url).digest('hex').slice(0, 6);
@@ -260,27 +289,33 @@ async function ensureJob(job) {
   await q(`
     INSERT INTO jobs (id, url, company, role, ats, source, run_id, found_at, status, tier, fit_score, location, notes, user_email)
     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
-    ON CONFLICT (url) DO NOTHING
+    ON CONFLICT (COALESCE(user_email, ''), url) DO NOTHING
   `, [id, job.url, job.company, job.role, job.ats||null, job.source||null, job.run_id||null,
       job.found_at, job.status||'new', job.tier||null, job.fit_score||null,
       job.location||null, job.notes||'', job.user_email||null]);
   return id;
 }
 
-async function setJobStatus(url, status, extra = {}) {
-  await q(`
+async function setJobStatus(url, status, extra = {}, userEmail = null) {
+  // q returns rows, so RETURNING is how this reports whether anything matched.
+  const rows = await q(`
     UPDATE jobs SET status = $1, applied_at = COALESCE($2, applied_at),
       notes = COALESCE($3, notes), updated_at = NOW(), status_updated_at = NOW()
-    WHERE url = $4
-  `, [status, extra.applied_at||null, extra.notes||null, url]);
+    WHERE url = $4 AND ($5::text IS NULL OR COALESCE(user_email, '') = $5)
+    RETURNING id
+  `, [status, extra.applied_at||null, extra.notes||null, url, userEmail]);
+  return rows.length;
 }
 
-async function setKitGenerated(url) {
-  await q(`UPDATE jobs SET kit_generated_at = NOW() WHERE url = $1`, [url]);
+async function setKitGenerated(url, userEmail = null) {
+  await q(`UPDATE jobs SET kit_generated_at = NOW()
+           WHERE url = $1 AND ($2::text IS NULL OR COALESCE(user_email, '') = $2)`,
+          [url, userEmail]);
 }
 
-async function getJobByUrl(url) {
-  return q1(`SELECT * FROM jobs WHERE url = $1`, [url]);
+async function getJobByUrl(url, userEmail = null) {
+  return q1(`SELECT * FROM jobs WHERE url = $1
+             AND ($2::text IS NULL OR COALESCE(user_email, '') = $2)`, [url, userEmail]);
 }
 
 async function getJobs(status = null, limit = 200, userEmail = null) {
@@ -608,25 +643,38 @@ async function getSchedule(userEmail) {
   return q1(`SELECT * FROM schedules WHERE user_email = $1`, [userEmail]);
 }
 
-async function setSchedule(userEmail, { hour, minute, enabled, sources }) {
+// alreadyPassedToday stamps last_run_at so that saving a schedule for a time
+// that has already gone by does not read as a missed run and fire immediately,
+// charging credits the user never asked to spend today.
+async function setSchedule(userEmail, { hour, minute, enabled, sources }, alreadyPassedToday = false) {
   return q1(`
-    INSERT INTO schedules (user_email, hour, minute, enabled, sources, updated_at)
-    VALUES ($1,$2,$3,$4,$5,NOW())
+    INSERT INTO schedules (user_email, hour, minute, enabled, sources, last_run_at, updated_at)
+    VALUES ($1,$2,$3,$4,$5,$6,NOW())
     ON CONFLICT (user_email) DO UPDATE SET
       hour = EXCLUDED.hour, minute = EXCLUDED.minute,
-      enabled = EXCLUDED.enabled, sources = EXCLUDED.sources, updated_at = NOW()
+      enabled = EXCLUDED.enabled, sources = EXCLUDED.sources,
+      last_run_at = COALESCE(EXCLUDED.last_run_at, schedules.last_run_at),
+      updated_at = NOW()
     RETURNING *
-  `, [userEmail, hour, minute, enabled, sources ? JSON.stringify(sources) : null]);
+  `, [userEmail, hour, minute, enabled, sources ? JSON.stringify(sources) : null,
+      alreadyPassedToday ? new Date() : null]);
 }
 
 // Everything due at this wall-clock minute, skipping anything already run
 // within the last 23h so a restart mid-minute can't double-charge.
+// Matching the exact minute meant a single missed tick — a deploy, a restart,
+// a slow tick — silently cost a user their whole day of sourcing. Anyone whose
+// time has passed today and who has not run in 23 hours is due, so the next
+// tick picks up whatever the missed one dropped. The three-hour ceiling keeps
+// that a catch-up rather than a licence to fire at any later hour.
 async function getDueSchedules(hour, minute) {
   return q(`
     SELECT * FROM schedules
-    WHERE enabled = true AND hour = $1 AND minute = $2
+    WHERE enabled = true
+      AND (hour * 60 + minute) <= $1
+      AND $1 - (hour * 60 + minute) < 180
       AND (last_run_at IS NULL OR last_run_at < NOW() - INTERVAL '23 hours')
-  `, [hour, minute]);
+  `, [hour * 60 + minute]);
 }
 
 async function getAllEnabledSchedules() {

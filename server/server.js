@@ -21,7 +21,7 @@ process.on('uncaughtException', (err) => {
 
 const app = express();
 const PORT = process.env.PORT || 5000;
-const VERSION = '0.20.0';
+const VERSION = '0.21.0';
 const IS_PRODUCTION = process.env.NODE_ENV === 'production';
 const APP_ORIGIN = process.env.APP_ORIGIN || 'http://localhost:5000';
 const ALLOWED_WEB_ORIGINS = new Set(
@@ -211,10 +211,12 @@ function requireCredits(action) {
         const updated = await deductUserCredits(payload.email, cost);
         if (!updated) return res.status(402).json({ error: 'Insufficient credits', balance: user.credits, required: cost });
         // Reserve credits before expensive AI work to prevent concurrent requests
-        // from overspending. If the handler fails, return the reservation.
+        // from overspending. Return the reservation if the handler fails — or if
+        // it did no billable work, which a handler signals with res.noCharge().
         let refunded = false;
+        res.noCharge = () => { res.locals.noCharge = true; };
         res.on('finish', () => {
-          if (res.statusCode < 400 || refunded) return;
+          if ((res.statusCode < 400 && !res.locals.noCharge) || refunded) return;
           refunded = true;
           addUserCredits(payload.email, cost)
             .catch(error => console.error(`[credits] refund failed for ${payload.email}:`, error.message));
@@ -1944,9 +1946,11 @@ function reqUserEmail(req) {
 }
 
 app.get('/sourced', async (req, res) => {
+  const userEmail = reqUserEmail(req);
+  if (!userEmail) return res.status(401).json({ error: 'Sign in required' });
   try {
     const status = req.query.status || null;
-    res.json(await db.getJobs(status, 200, reqUserEmail(req)));
+    res.json(await db.getJobs(status, 200, userEmail));
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -1967,12 +1971,15 @@ app.get('/coverage', async (req, res) => {
 });
 
 app.get('/sourced/counts', async (req, res) => {
+  if (!reqUserEmail(req)) return res.status(401).json({ error: 'Sign in required' });
   try { res.json(await db.getStatusCounts(reqUserEmail(req))); }
   catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 app.get('/runs', async (req, res) => {
-  try { res.json(await db.getRuns(50, reqUserEmail(req))); }
+  const userEmail = reqUserEmail(req);
+  if (!userEmail) return res.status(401).json({ error: 'Sign in required' });
+  try { res.json(await db.getRuns(50, userEmail)); }
   catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -1986,40 +1993,50 @@ app.get('/runs/:id/jobs', async (req, res) => {
 });
 
 app.post('/sourced/status', async (req, res) => {
+  const userEmail = reqUserEmail(req);
+  if (!userEmail) return res.status(401).json({ error: 'Sign in required' });
   const { url, status } = req.body;
   if (!url || !status) return res.status(400).json({ error: 'url and status required' });
   const valid = ['new', 'reviewed', 'applying', 'applied', 'skipped', 'rejected'];
   if (!valid.includes(status)) return res.status(400).json({ error: 'invalid status' });
   try {
-    await db.setJobStatus(url, status, { applied_at: status === 'applied' ? new Date().toISOString().slice(0, 10) : undefined });
-    await db.recordDecision(url, reqUserEmail(req), status);
+    const n = await db.setJobStatus(url, status,
+      { applied_at: status === 'applied' ? new Date().toISOString().slice(0, 10) : undefined }, userEmail);
+    if (!n) return res.status(404).json({ error: 'No such job in your pipeline' });
+    await db.recordDecision(url, userEmail, status);
     res.json({ ok: true });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 app.post('/sourced/mark-reviewed', async (req, res) => {
+  const userEmail = reqUserEmail(req);
+  if (!userEmail) return res.status(401).json({ error: 'Sign in required' });
   const { ids } = req.body;
   if (!ids?.length) return res.status(400).json({ error: 'ids required' });
   try {
-    const jobs = await db.getJobs('new', 500, reqUserEmail(req));
+    const jobs = await db.getJobs('new', 500, userEmail);
     const idSet = new Set(ids);
-    for (const j of jobs) { if (idSet.has(j.id)) await db.setJobStatus(j.url, 'reviewed'); }
+    for (const j of jobs) { if (idSet.has(j.id)) await db.setJobStatus(j.url, 'reviewed', {}, userEmail); }
     res.json({ ok: true });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 app.post('/sourced/skip', async (req, res) => {
+  const userEmail = reqUserEmail(req);
+  if (!userEmail) return res.status(401).json({ error: 'Sign in required' });
   const { url } = req.body;
   if (!url) return res.status(400).json({ error: 'url required' });
-  try { await db.setJobStatus(url, 'skipped'); res.json({ ok: true }); }
+  try { await db.setJobStatus(url, 'skipped', {}, userEmail); res.json({ ok: true }); }
   catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 app.post('/sourced/mark-applied', async (req, res) => {
+  const userEmail = reqUserEmail(req);
+  if (!userEmail) return res.status(401).json({ error: 'Sign in required' });
   const { url } = req.body;
   if (!url) return res.status(400).json({ error: 'url required' });
   try {
-    await db.setJobStatus(url, 'applied', { applied_at: new Date().toISOString().slice(0, 10) });
+    await db.setJobStatus(url, 'applied', { applied_at: new Date().toISOString().slice(0, 10) }, userEmail);
     res.json({ ok: true });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -2043,6 +2060,7 @@ app.get('/sourced/pending-generate', (req, res) => {
 });
 
 app.post('/applied', async (req, res) => {
+  if (!reqUserEmail(req)) return res.status(401).json({ error: 'Sign in required' });
   const { appId, kitId, company, role, url } = req.body;
   const id = appId || kitId;
   if (!id) return res.status(400).json({ error: 'appId required' });
@@ -2058,22 +2076,26 @@ app.post('/applied', async (req, res) => {
   }
 
   // Update DB status (authoritative)
-  if (url) try { await db.setJobStatus(url, 'applied', { applied_at: appliedAt }); } catch {}
+  if (url) try { await db.setJobStatus(url, 'applied', { applied_at: appliedAt }, userEmail); } catch {}
 
   console.log(`Applied: ${company} — ${role} (${appliedAt})`);
   res.json({ ok: true, applied_at: appliedAt });
 });
 
 app.get('/applied', async (req, res) => {
+  const userEmail = reqUserEmail(req);
+  if (!userEmail) return res.status(401).json({ error: 'Sign in required' });
   try {
-    const jobs = await db.getJobs('applied', 500, reqUserEmail(req));
+    const jobs = await db.getJobs('applied', 500, userEmail);
     res.json(jobs.map(({ id, company, role, url, applied_at }) => ({ appId: id, company, role, url, applied_at })));
   } catch (e) { res.json([]); }
 });
 
 app.get('/status', async (req, res) => {
+  const userEmail = reqUserEmail(req);
+  if (!userEmail) return res.status(401).json({ error: 'Sign in required' });
   try {
-    const counts = await db.getStatusCounts(reqUserEmail(req));
+    const counts = await db.getStatusCounts(userEmail);
     const total = Object.values(counts).reduce((a, b) => a + b, 0);
     res.json({ ...counts, total });
   } catch { res.json({ new: 0, reviewed: 0, applied: 0, skipped: 0, total: 0 }); }
@@ -2100,7 +2122,9 @@ app.post('/generate', apiLimiter, requireCredits('generate'), async (req, res) =
   if (!force) {
     const cached = await findApplicationByUrl(url, userEmail);
     if (cached) {
-      console.log(`Cache hit: ${cached.company} — ${cached.role}`);
+      // Served straight from Postgres — no model call, so nothing to charge for.
+      res.noCharge?.();
+      console.log(`Cache hit: ${cached.company} — ${cached.role} (no charge)`);
       // Backfill the pipeline row for kits generated before this existed, or
       // generated directly (extension, URL-prepend) with no sourcing row.
       db.ensureJob({
@@ -2726,7 +2750,7 @@ async function runScheduledSourcing(row) {
   const { spawn } = require('child_process');
   const logDir = path.join(__dirname, '../logs');
   if (!fs.existsSync(logDir)) fs.mkdirSync(logDir, { recursive: true });
-  const logFile = SOURCE_LOG_FILE + `.${email.split('@')[0]}`;
+  const logFile = sourceLogFor(email);
   const ls = fs.createWriteStream(logFile, { flags: 'w' });
 
   const child = spawn('node', [path.join(__dirname, '../source.js')], {
@@ -2795,7 +2819,14 @@ app.post('/schedule', async (req, res) => {
   const names = Array.isArray(sources) && sources.length
     ? SOURCE_CATALOG.filter(s => sources.includes(s.name)).map(s => s.name)
     : null;
-  const row = await db.setSchedule(userEmail, { hour: h, minute: m, enabled: !!enabled, sources: names });
+  // If the time they picked has already gone by today, treat today as done so
+  // saving the schedule does not immediately trigger a run.
+  const [nowH, nowM] = new Intl.DateTimeFormat('en-US', {
+    timeZone: SCHEDULE_TZ, hour: '2-digit', minute: '2-digit', hour12: false,
+  }).format(new Date()).split(':').map(Number);
+  const passedToday = (h * 60 + m) <= (nowH * 60 + nowM);
+  const row = await db.setSchedule(userEmail,
+    { hour: h, minute: m, enabled: !!enabled, sources: names }, passedToday);
   const selected = names?.length ? SOURCE_CATALOG.filter(s => names.includes(s.name)) : SOURCE_CATALOG.filter(s => s.on);
   res.json({
     ok: true,
@@ -2814,6 +2845,7 @@ function getSourcingPid() { return sourcingPids.size > 0 ? [...sourcingPids.valu
 app.get('/source/status', async (req, res) => {
   res.setHeader('Cache-Control', 'no-store');
   const userEmail = reqUserEmail(req);
+  if (!userEmail) return res.status(401).json({ error: 'Sign in required' });
   const key = userEmail || '__local__';
   const active = sourcingPids.has(key);
   try {
@@ -2828,6 +2860,15 @@ app.get('/source/status', async (req, res) => {
 });
 
 const SOURCE_LOG_FILE = path.join(__dirname, '../logs/last-run.log');
+
+// One log per user. Keyed by a hash of the whole address because the part
+// before the @ is not unique, and a run's log names the companies and roles
+// someone is targeting.
+function sourceLogFor(userEmail) {
+  if (!userEmail) return SOURCE_LOG_FILE;
+  const tag = crypto.createHash('sha1').update(userEmail.toLowerCase()).digest('hex').slice(0, 12);
+  return `${SOURCE_LOG_FILE}.${tag}`;
+}
 
 app.get('/source/catalog', (req, res) => {
   res.json(SOURCE_CATALOG);
@@ -2864,10 +2905,8 @@ app.post('/source/run', apiLimiter, async (req, res) => {
 
   const { spawn } = require('child_process');
   if (!fs.existsSync(path.join(__dirname, '../logs'))) fs.mkdirSync(path.join(__dirname, '../logs'), { recursive: true });
-  const logFile = SOURCE_LOG_FILE + (userEmail ? `.${userEmail.split('@')[0]}` : '');
+  const logFile = sourceLogFor(userEmail);
   const logStream = fs.createWriteStream(logFile, { flags: 'w' });
-  // Keep last-run.log pointing to most recent run for the stream endpoint
-  const mainLogStream = fs.createWriteStream(SOURCE_LOG_FILE, { flags: 'w' });
   const sourceScript = path.join(__dirname, '../source.js');
   const child = spawn('node', [sourceScript], {
     cwd: path.join(__dirname, '..'),
@@ -2924,28 +2963,31 @@ app.get('/source/log', (req, res) => {
   if (!userEmail) return res.status(401).type('text/plain').send('Sign in required');
   try {
     // Per-user file first: the shared one is this user's only in local mode.
-    const mine = SOURCE_LOG_FILE + `.${userEmail.split('@')[0]}`;
-    const file = fs.existsSync(mine) ? mine : SOURCE_LOG_FILE;
+    const file = sourceLogFor(userEmail);
     const text = fs.existsSync(file) ? fs.readFileSync(file, 'utf-8') : '(no log yet)';
     res.type('text/plain').send(text);
   } catch { res.status(500).send('error reading log'); }
 });
 
 app.get('/source/stream', (req, res) => {
+  const payload = req.query.token ? verifySession(String(req.query.token)) : null;
+  const userEmail = payload?.email || reqUserEmail(req);
+  if (!userEmail) return res.status(401).end();
+  const logPath = sourceLogFor(userEmail);
+
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache');
   res.setHeader('Connection', 'keep-alive');
-  res.setHeader('Access-Control-Allow-Origin', '*');
   res.flushHeaders();
 
   let pos = 0;
   const send = () => {
     try {
-      if (!fs.existsSync(SOURCE_LOG_FILE)) return;
-      const stat = fs.statSync(SOURCE_LOG_FILE);
+      if (!fs.existsSync(logPath)) return;
+      const stat = fs.statSync(logPath);
       if (stat.size <= pos) return;
       const buf = Buffer.alloc(stat.size - pos);
-      const fd = fs.openSync(SOURCE_LOG_FILE, 'r');
+      const fd = fs.openSync(logPath, 'r');
       fs.readSync(fd, buf, 0, buf.length, pos);
       fs.closeSync(fd);
       pos = stat.size;
@@ -3374,7 +3416,7 @@ const BASE=location.origin;
 let es=null,statusPoller=null;
 
 // Show credit balance in topbar
-fetch(BASE+'/credits').then(r=>r.json()).then(d=>{
+fetch(BASE+'/credits',{headers:authHeaders()}).then(r=>r.ok?r.json():{}).then(d=>{
   const b=d.balance??d.credits??null;
   const el=document.getElementById('balance-display');
   if(el&&b!==null){el.textContent=b+' cr';el.style.color=b<20?'#b45309':'#444';}
@@ -3520,6 +3562,11 @@ var SCHED = null;
 // schedule) came back 401. Same session the setup page reads.
 function authHeaders(){
   try{ var t=localStorage.getItem('aa_session'); return t?{'x-api-key':t}:{}; }catch(e){ return {}; }
+}
+// EventSource cannot set headers, so the log stream takes the session as a
+// query parameter instead.
+function sessionToken(){
+  try{ return localStorage.getItem('aa_session')||''; }catch(e){ return ''; }
 }
 
 function toggleSchedPanel(){
@@ -3737,7 +3784,7 @@ function startLive(userInitiated){
   liveNote('Run started. Connecting to the browser session…','info');
 
   // Stream log lines via SSE
-  es=new EventSource(BASE+'/source/stream');
+  es=new EventSource(BASE+'/source/stream?token='+encodeURIComponent(sessionToken()));
   es.onmessage=e=>{
     try{
       sawOutput=true;
@@ -3861,6 +3908,7 @@ async function submitMissed(){
 });
 
 app.post('/track/open', (req, res) => {
+  if (!reqUserEmail(req)) return res.status(401).json({ error: 'Sign in required' });
   const { url } = req.body;
   if (!url) return res.json({ ok: false });
   const file = path.join(__dirname, '../logs/opened.json');
@@ -3876,6 +3924,7 @@ app.post('/track/open', (req, res) => {
 });
 
 app.get('/audit/data', (req, res) => {
+  if (!reqUserEmail(req)) return res.status(401).json({ error: 'Sign in required' });
   const detailFile = path.join(__dirname, '../logs/last-run-detail.json');
   try {
     res.json(fs.existsSync(detailFile) ? JSON.parse(fs.readFileSync(detailFile, 'utf-8')) : null);
@@ -3885,11 +3934,13 @@ app.get('/audit/data', (req, res) => {
 const FEEDBACK_FILE = path.join(__dirname, '../logs/audit-feedback.json');
 
 app.get('/audit/feedback', (req, res) => {
+  if (!reqUserEmail(req)) return res.status(401).json({ error: 'Sign in required' });
   try { res.json(fs.existsSync(FEEDBACK_FILE) ? JSON.parse(fs.readFileSync(FEEDBACK_FILE, 'utf-8')) : []); }
   catch { res.json([]); }
 });
 
 app.post('/audit/feedback', (req, res) => {
+  if (!reqUserEmail(req)) return res.status(401).json({ error: 'Sign in required' });
   const { url, company, role, outcome_was, feedback, note } = req.body;
   if (!url || !feedback) return res.status(400).json({ error: 'url and feedback required' });
   try {
@@ -3904,6 +3955,7 @@ app.post('/audit/feedback', (req, res) => {
 });
 
 app.post('/audit/missed', async (req, res) => {
+  if (!reqUserEmail(req)) return res.status(401).json({ error: 'Sign in required' });
   const { url } = req.body;
   if (!url) return res.status(400).json({ error: 'url required' });
   try {
@@ -4277,7 +4329,7 @@ function viewKit(j) {
 
 async function openAndGenerate(j) {
   await fetch('/sourced/pending-generate', {
-    method:'POST', headers:{'Content-Type':'application/json'},
+    method:'POST', headers:Object.assign({'Content-Type':'application/json'}, plAuth()),
     body: JSON.stringify({url: j.url})
   }).catch(()=>{});
   window.open(j.url, '_blank');
@@ -4288,7 +4340,7 @@ async function doAction(status) {
   if (selIdx < 0 || selIdx >= listItems.length) return;
   var j = listItems[selIdx];
   var res = await fetch('/sourced/status', {
-    method:'POST', headers:{'Content-Type':'application/json'},
+    method:'POST', headers:Object.assign({'Content-Type':'application/json'}, plAuth()),
     body: JSON.stringify({url:j.url, status:status})
   });
   if (!res.ok) { showToast('Error'); return; }
@@ -4371,7 +4423,7 @@ document.addEventListener('keydown', function(e) {
   }
 });
 
-fetch('/credits').then(function(r){return r.json();}).then(function(d){
+fetch('/credits',{headers:plAuth()}).then(function(r){return r.ok?r.json():{};}).then(function(d){
   var b = d.balance ?? d.credits ?? null;
   var el = document.getElementById('balance-display');
   if (el && b !== null) { el.textContent = b + ' cr'; el.style.color = b < 20 ? '#92400e' : '#555'; }
