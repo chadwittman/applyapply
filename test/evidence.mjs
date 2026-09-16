@@ -11,6 +11,7 @@ const T = jwt.sign({ email: EMAIL }, 'e2e-test-secret-not-production', { expires
 
 await db.getOrCreateUser(EMAIL);
 await db.addEvidenceQuestions(EMAIL, [{ question: 'Describe a time you owned a P&L.' }, { question: 'What is the largest team you led?' }]);
+await db.saveResumeFile(EMAIL, 'alice-resume.pdf', 'application/pdf', Buffer.from('%PDF-1.4\nresume fixture'));
 
 const b = await chromium.launch({
   headless: true,
@@ -28,6 +29,13 @@ const ok = (n, c, d = '') => { c ? pass++ : fail++; console.log(`  ${c ? 'PASS' 
 
 const areas = await page.locator('#interviewList textarea').count();
 ok('both questions rendered', areas === 2, `got ${areas}`);
+ok('resume on file is visible', await page.locator('#resumeFileRow').isVisible());
+ok('resume has view and download actions', await page.locator('#resumeView').count() === 1 && await page.locator('#resumeDownload').count() === 1);
+const download = await Promise.all([
+  page.waitForEvent('download'),
+  page.locator('#resumeDownload').click(),
+]);
+ok('resume download is authenticated', download[0].suggestedFilename() === 'alice-resume.pdf', download[0].suggestedFilename());
 const saveBtns = await page.locator('#interviewList button', { hasText: 'Save answer' }).count();
 ok('no per-answer Save button', saveBtns === 0, `got ${saveBtns}`);
 const mics = await page.locator('#interviewList button', { hasText: 'Speak it' }).count();

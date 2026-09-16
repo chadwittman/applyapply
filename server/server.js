@@ -1411,7 +1411,8 @@ textarea{min-height:200px;resize:vertical;line-height:1.65}
 .role-pill:hover{border-color:#555;color:#ccc}
 .role-pill.on{background:#0d1a0d;border-color:#2a3a2a;color:#4ade80}
 .resume-file{display:flex;align-items:center;gap:10px;font-size:12px;color:#b9b9b9;margin-top:10px}
-.resume-file a{color:#60a5fa;text-decoration:underline}
+.resume-file a{color:#60a5fa;text-decoration:underline;cursor:pointer}
+.resume-actions{display:flex;gap:12px;flex-shrink:0}
 .resume-drop{border:1px solid #222;padding:24px;text-align:center;cursor:pointer;transition:border-color .15s;margin-bottom:0}
 .resume-drop:hover,.resume-drop.drag{border-color:#fff}
 .resume-drop-label{font-size:15px;font-weight:600;margin-bottom:4px}
@@ -1450,7 +1451,10 @@ textarea{min-height:200px;resize:vertical;line-height:1.65}
   </div>
   <div class="resume-file" id="resumeFileRow" style="display:none">
     <span id="resumeFileName"></span>
-    <a href="/resume/file" id="resumeDownload">Download to review ↓</a>
+    <span class="resume-actions">
+      <a href="#" id="resumeView">View</a>
+      <a href="#" id="resumeDownload">Download</a>
+    </span>
   </div>
 </div>
 
@@ -1619,6 +1623,51 @@ function showResumeFile(){
     document.getElementById('resumeFileName').textContent=m.filename+' ('+kb+'uploaded '+new Date(m.uploaded_at).toLocaleDateString()+')';
   }).catch(function(){});
 }
+
+function resumeFilename(response){
+  var header=response.headers.get('content-disposition')||'';
+  var match=header.match(/filename="?([^";]+)"?/i);
+  return match&&match[1]?match[1]:'resume.pdf';
+}
+
+async function fetchResumeFile(){
+  var key=getKey();
+  if(!key) throw new Error('Sign in first');
+  var response=await fetch('/resume/file',{headers:{'x-api-key':key}});
+  if(!response.ok) throw new Error(response.status===404?'No resume on file':'Could not load resume');
+  return {blob:await response.blob(),filename:resumeFilename(response)};
+}
+
+function showResumeError(error){
+  var status=document.getElementById('resumeStatus');
+  status.textContent=error.message||'Could not load resume';
+  status.style.color='#f87171';
+}
+
+document.getElementById('resumeView').addEventListener('click',async function(event){
+  event.preventDefault();
+  // Open synchronously so browser popup blocking cannot swallow the review tab.
+  var tab=window.open('about:blank','_blank');
+  try{
+    var file=await fetchResumeFile();
+    var url=URL.createObjectURL(file.blob);
+    if(tab) tab.location.href=url;
+    else { var link=document.createElement('a');link.href=url;link.target='_blank';link.click(); }
+    setTimeout(function(){URL.revokeObjectURL(url);},60000);
+  }catch(error){ if(tab) tab.close(); showResumeError(error); }
+});
+
+document.getElementById('resumeDownload').addEventListener('click',async function(event){
+  event.preventDefault();
+  try{
+    var file=await fetchResumeFile();
+    var url=URL.createObjectURL(file.blob);
+    var link=document.createElement('a');
+    link.href=url; link.download=file.filename; link.style.display='none';
+    document.body.appendChild(link); link.click(); link.remove();
+    setTimeout(function(){URL.revokeObjectURL(url);},60000);
+  }catch(error){ showResumeError(error); }
+});
 
 var EVIDENCE=[];
 var BTN_S='padding:5px 10px;background:#0a0a0a;border:1px solid #2a2a2a;color:#aaa;font-size:11px;cursor:pointer;font-family:inherit';
