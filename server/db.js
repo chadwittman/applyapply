@@ -301,6 +301,22 @@ async function getSeenUrls(userEmail = null) {
   return new Set(rows.map(r => r.url));
 }
 
+// What the user actually wants to know: how much ground we covered, over what
+// window, and how much of it is still theirs to work through.
+async function getCoverage(userEmail) {
+  const runs = await q(
+    `SELECT COUNT(*)::int AS runs, COALESCE(SUM(found),0)::int AS scanned,
+            COALESCE(SUM(added),0)::int AS added, MAX(run_at) AS last_run,
+            MIN(run_at) AS first_run
+     FROM runs WHERE user_email = $1 AND run_at > NOW() - INTERVAL '30 days'`,
+    [userEmail]
+  );
+  const companies = await q1(
+    `SELECT COUNT(DISTINCT company)::int AS n FROM jobs WHERE user_email = $1`, [userEmail]
+  );
+  return { ...(runs[0] || {}), companies: companies?.n || 0 };
+}
+
 async function getStatusCounts(userEmail = null) {
   const rows = userEmail
     ? await q(`SELECT status, COUNT(*) as n FROM jobs WHERE user_email = $1 GROUP BY status`, [userEmail])
@@ -661,7 +677,7 @@ module.exports = {
   PROFILE_FIELDS,
   insertRun, getRuns, getRun,
   insertJob, upsertJob, ensureJob, setJobStatus, setKitGenerated, getJobByUrl, getJobs, getJobsForRun, getSeenUrls, getStatusCounts,
-  recordDecision, getDecisionSummary,
+  recordDecision, getDecisionSummary, getCoverage,
   getProfile, getProfileByUserEmail, setProfile, getProfiledUsers,
   saveKit, getKit, getKits, deleteKit, deleteKitsForUser, countKits,
   saveResumeFile, getResumeFile, getResumeFileMeta,

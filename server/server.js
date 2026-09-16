@@ -21,7 +21,7 @@ process.on('uncaughtException', (err) => {
 
 const app = express();
 const PORT = process.env.PORT || 5000;
-const VERSION = '0.17.0';
+const VERSION = '0.18.0';
 const IS_PRODUCTION = process.env.NODE_ENV === 'production';
 const APP_ORIGIN = process.env.APP_ORIGIN || 'http://localhost:5000';
 const ALLOWED_WEB_ORIGINS = new Set(
@@ -1947,6 +1947,22 @@ app.get('/sourced', async (req, res) => {
   try {
     const status = req.query.status || null;
     res.json(await db.getJobs(status, 200, reqUserEmail(req)));
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Coverage plus progress: how much ground was covered, over what window, and
+// how much of it is still the user's to work through.
+app.get('/coverage', async (req, res) => {
+  const userEmail = reqUserEmail(req);
+  if (!userEmail) return res.status(401).json({ error: 'Sign in required' });
+  try {
+    const [cov, counts] = await Promise.all([
+      db.getCoverage(userEmail),
+      db.getStatusCounts(userEmail),
+    ]);
+    const todo = (counts.new || 0) + (counts.reviewed || 0);
+    const done = (counts.applied || 0) + (counts.skipped || 0) + (counts.rejected || 0);
+    res.json({ ...cov, counts, todo, done, total: todo + done + (counts.applying || 0) });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -3901,8 +3917,11 @@ app.post('/audit/missed', async (req, res) => {
 
 app.get('/pipeline', async (req, res) => {
   res.setHeader('Cache-Control', 'no-store');
+  // A page navigation carries no session, so this used to resolve to "no user"
+  // and hand back every user's jobs. Render nothing here; the client fetches
+  // its own list with the session it holds.
   const userEmail = reqUserEmail(req);
-  const allJobs = await db.getJobs(null, 2000, userEmail);
+  const allJobs = userEmail ? await db.getJobs(null, 2000, userEmail) : [];
   const jobsJson = JSON.stringify(allJobs).replace(/<\/script>/gi, '<\\/script>');
 
   res.send(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>Pipeline — applyapply</title>
@@ -3963,6 +3982,16 @@ a{text-decoration:none;color:inherit}
 .pr-open-key{display:inline-block;background:#ddd;color:#000;font-size:11px;padding:1px 6px;border-radius:2px}
 .pr-skip-btn .pr-open-key{background:#1a1a1a;color:#888}
 
+/* Coverage + worklist progress */
+.cov{display:flex;align-items:center;gap:22px;padding:11px 20px;border-bottom:1px solid #111;background:#060606;flex-wrap:wrap}
+.cov-claim{font-size:12px;color:#ccc}
+.cov-claim b{color:#fff}
+.cov-prog{display:flex;align-items:center;gap:10px;margin-left:auto}
+.cov-bar{width:150px;height:6px;background:#161616;overflow:hidden}
+.cov-fill{height:100%;background:#4ade80;width:0%;transition:width .4s ease}
+.cov-num{font-size:11px;color:#b9b9b9;white-space:nowrap}
+.cov-cta{font-size:11px;color:#0a0a0a;background:#fff;border:none;padding:5px 12px;font-weight:700;cursor:pointer;font-family:inherit}
+
 /* Keyboard help */
 .kb-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:100;align-items:center;justify-content:center}
 .kb-overlay.on{display:flex}
@@ -3990,6 +4019,15 @@ a{text-decoration:none;color:inherit}
     <button class="kb-btn" id="kb-toggle">?</button>
   </div>
 </div>
+<div class="cov" id="cov" style="display:none">
+  <div class="cov-claim" id="cov-claim"></div>
+  <div class="cov-prog">
+    <div class="cov-bar"><div class="cov-fill" id="cov-fill"></div></div>
+    <span class="cov-num" id="cov-num"></span>
+    <button class="cov-cta" id="cov-cta" onclick="jumpToNext()">Work the next one</button>
+  </div>
+</div>
+
 <div class="pl-wrap">
   <div class="pl-left">
     <div class="pl-filters" id="pl-filters"></div>
@@ -4026,6 +4064,44 @@ a{text-decoration:none;color:inherit}
 </div>
 <script>
 var JOBS = ${jobsJson};
+
+function plAuth(){ try{ var t=localStorage.getItem('aa_session'); return t?{'x-api-key':t}:{}; }catch(e){ return {}; } }
+
+function ago(iso){
+  if(!iso) return 'never';
+  var m=Math.round((Date.now()-new Date(iso).getTime())/60000);
+  if(m<60) return m+'m ago';
+  if(m<1440) return Math.round(m/60)+'h ago';
+  return Math.round(m/1440)+'d ago';
+}
+
+// Answers the two questions that matter: did we cover the ground, and how much
+// is left for me to work through.
+function loadCoverage(){
+  fetch('/coverage',{headers:plAuth(),cache:'no-store'})
+    .then(function(r){return r.ok?r.json():null;})
+    .then(function(c){
+      if(!c) return;
+      document.getElementById('cov').style.display='flex';
+      var scanned=(c.scanned||0).toLocaleString();
+      document.getElementById('cov-claim').innerHTML =
+        'Scanned <b>'+scanned+'</b> postings across <b>'+(c.companies||0)+'</b> companies in '
+        + (c.runs||0)+' run'+((c.runs===1)?'':'s')+' · last <b>'+ago(c.last_run)+'</b>';
+      var todo=c.todo||0, done=c.done||0, total=todo+done;
+      var pct=total?Math.round(done/total*100):0;
+      document.getElementById('cov-fill').style.width=pct+'%';
+      document.getElementById('cov-num').textContent=
+        todo? (todo+' to work through · '+done+' done') : (total? 'All '+total+' worked through' : 'Nothing sourced yet');
+      document.getElementById('cov-cta').style.display=todo?'':'none';
+    }).catch(function(){});
+}
+
+// Jump straight to the next unworked job — the list is a queue, not an archive.
+function jumpToNext(){
+  var idx=listItems.findIndex(function(j){return j.status==='new'||j.status==='reviewed';});
+  if(idx<0){ idx=0; }
+  if(listItems[idx]) selectItem(idx);
+}
 
 var filter = 'new';
 var selIdx = -1;
@@ -4067,6 +4143,7 @@ function setFilter(f) {
   selIdx = -1;
   renderFilters();
   renderList();
+  loadCoverage();
 }
 
 function getFiltered() {
@@ -4155,6 +4232,7 @@ async function doAction(status) {
   });
   if (!res.ok) { showToast('Error'); return; }
   j.status = status;
+  setTimeout(loadCoverage, 300);
   var master = JOBS.find(function(x){ return x.url===j.url; });
   if (master) master.status = status;
   showToast('→ ' + status);
