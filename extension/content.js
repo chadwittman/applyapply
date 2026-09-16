@@ -1114,6 +1114,14 @@ function deterministicFill(app) {
   }
 
   filled += fillCheckboxGroups(t);
+  // Dropdowns are async (the menu has to open before its options exist), so
+  // this resolves after deterministicFill returns; the count is reported by
+  // the caller's note when it lands.
+  fillComboboxes(t).then(n => {
+    if (!n) return;
+    const note = shadow?.getElementById('jaa-note');
+    if (note) note.textContent = `${note.textContent} · ${n} dropdown${n > 1 ? 's' : ''}`.replace(/^ · /, '');
+  }).catch(() => {});
 
   // QA pass — match any unfilled textarea to app QA answers by word overlap
   if (t.qa?.length) {
@@ -1185,6 +1193,88 @@ function clickRadioByPattern(pattern, desiredValue) {
     }
   }
   return false;
+}
+
+// Greenhouse (and anything else on react-select) renders no <select> at all —
+// every dropdown is an <input role="combobox"> whose options only exist in the
+// DOM once it is open. So: open it, read the real options, then pick one of
+// them. Verified on a live Greenhouse posting; the options are scoped by
+// aria-controls because reading [role=option] globally picks up whichever
+// other widget happens to be open (a phone-country list, in testing).
+function comboOptions(combo) {
+  const id = combo.getAttribute('aria-controls') || combo.getAttribute('aria-owns');
+  const box = id ? document.getElementById(id) : null;
+  if (!box) return [];
+  return [...box.querySelectorAll('[role=option]')];
+}
+
+function comboCommitted(combo) {
+  const shell = combo.closest('.select-shell') || combo.parentElement;
+  return !!shell?.querySelector('.select__value-container--has-value, .select__single-value');
+}
+
+function fireMouse(el, type) {
+  el.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, view: window }));
+}
+
+// Opens the dropdown and returns its options without choosing anything, so a
+// caller can decide against the real list rather than guessing.
+async function openCombo(combo) {
+  const wait = ms => new Promise(r => setTimeout(r, ms));
+  combo.focus();
+  fireMouse(combo, 'mousedown'); fireMouse(combo, 'mouseup'); fireMouse(combo, 'click');
+  await wait(450);
+  return comboOptions(combo).map(o => (o.innerText || '').trim()).filter(Boolean);
+}
+
+async function chooseComboOption(combo, wanted) {
+  const wait = ms => new Promise(r => setTimeout(r, ms));
+  const opts = comboOptions(combo);
+  if (!opts.length) return false;
+  const want = String(wanted).trim().toLowerCase();
+  const exact = opts.find(o => (o.innerText || '').trim().toLowerCase() === want);
+  const loose = exact || opts.find(o => (o.innerText || '').trim().toLowerCase().includes(want));
+  if (!loose) { combo.blur(); return false; }
+  fireMouse(loose, 'mousedown'); fireMouse(loose, 'mouseup'); fireMouse(loose, 'click');
+  await wait(400);
+  return comboCommitted(combo);
+}
+
+// Answers the dropdowns whose intent we actually know, reading each list first.
+async function fillComboboxes(t) {
+  const combos = [...document.querySelectorAll('[role=combobox]')]
+    .filter(c => !c.disabled && c.offsetParent !== null && !comboCommitted(c));
+  let filled = 0;
+
+  for (const combo of combos) {
+    const label = (getFieldLabel(combo)
+      || (combo.id && document.querySelector(`label[for="${CSS.escape(combo.id)}"]`)?.innerText)
+      || '').trim().toLowerCase().replace(/\s+/g, ' ');
+    const idHint = (combo.id || '').toLowerCase();
+
+    // Never answer these for someone — same rule as the checkbox pass.
+    if (/gender|hispanic|latino|veteran|disab|race|ethnic|sexual|pronoun/.test(label + ' ' + idHint)) continue;
+
+    const p = mergeProfile(currentApp?.profile);
+    let want = null;
+    if (/authorized to work|legally authorized|work authorization/.test(label)) want = 'Yes';
+    else if (/sponsorship|visa/.test(label)) want = 'No';
+    else if (/how did you hear|referral source/.test(label)) want = 'LinkedIn';
+    else if (/^country/.test(label)) want = 'United States';
+    // "Location (City)" wants the city, not the whole "Austin, TX" string.
+    else if (/location|city/.test(label)) want = (p.location || '').split(',')[0].trim() || null;
+    else {
+      // Fall back to an answer already written for this question in the kit.
+      const qa = (t?.qa || []).find(item => item.q && label.includes(item.q.toLowerCase().slice(0, 30)));
+      if (qa?.a) want = /^\s*yes\b/i.test(qa.a) ? 'Yes' : /^\s*no\b/i.test(qa.a) ? 'No' : null;
+    }
+    if (!want) continue;
+
+    const options = await openCombo(combo);
+    if (!options.length) { combo.blur(); continue; }
+    if (await chooseComboOption(combo, want)) filled++;
+  }
+  return filled;
 }
 
 function getCheckboxText(cb) {
