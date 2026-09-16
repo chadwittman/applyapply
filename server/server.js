@@ -21,7 +21,7 @@ process.on('uncaughtException', (err) => {
 
 const app = express();
 const PORT = process.env.PORT || 5000;
-const VERSION = '0.19.2';
+const VERSION = '0.19.3';
 const IS_PRODUCTION = process.env.NODE_ENV === 'production';
 const APP_ORIGIN = process.env.APP_ORIGIN || 'http://localhost:5000';
 const ALLOWED_WEB_ORIGINS = new Set(
@@ -4120,8 +4120,18 @@ function loadJobs(){
         if(!rows) return;
         JOBS=rows;
         renderFilters(); renderList();
+        // The coverage strip is hidden until something fills it, and
+        // loadCoverage is skipped in this view.
+        var cov=document.getElementById('cov');
+        if(cov) cov.style.display='flex';
         var c=document.getElementById('cov-claim');
         if(c) c.innerHTML='Showing the <b>'+rows.length+'</b> job'+(rows.length===1?'':'s')+' from one run · <a href="/pipeline" style="color:#60a5fa">see everything</a>';
+        var n=document.getElementById('cov-num');
+        if(n) n.textContent='';
+        var f=document.getElementById('cov-fill');
+        if(f) f.style.width='0%';
+        var cta=document.getElementById('cov-cta');
+        if(cta) cta.style.display='none';
       }).catch(function(){});
     return;
   }
