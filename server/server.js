@@ -21,7 +21,7 @@ process.on('uncaughtException', (err) => {
 
 const app = express();
 const PORT = process.env.PORT || 5000;
-const VERSION = '0.19.3';
+const VERSION = '0.20.0';
 const IS_PRODUCTION = process.env.NODE_ENV === 'production';
 const APP_ORIGIN = process.env.APP_ORIGIN || 'http://localhost:5000';
 const ALLOWED_WEB_ORIGINS = new Set(
@@ -3989,6 +3989,11 @@ a{text-decoration:none;color:inherit}
 .pr-btns{display:flex;gap:8px;align-items:center;margin-bottom:20px}
 .pr-open-btn{display:inline-flex;align-items:center;gap:10px;padding:11px 18px;background:#fff;color:#000;border:none;font-size:13px;font-weight:600;cursor:pointer;font-family:inherit}
 .pr-open-btn:hover{background:#e5e5e5}
+.pr-done-btn{display:inline-flex;align-items:center;gap:8px;padding:11px 16px;background:transparent;color:#4ade80;border:1px solid #2a4a33;font-size:13px;font-weight:600;cursor:pointer;font-family:inherit}
+.pr-done-btn:hover{background:#132218;border-color:#4ade80}
+.pr-done-btn .pr-open-key{background:#1a2a1f;color:#4ade80}
+.pr-state{display:inline-flex;align-items:center;gap:6px;font-size:12px;color:#777}
+.pr-state b{color:#b9b9b9;font-weight:600}
 .pr-skip-btn{display:inline-flex;align-items:center;gap:8px;padding:11px 16px;background:transparent;color:#b9b9b9;border:1px solid #1e1e1e;font-size:13px;cursor:pointer;font-family:inherit}
 .pr-skip-btn:hover{color:#fff;border-color:#b9b9b9}
 .pr-open-key{display:inline-block;background:#ddd;color:#000;font-size:11px;padding:1px 6px;border-radius:2px}
@@ -4066,7 +4071,7 @@ a{text-decoration:none;color:inherit}
       <tr><td>j / k</td><td>Next / previous lead</td></tr>
       <tr><td>&crarr;</td><td>Open job posting</td></tr>
       <tr><td>a</td><td>Mark applying</td></tr>
-      <tr><td>d</td><td>Mark applied / done</td></tr>
+      <tr><td>d</td><td>Mark applied &mdash; you submitted it yourself</td></tr>
       <tr><td>s</td><td>Skip</td></tr>
       <tr><td>u</td><td>Move back to new</td></tr>
       <tr><td>?</td><td>This panel</td></tr>
@@ -4251,9 +4256,16 @@ function renderDetail(j) {
     html += '<button class="pr-open-btn" onclick="viewKit(listItems[' + selIdx + '])">View kit</button>';
   }
   html += '<button class="pr-open-btn" onclick="openAndGenerate(listItems[' + selIdx + '])"><span class="pr-open-key">&crarr;</span> ' + (j.kit_generated_at ? 'Open job page' : 'Open &amp; generate kit') + '</button>';
-  if (j.status !== 'skipped') html += '<button class="pr-skip-btn" onclick="doAction(&apos;skipped&apos;)"><span class="pr-open-key">S</span> Skip</button>';
-  if (j.status === 'skipped') html += '<button class="pr-skip-btn" onclick="doAction(&apos;new&apos;)"><span class="pr-open-key">U</span> Undo</button>';
+  if (j.status === 'applied' || j.status === 'skipped') {
+    html += '<button class="pr-skip-btn" onclick="doAction(&apos;new&apos;)"><span class="pr-open-key">U</span> Back to new</button>';
+  } else {
+    html += '<button class="pr-done-btn" onclick="doAction(&apos;applied&apos;)"><span class="pr-open-key">D</span> I applied</button>';
+    html += '<button class="pr-skip-btn" onclick="doAction(&apos;skipped&apos;)"><span class="pr-open-key">S</span> Skip</button>';
+  }
   html += '</div>';
+  if (j.status === 'applied')  html += '<div class="pr-state">&#10003; <b>Applied</b> &mdash; out of the worklist</div>';
+  if (j.status === 'skipped')  html += '<div class="pr-state"><b>Skipped</b> &mdash; out of the worklist</div>';
+  if (j.status === 'applying') html += '<div class="pr-state"><b>In progress</b> &mdash; press D once you have submitted</div>';
   html += '</div>';
   document.getElementById('pl-right').innerHTML = html;
 }
