@@ -21,7 +21,7 @@ process.on('uncaughtException', (err) => {
 
 const app = express();
 const PORT = process.env.PORT || 5000;
-const VERSION = '0.16.0';
+const VERSION = '0.17.0';
 const IS_PRODUCTION = process.env.NODE_ENV === 'production';
 const APP_ORIGIN = process.env.APP_ORIGIN || 'http://localhost:5000';
 const ALLOWED_WEB_ORIGINS = new Set(
@@ -240,6 +240,28 @@ function requireAdmin(req, res, next) {
   if (req.headers['x-admin-secret'] !== secret) return res.status(403).json({ error: 'Forbidden' });
   next();
 }
+
+
+// One navigation for every page. Each page had invented its own set of links,
+// which is how /sourcing ended up with no way to reach /pipeline — the page
+// where its own results land — and how /buy stranded people after paying.
+function navHTML(active = '') {
+  const items = [
+    ['/pipeline', 'Pipeline'],
+    ['/sourcing', 'Sourcing'],
+    ['/setup', 'Profile'],
+    ['/buy', 'Credits'],
+  ];
+  return items.map(([href, label]) =>
+    `<a href="${href}" class="nav-item${href === active ? ' nav-active' : ''}">${label}</a>`
+  ).join('');
+}
+
+const NAV_CSS = `
+.nav-item{font-size:12px;color:#b9b9b9;text-decoration:none;margin-right:14px;padding-bottom:2px;border-bottom:1px solid transparent}
+.nav-item:hover{color:#fff}
+.nav-active{color:#fff;border-bottom-color:#fff}
+`;
 
 // ── Landing page ─────────────────────────────────────────────────────────────
 
@@ -691,6 +713,11 @@ input::placeholder{color:#a8a8a8}
 </head>
 <body>
 <a href="/" class="mark">applyapply</a>
+<div style="position:fixed;top:16px;right:20px;display:flex;gap:14px">
+  <a href="/pipeline" style="font-size:12px;color:#b9b9b9;text-decoration:none">Pipeline</a>
+  <a href="/sourcing" style="font-size:12px;color:#b9b9b9;text-decoration:none">Sourcing</a>
+  <a href="/setup" style="font-size:12px;color:#b9b9b9;text-decoration:none">Profile</a>
+</div>
 <h1>Sign in</h1>
 <p class="sub">We'll email you a link. No password.</p>
 <div class="form">
@@ -1261,6 +1288,7 @@ textarea{min-height:200px;resize:vertical;line-height:1.65}
   <div class="nav-right">
     <a href="/pipeline" class="nav-link">Pipeline</a>
     <a href="/sourcing" class="nav-link">Sourcing</a>
+    <a href="/buy" class="nav-link">Credits</a>
   </div>
 </nav>
 <div class="wrap">
@@ -3057,7 +3085,7 @@ app.get('/sourcing', async (req, res) => {
 *{box-sizing:border-box;margin:0;padding:0}
 body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:#0a0a0a;color:#ccc;font-size:13px;min-height:100vh}
 .topbar{display:flex;align-items:center;gap:12px;padding:14px 20px;border-bottom:1px solid #181818;flex-wrap:wrap}
-.topbar-title{font-size:13px;font-weight:600;color:#fff}
+.topbar-title{font-size:13px;font-weight:600;color:#fff}${NAV_CSS}
 .topbar-meta{font-size:11px;color:#a8a8a8;flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .topbar-sched{font-size:11px;color:#8f8f8f}
 .run-btn{padding:8px 16px;background:#fff;color:#000;border:none;font-size:12px;font-weight:600;cursor:pointer;font-family:inherit;white-space:nowrap}
@@ -3201,6 +3229,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;backgrou
 <div class="topbar">
   <span class="sdot" id="sdot"></span>
   <span class="topbar-title">sourcing</span><span style="font-size:10px;color:#8f8f8f;margin-left:4px">v${VERSION}</span>
+  <span style="margin-left:14px">${navHTML('/sourcing')}</span>
   <span class="topbar-meta" id="topbar-meta">${runMeta}</span>
   <span class="topbar-sched" id="sched-label" onclick="toggleSchedPanel()" style="cursor:pointer;text-decoration:underline;text-underline-offset:3px" title="Set up nightly sourcing">${schedText}</span>
   <span id="balance-display" style="font-size:10px;color:#8f8f8f"></span>
@@ -3883,7 +3912,7 @@ html,body{height:100%}
 body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#000;color:#fff;font-size:13px;-webkit-font-smoothing:antialiased;overflow:hidden}
 a{text-decoration:none;color:inherit}
 .topbar{height:40px;background:#000;border-bottom:1px solid #111;padding:0 20px;display:flex;align-items:center;gap:16px;flex-shrink:0}
-.topbar-title{font-weight:700;font-size:13px;letter-spacing:-.01em}
+.topbar-title{font-weight:700;font-size:13px;letter-spacing:-.01em}${NAV_CSS}
 .topbar a{color:#b9b9b9;font-size:12px}
 .topbar a:hover{color:#fff}
 .tbar-r{margin-left:auto;display:flex;align-items:center;gap:10px}
@@ -3955,8 +3984,7 @@ a{text-decoration:none;color:inherit}
 </style></head><body>
 <div class="topbar">
   <span class="topbar-title">applyapply</span>
-  <a href="/sourcing">Sourcing</a>
-  <a href="/setup">Profile</a>
+  ${navHTML('/pipeline')}
   <div class="tbar-r">
     <span id="balance-display"></span>
     <button class="kb-btn" id="kb-toggle">?</button>
