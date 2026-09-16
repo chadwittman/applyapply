@@ -21,7 +21,7 @@ process.on('uncaughtException', (err) => {
 
 const app = express();
 const PORT = process.env.PORT || 5000;
-const VERSION = '0.18.1';
+const VERSION = '0.19.0';
 const IS_PRODUCTION = process.env.NODE_ENV === 'production';
 const APP_ORIGIN = process.env.APP_ORIGIN || 'http://localhost:5000';
 const ALLOWED_WEB_ORIGINS = new Set(
@@ -1977,8 +1977,12 @@ app.get('/runs', async (req, res) => {
 });
 
 app.get('/runs/:id/jobs', async (req, res) => {
-  try { res.json(await db.getJobsForRun(req.params.id)); }
-  catch (e) { res.status(500).json({ error: e.message }); }
+  const userEmail = reqUserEmail(req);
+  if (!userEmail) return res.status(401).json({ error: 'Sign in required' });
+  try {
+    const rows = await db.getJobsForRun(req.params.id);
+    res.json(rows.filter(j => !j.user_email || j.user_email === userEmail));
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 app.post('/sourced/status', async (req, res) => {
@@ -3615,6 +3619,12 @@ function updateCounts(){
 }
 
 // ── Run history ──────────────────────────────────────────────────────────────
+// A run's count is only useful if you can see what it actually produced.
+function viewRunJobs(id){
+  if(!id) return;
+  window.open('/pipeline?run='+encodeURIComponent(id),'_blank');
+}
+
 function toggleRunsPanel(){
   var el=document.getElementById('runs-panel');
   var open=el.style.display!=='none';
@@ -3630,7 +3640,9 @@ function loadRuns(){
       +rows.map(function(r){
         var when=r.run_at?new Date(r.run_at).toLocaleString():(r.date||'');
         var secs=r.duration_ms?Math.round(r.duration_ms/1000)+'s':'—';
-        return '<tr><td>'+when+'</td><td>'+(r.sources||0)+'</td><td>'+(r.found||0)+'</td>'
+        var id=(r.id||'').replace(/"/g,'');
+        return '<tr style="cursor:pointer" onclick="viewRunJobs(&apos;'+id+'&apos;)" title="See the jobs this run added">'
+          +'<td>'+when+'</td><td>'+(r.sources||0)+'</td><td>'+(r.found||0)+'</td>'
           +'<td style="color:#4ade80">'+(r.added||0)+'</td><td>'+(r.excluded||0)+'</td><td>'+secs+'</td></tr>';
       }).join('')+'</table>';
   }).catch(function(){body.innerHTML='<div style="font-size:11px;color:#c05353">Could not load runs.</div>';});
@@ -4096,6 +4108,33 @@ function loadCoverage(){
     }).catch(function(){});
 }
 
+// The server cannot identify the user on a plain page navigation, so the list
+// is fetched here with the session this page holds. Without this the page
+// renders an empty JOBS array and looks like nothing was ever sourced.
+function loadJobs(){
+  var runId=new URLSearchParams(location.search).get('run');
+  if(runId){
+    fetch('/runs/'+encodeURIComponent(runId)+'/jobs',{headers:plAuth(),cache:'no-store'})
+      .then(function(r){return r.ok?r.json():null;})
+      .then(function(rows){
+        if(!rows) return;
+        JOBS=rows;
+        renderFilters(); renderList();
+        var c=document.getElementById('cov-claim');
+        if(c) c.innerHTML='Showing the <b>'+rows.length+'</b> job'+(rows.length===1?'':'s')+' from one run · <a href="/pipeline" style="color:#60a5fa">see everything</a>';
+      }).catch(function(){});
+    return;
+  }
+  fetch('/sourced',{headers:plAuth(),cache:'no-store'})
+    .then(function(r){return r.ok?r.json():null;})
+    .then(function(rows){
+      if(!rows||!rows.length) return;
+      JOBS=rows;
+      renderFilters();
+      renderList();
+    }).catch(function(){});
+}
+
 // Jump straight to the next unworked job — the list is a queue, not an archive.
 function jumpToNext(){
   var idx=listItems.findIndex(function(j){return j.status==='new'||j.status==='reviewed';});
@@ -4144,6 +4183,7 @@ function setFilter(f) {
   renderFilters();
   renderList();
   loadCoverage();
+  loadJobs();
 }
 
 function getFiltered() {
