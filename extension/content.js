@@ -434,7 +434,7 @@ function buildHTML(serverDown) {
 .gen-btn:disabled{background:#ccc;cursor:not-allowed;}
 .gen-status{font-size:10px;color:#9a9a9a;margin-top:8px;min-height:14px;}
 
-.job-link{display:block;padding:12px 14px;font-size:11px;color:#9a9a9a;text-decoration:none;border-top:1px solid #ebebeb;}
+.job-link{display:block;padding:12px 14px;font-size:11px;color:#333;font-weight:600;text-decoration:none;border-top:1px solid #ebebeb;}
 .job-link:hover{color:#0a0a0a;}
 .attach-btn{margin-top:8px;padding:5px 10px;background:#0a0a0a;color:#fff;border:none;font-size:10px;font-weight:600;letter-spacing:.04em;cursor:pointer;font-family:inherit;}
 .attach-btn:hover{background:#333;}
@@ -1795,6 +1795,20 @@ function renderResume(resume, out) {
     head.style.cssText = `color:${tone};font-weight:700;letter-spacing:.04em;margin-bottom:4px`;
     head.textContent = String(cov.confidence || '').toUpperCase() + ' match on your real experience';
     box.appendChild(head);
+
+    // Which version this is, and how much of the user's own evidence went into
+    // it — otherwise a regenerated resume looks identical to the old one.
+    if (resume.version) {
+      const ver = document.createElement('div');
+      ver.style.cssText = 'color:#555;margin-bottom:5px';
+      const when = resume.generated_at ? new Date(resume.generated_at) : null;
+      const stamp = when ? when.toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : '';
+      const ev = resume.evidence_used
+        ? ` · built with ${resume.evidence_used} of your saved answer${resume.evidence_used === 1 ? '' : 's'}`
+        : ' · no saved answers used yet';
+      ver.textContent = `Version ${resume.version}${stamp ? ' · ' + stamp : ''}${ev}`;
+      box.appendChild(ver);
+    }
     if (cov.gaps?.length) {
       const g = document.createElement('div');
       g.style.color = '#555';
@@ -1804,45 +1818,98 @@ function renderResume(resume, out) {
       // Each gap becomes a question to answer in place. The answer is stored as
       // profile evidence, so it strengthens every later application rather than
       // only patching this resume.
-      cov.gaps.forEach((gap, i) => {
+      cov.gaps.forEach((gap) => {
         const wrap = document.createElement('div');
-        wrap.style.cssText = 'margin-top:6px';
+        wrap.style.cssText = 'margin-top:8px';
+
         const q = document.createElement('div');
         q.style.cssText = 'color:#333;margin-bottom:3px';
         q.textContent = gap;
+
+        const row = document.createElement('div');
+        row.style.cssText = 'display:flex;gap:6px;align-items:flex-start';
+
         const ta = document.createElement('textarea');
-        ta.placeholder = 'What you actually did. Specifics beat adjectives.';
-        ta.style.cssText = 'width:100%;min-height:44px;font-size:10px;font-family:inherit;padding:5px;border:1px solid #e0e0e0;resize:vertical;outline:none';
-        const save = document.createElement('button');
-        save.textContent = 'Record';
-        save.className = 'attach-btn';
+        ta.placeholder = 'Say it or type it. Specifics beat adjectives.';
+        ta.style.cssText = 'flex:1;min-height:44px;font-size:10px;font-family:inherit;padding:5px;border:1px solid #e0e0e0;resize:vertical;outline:none';
+
+        const mic = document.createElement('button');
+        mic.className = 'qa-mic';
+        mic.textContent = '🎤';
+        mic.title = 'Record your answer';
+
         const st = document.createElement('span');
-        st.style.cssText = 'font-size:9px;color:#777;margin-left:6px';
-        save.addEventListener('click', async () => {
-          if (!ta.value.trim()) { st.textContent = 'Write something first'; return; }
+        st.style.cssText = 'font-size:9px;color:#777;display:block;margin-top:3px;min-height:12px';
+
+        // Autosave. Nobody should have to press a button to keep their own
+        // answer, and a dropped connection is the save's problem, not theirs:
+        // it retries with backoff and says so instead of losing the text.
+        let timer = null, lastSaved = '', attempt = 0;
+        const save = () => {
+          const value = ta.value.trim();
+          if (!value || value === lastSaved) return;
+          st.style.color = '#777';
           st.textContent = 'Saving…';
-          try {
-            const r = await serverFetch('/interview/context', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ question: gap, answer: ta.value }),
-            });
-            st.textContent = r.ok ? 'Saved to profile' : 'Could not save';
-          } catch { st.textContent = 'Could not save'; }
+          serverFetch('/interview/context', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ question: gap, answer: value }),
+          }).then(r => {
+            if (!r.ok) throw new Error(r.data?.error || 'save failed');
+            lastSaved = value; attempt = 0;
+            st.style.color = '#15803d';
+            st.textContent = '✓ Saved to your profile — it will strengthen every future application';
+            markEvidenceAdded();
+          }).catch(() => {
+            attempt++;
+            st.style.color = '#b45309';
+            if (attempt <= 4) {
+              st.textContent = `Could not reach the server — retrying (${attempt}/4)`;
+              setTimeout(save, Math.min(1000 * 2 ** attempt, 15000));
+            } else {
+              st.textContent = 'Still offline. Your text is safe here — it saves when the connection is back.';
+              setTimeout(save, 30000);
+            }
+          });
+        };
+        const queueSave = () => { clearTimeout(timer); timer = setTimeout(save, 900); };
+        ta.addEventListener('input', queueSave);
+        ta.addEventListener('blur', () => { clearTimeout(timer); save(); });
+
+        attachDictation(mic, gap, (text) => {
+          ta.value = ta.value ? `${ta.value}\n\n${text}` : text;
+          save();
         });
-        wrap.appendChild(q); wrap.appendChild(ta); wrap.appendChild(save); wrap.appendChild(st);
+
+        row.appendChild(ta); row.appendChild(mic);
+        wrap.appendChild(q); wrap.appendChild(row); wrap.appendChild(st);
         box.appendChild(wrap);
       });
 
+      // Answers are only useful if the user can see them being counted and
+      // knows what pressing the button will actually do.
+      const tally = document.createElement('div');
+      tally.id = 'jaa-evidence-tally';
+      tally.style.cssText = 'margin-top:10px;color:#555';
+      tally.textContent = 'Answers saved to your profile: checking…';
+      box.appendChild(tally);
+      refreshEvidenceTally();
+
       const rerun = document.createElement('button');
       rerun.className = 'attach-btn';
-      rerun.style.marginTop = '10px';
-      rerun.textContent = 'Regenerate with what I recorded';
+      rerun.style.marginTop = '8px';
+      rerun.textContent = 'Rewrite my resume using these answers';
+      const rerunNote = document.createElement('div');
+      rerunNote.style.cssText = 'margin-top:5px;color:#777';
+      rerunNote.textContent = `Sends your saved answers back through the model and writes a new version of this resume. Costs ${(COSTS && COSTS.resume) || ''} credits.`.replace('  ', ' ');
       rerun.addEventListener('click', () => {
+        rerun.disabled = true;
+        rerunNote.style.color = '#1d4ed8';
+        rerunNote.textContent = 'Rewriting with your answers. The new version replaces the one below when it is ready.';
         const btn = shadow?.getElementById('jaa-gen-resume');
         if (btn) btn.click();
       });
       box.appendChild(rerun);
+      box.appendChild(rerunNote);
     }
     if (cov.improve) {
       const imp = document.createElement('div');
@@ -1884,6 +1951,70 @@ function renderResume(resume, out) {
   sec.appendChild(hd);
   sec.appendChild(body);
   out.appendChild(sec);
+}
+
+// Web Speech dictation for any button/target pair. Transcript goes through
+// /voice to be cleaned up before it lands in the field.
+// How many answers the account has banked. This is the thing that compounds,
+// so it is worth showing rather than leaving the user to guess.
+let evidenceCount = null;
+function refreshEvidenceTally() {
+  serverFetch('/interview').then(r => {
+    if (!r.ok) return;
+    const rows = Array.isArray(r.data) ? r.data : (r.data?.questions || []);
+    evidenceCount = rows.filter(x => x && x.answer && String(x.answer).trim()).length;
+    paintEvidenceTally();
+  }).catch(() => {});
+}
+function markEvidenceAdded() {
+  if (typeof evidenceCount === 'number') evidenceCount++;
+  paintEvidenceTally();
+}
+function paintEvidenceTally() {
+  const el = shadow?.getElementById('jaa-evidence-tally');
+  if (!el || typeof evidenceCount !== 'number') return;
+  el.innerHTML = '';
+  const n = document.createElement('span');
+  n.textContent = evidenceCount === 1
+    ? '1 answer saved to your profile'
+    : `${evidenceCount} answers saved to your profile`;
+  const link = document.createElement('a');
+  link.href = `${SERVER}/setup#evidence`;
+  link.target = '_blank';
+  link.textContent = 'review them ↗';
+  link.style.cssText = 'color:#1d4ed8;margin-left:6px;text-decoration:underline';
+  el.appendChild(n); el.appendChild(link);
+}
+
+function attachDictation(btn, question, onText) {
+  let sr = null;
+  btn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    if (sr) { sr.stop(); return; }
+    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SR) { btn.title = 'Voice needs Chrome'; btn.textContent = '🚫'; return; }
+    sr = new SR();
+    sr.continuous = true; sr.interimResults = false; sr.lang = 'en-US';
+    sr.onstart = () => { btn.textContent = '⏹'; btn.title = 'Stop recording'; };
+    sr.onresult = (ev) => {
+      const raw = [...ev.results].map(r => r[0].transcript).join(' ').trim();
+      if (!raw) return;
+      btn.textContent = '⏳';
+      serverFetch('/voice', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ transcript: raw, question }),
+      }).then(r => (r.ok ? r.data?.text : null) || raw)
+        .catch(() => raw)
+        .then(text => { onText(text); btn.textContent = '🎤'; });
+    };
+    sr.onerror = (ev) => {
+      btn.textContent = ev.error === 'not-allowed' ? '🔒' : '🎤';
+      if (ev.error === 'not-allowed') btn.title = 'Allow microphone access for this site';
+      sr = null;
+    };
+    sr.onend = () => { if (btn.textContent === '⏹') btn.textContent = '🎤'; sr = null; };
+    sr.start();
+  });
 }
 
 function renderCoverLetter(text, clOut) {

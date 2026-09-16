@@ -27,7 +27,7 @@ for _ in $(seq 1 30); do
 done
 
 fail=0
-for t in test/isolation.mjs test/kits-and-profiles.mjs test/pages.mjs; do
+for t in test/isolation.mjs test/kits-and-profiles.mjs test/evidence.mjs test/pages.mjs; do
   echo "═══ $t ═══"
   node "$t" || fail=1
 done

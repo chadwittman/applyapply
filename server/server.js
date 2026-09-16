@@ -22,7 +22,7 @@ process.on('uncaughtException', (err) => {
 
 const app = express();
 const PORT = process.env.PORT || 5000;
-const VERSION = '0.24.0';
+const VERSION = '0.25.0';
 const IS_PRODUCTION = process.env.NODE_ENV === 'production';
 const APP_ORIGIN = process.env.APP_ORIGIN || 'http://localhost:5000';
 const ALLOWED_WEB_ORIGINS = new Set(
@@ -1572,9 +1572,10 @@ Numbers beat adjectives. Name the companies."></textarea>
   </div>
 </div>
 
-<div class="sec">
-  <div class="sec-label">Interview</div>
-  <div class="hint" style="margin-bottom:14px;line-height:1.7">Your resume was written for the roles you held. If you're targeting something different, the work that matters most is often missing from it entirely. These questions dig it out, and every answer feeds every future application and tailored resume.</div>
+<div class="sec" id="evidence">
+  <div class="sec-label">Your answers</div>
+  <div class="hint" style="margin-bottom:10px;line-height:1.7">Your resume was written for the roles you held. If you're targeting something different, the work that matters most is often missing from it entirely. These questions dig it out, and every answer feeds every future application and tailored resume.</div>
+  <div id="evidenceSummary" style="font-size:13px;color:#fff;margin-bottom:14px;min-height:18px"></div>
   <div id="interviewList"></div>
   <button type="button" id="genQBtn" onclick="generateQuestions()" style="padding:9px 16px;background:#0a0a0a;border:1px solid #333;color:#fff;font-size:13px;cursor:pointer;font-family:inherit">Find my gaps &amp; ask me — ${CREDIT_COSTS.interview} credits</button>
   <div class="hint" id="interviewStatus" style="margin-top:8px;min-height:16px"></div>
@@ -1666,10 +1667,11 @@ function renderInterview(){
       +'<textarea id="ans-'+e.id+'" style="min-height:74px" placeholder="Your own words. Specifics beat adjectives — what you owned, what shipped, what moved.">'+esc(e.answer||'')+'</textarea>'
       +'<div style="display:flex;gap:8px;margin-top:6px;align-items:center">'
       +'<button type="button" style="'+BTN_S+'" onclick="voiceAnswer(this,'+e.id+')">🎤 Speak it</button>'
-      +'<button type="button" style="'+BTN_S+'" onclick="saveAnswer('+e.id+')">Save answer</button>'
       +'<span class="hint" id="st-'+e.id+'"></span>'
       +'</div></div>';
   }).join('');
+  wireAnswerAutosave();
+  paintEvidenceSummary();
 }
 
 async function generateQuestions(){
@@ -1682,21 +1684,63 @@ async function generateQuestions(){
     const r=await fetch('/interview/questions',{method:'POST',headers:{'x-api-key':key,'content-type':'application/json'},body:'{}'});
     const j=await r.json();
     if(!r.ok){ st.textContent=j.error||'Failed'; st.style.color='#f87171'; }
-    else { EVIDENCE=j.questions||[]; renderInterview(); st.textContent='Answer what you can. Blank ones are just skipped.'; st.style.color=''; }
+    else { EVIDENCE=j.questions||[]; renderInterview(); st.textContent='Answer what you can — they save as you type. Blank ones are just skipped.'; st.style.color=''; }
   }catch(e){ st.textContent='Error: '+e.message; st.style.color='#f87171'; }
   btn.disabled=false; btn.textContent=orig;
 }
 
+const answerState={};
 async function saveAnswer(id){
   const key=getKey(); const ta=document.getElementById('ans-'+id); const st=document.getElementById('st-'+id);
   if(!key||!ta) return;
-  st.textContent='Saving…';
+  const value=ta.value;
+  const state=answerState[id]||(answerState[id]={saved:'',attempt:0});
+  if(value.trim()===state.saved.trim()) return;
+  st.style.color=''; st.textContent='Saving…';
   try{
-    const r=await fetch('/interview/answer',{method:'POST',headers:{'x-api-key':key,'content-type':'application/json'},body:JSON.stringify({id:id,answer:ta.value})});
-    st.textContent=r.ok?'Saved':'Failed';
-    if(r.ok){ const row=EVIDENCE.find(function(e){return e.id===id;}); if(row) row.answer=ta.value; }
-  }catch(e){ st.textContent='Failed'; }
-  setTimeout(function(){ st.textContent=''; },2000);
+    const r=await fetch('/interview/answer',{method:'POST',headers:{'x-api-key':key,'content-type':'application/json'},body:JSON.stringify({id:id,answer:value})});
+    if(!r.ok) throw new Error('save failed');
+    state.saved=value; state.attempt=0;
+    st.style.color='#4ade80'; st.textContent='Saved';
+    const row=EVIDENCE.find(function(e){return e.id===id;}); if(row) row.answer=value;
+    paintEvidenceSummary();
+    setTimeout(function(){ if(st.textContent==='Saved') st.textContent=''; },2500);
+  }catch(e){
+    // A bad connection is not the user's problem to solve — keep the text and
+    // keep trying.
+    state.attempt++;
+    st.style.color='#fbbf24';
+    if(state.attempt<=4){
+      st.textContent='Offline — retrying ('+state.attempt+'/4)';
+      setTimeout(function(){ saveAnswer(id); }, Math.min(1000*Math.pow(2,state.attempt),15000));
+    } else {
+      st.textContent='Still offline. Your answer is safe here and saves when the connection returns.';
+      setTimeout(function(){ saveAnswer(id); },30000);
+    }
+  }
+}
+
+// Autosave: typing pauses for a moment, or the field loses focus.
+function wireAnswerAutosave(){
+  EVIDENCE.forEach(function(e){
+    const ta=document.getElementById('ans-'+e.id);
+    if(!ta||ta.dataset.wired) return;
+    ta.dataset.wired='1';
+    answerState[e.id]={saved:e.answer||'',attempt:0};
+    let t=null;
+    ta.addEventListener('input',function(){ clearTimeout(t); t=setTimeout(function(){ saveAnswer(e.id); },900); });
+    ta.addEventListener('blur',function(){ clearTimeout(t); saveAnswer(e.id); });
+  });
+}
+
+function paintEvidenceSummary(){
+  const el=document.getElementById('evidenceSummary');
+  if(!el) return;
+  const answered=EVIDENCE.filter(function(e){ return e.answer && String(e.answer).trim(); }).length;
+  if(!EVIDENCE.length){ el.textContent=''; return; }
+  el.textContent=answered
+    ? answered+' answer'+(answered===1?'':'s')+' saved to your account. Every tailored resume and application is written using '+(answered===1?'it':'them')+'.'
+    : 'No answers saved yet. Each one you add is reused by every future application.';
 }
 
 function voiceAnswer(btn,id){
@@ -2524,8 +2568,46 @@ Banned patterns:
 // resume text — reorders and reweights existing bullets, never invents facts.
 // Shared by the on-demand endpoint and by kit generation, so both produce the
 // same resume rather than drifting into two versions of the prompt.
-async function buildTailoredResume(profile, appData, userEmail) {
+// Abbreviations where a full stop is part of the word, so the text after it is
+// legitimately lowercase and must not be spliced.
+const ABBREV = /(?:^|\s)(?:e\.g|i\.e|etc|vs|approx|no|cf|al|Inc|Ltd|Co|Corp|Dr|Mr|Mrs|Ms|Prof|St|Jr|Sr)$/i;
+
+// "…fitted 12,000+ golfers. operating under…" — a finished sentence followed by
+// a lowercase fragment. Join it back into one sentence rather than leaving a
+// broken one in a document someone sends to an employer.
+function tidySentence(text) {
+  if (typeof text !== 'string') return text;
+  let out = text.replace(/\s+/g, ' ').trim();
+  out = out.replace(/([^\s.])\.\s+([a-z])/g, (match, before, after, offset, full) => {
+    const head = full.slice(0, offset + 1);
+    if (ABBREV.test(head)) return match;
+    return `${before}, ${after}`;
+  });
+  // A stray space before terminal punctuation, and a missing full stop.
+  out = out.replace(/\s+([.,;:])/g, '$1');
+  if (out && !/[.!?]$/.test(out)) out += '.';
+  return out;
+}
+
+function tidyResume(r) {
+  if (!r || typeof r !== 'object') return r;
+  if (r.summary) r.summary = tidySentence(r.summary);
+  for (const e of r.experience || []) {
+    if (Array.isArray(e.bullets)) {
+      e.bullets = e.bullets.map(tidySentence).filter(b => b && b !== '.');
+    }
+  }
+  if (Array.isArray(r.skills)) {
+    r.skills = r.skills.map(x => String(x).trim()).filter(Boolean);
+  }
+  return r;
+}
+
+async function buildTailoredResume(profile, appData, userEmail, previous = null) {
   const t = appData.tailored || {};
+  const evidenceRows = userEmail
+    ? await db.getEvidence(userEmail, { answeredOnly: true }).catch(() => [])
+    : [];
   const resumeName = `${appData.profile?.first_name || profile.first_name || ''} ${appData.profile?.last_name || profile.last_name || ''}`.trim();
 
   const prompt = `Rewrite this candidate's resume experience for ${appData.role} at ${appData.company}.
@@ -2542,6 +2624,8 @@ Rules:
 - Work described in the additional evidence belongs to the role the candidate held at that time. Turn it into bullets under that role. This is the point of it: it is real work their resume left out, and for a candidate crossing a role boundary it is often the most relevant material they have.
 - Cut bullets irrelevant to this role if the original has many; keep the strongest 3-5 per role.
 - Do not add a role, company, or credential that appears in neither the resume nor the evidence.
+- Each bullet is ONE grammatical sentence. Never end a sentence and then continue with a lowercase fragment.
+- Do not explain why a bullet is relevant. No "demonstrating the ability to...", no "directly analogous to...", no "a model applicable to...". State what the candidate did and what resulted. The reader draws the conclusion.
 
 Then judge your own output honestly. The candidate needs to know whether to send this or to strengthen it first, so do not flatter it.
 
@@ -2563,8 +2647,13 @@ Return ONLY valid JSON, no markdown:
   const raw = await callClaude(prompt, 2800, 'claude-sonnet-4-6');
   const match = raw.match(/\{[\s\S]*\}/);
   if (!match) throw new Error('No JSON in response');
-  const tailored = cleanEmDashes(JSON.parse(match[0]));
-  return { name: resumeName, company: appData.company, role: appData.role, ...tailored };
+  const tailored = tidyResume(cleanEmDashes(JSON.parse(match[0])));
+  return {
+    name: resumeName, company: appData.company, role: appData.role, ...tailored,
+    version: (previous?.version || 0) + 1,
+    generated_at: new Date().toISOString(),
+    evidence_used: evidenceRows.length,
+  };
 }
 
 app.post('/resume-tailor', requireCredits('resume'), async (req, res) => {
@@ -2584,7 +2673,7 @@ app.post('/resume-tailor', requireCredits('resume'), async (req, res) => {
   }
 
   try {
-    const out = await buildTailoredResume(profile, resumeKit, userEmail);
+    const out = await buildTailoredResume(profile, resumeKit, userEmail, resumeKit.tailored_resume);
     resumeKit.tailored_resume = out;
     await db.saveKit(resumeKit).catch(() => {});
     res.json(out);
