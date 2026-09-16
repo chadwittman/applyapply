@@ -1,4 +1,5 @@
 const { Pool } = require('pg');
+const { canonicalUrl, ownedId, requireOwner } = require('./posting');
 if (!process.env.DATABASE_URL) {
   throw new Error('DATABASE_URL is required to start the ApplyApply server');
 }
@@ -48,6 +49,7 @@ async function initSchema() {
   // profiles already existed before resume_text was added — CREATE TABLE IF
   // NOT EXISTS above is a no-op against it, so add the column explicitly too.
   await q(`ALTER TABLE profiles ADD COLUMN IF NOT EXISTS resume_text TEXT`);
+  await q(`ALTER TABLE profiles ADD COLUMN IF NOT EXISTS sponsorship TEXT`);
   await q(`CREATE INDEX IF NOT EXISTS idx_profiles_user_email ON profiles (user_email)`);
 
   await q(`
@@ -203,6 +205,7 @@ async function initSchema() {
       processed_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )
   `);
+  await require('./db-upgrade')(pool);
 }
 
 // ── Runs ──────────────────────────────────────────────────────────────────────
@@ -218,12 +221,11 @@ async function insertRun(run) {
 }
 
 async function getRuns(limit = 30, userEmail = null) {
-  if (userEmail) return q(`SELECT * FROM runs WHERE user_email = $1 ORDER BY run_at DESC LIMIT $2`, [userEmail, limit]);
-  return q(`SELECT * FROM runs ORDER BY run_at DESC LIMIT $1`, [limit]);
+  return q(`SELECT * FROM runs WHERE user_email = $1 ORDER BY run_at DESC LIMIT $2`, [requireOwner(userEmail), limit]);
 }
 
-async function getRun(id) {
-  return q1(`SELECT * FROM runs WHERE id = $1`, [id]);
+async function getRun(id, userEmail) {
+  return q1(`SELECT * FROM runs WHERE id = $1 AND user_email = $2`, [id, requireOwner(userEmail)]);
 }
 
 // ── Jobs ──────────────────────────────────────────────────────────────────────
@@ -232,28 +234,25 @@ async function getRun(id) {
 // who source the same posting on the same day produce the same id and collide
 // on the primary key. Qualify it by owner. Rows with no owner keep the bare id
 // so existing ids are unchanged.
-function jobIdFor(id, userEmail) {
-  if (!userEmail) return id;
-  const tag = require('crypto').createHash('sha1').update(userEmail).digest('hex').slice(0, 6);
-  return `${id}--${tag}`;
-}
-
-
 async function insertJob(job) {
+  job = { ...job, url: canonicalUrl(job.url) };
+  requireOwner(job.user_email);
   await q(`
-    INSERT INTO jobs (id, url, company, role, ats, source, run_id, found_at, status, tier, fit_score, location, notes, user_email)
-    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
-    ON CONFLICT (COALESCE(user_email, ''), url) DO NOTHING
-  `, [jobIdFor(job.id, job.user_email), job.url, job.company, job.role, job.ats||null, job.source||null, job.run_id||null,
+    INSERT INTO jobs (id, url, company, role, ats, source, run_id, found_at, status, tier, fit_score, location, notes, user_email, canonical_url)
+    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$2)
+    ON CONFLICT (user_email, canonical_url) DO NOTHING
+  `, [ownedId('job', job.user_email, job.url), job.url, job.company, job.role, job.ats||null, job.source||null, job.run_id||null,
       job.found_at, job.status||'new', job.tier||null, job.fit_score||null,
       job.location||null, job.notes||'', job.user_email||null]);
 }
 
 async function upsertJob(job) {
+  job = { ...job, url: canonicalUrl(job.url) };
+  requireOwner(job.user_email);
   await q(`
-    INSERT INTO jobs (id, url, company, role, ats, source, run_id, found_at, status, tier, fit_score, location, notes, user_email)
-    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
-    ON CONFLICT (COALESCE(user_email, ''), url) DO UPDATE SET
+    INSERT INTO jobs (id, url, company, role, ats, source, run_id, found_at, status, tier, fit_score, location, notes, user_email, canonical_url)
+    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$2)
+    ON CONFLICT (user_email, canonical_url) DO UPDATE SET
       company    = EXCLUDED.company,
       role       = EXCLUDED.role,
       source     = COALESCE(jobs.source, EXCLUDED.source),
@@ -262,38 +261,15 @@ async function upsertJob(job) {
       location   = EXCLUDED.location,
       updated_at = NOW()
     WHERE jobs.status = 'new'
-  `, [jobIdFor(job.id, job.user_email), job.url, job.company, job.role, job.ats||null, job.source||null, job.run_id||null,
+  `, [ownedId('job', job.user_email, job.url), job.url, job.company, job.role, job.ats||null, job.source||null, job.run_id||null,
       job.found_at, job.status||'new', job.tier||null, job.fit_score||null,
       job.location||null, job.notes||'', job.user_email||null]);
 }
 
-// Insert a pipeline row for a directly-generated kit. jobs has two keys that
-// must both stay unique — id (PK) and url — but a statement can only declare
-// one ON CONFLICT target. The AI derives id from company+role, so the same role
-// reached via two different URLs (an aggregator listing and the company's own
-// careers page) produces the same id with a different url, which upsertJob's
-// ON CONFLICT (url) does not catch. Resolve the id collision before inserting.
+// A direct kit and a sourced posting share the same owner-scoped identity.
 async function ensureJob(job) {
-  const byUrl = await q1(
-    `SELECT id FROM jobs WHERE url = $1 AND COALESCE(user_email, '') = COALESCE($2, '')`,
-    [job.url, job.user_email || null]);
-  if (byUrl) return byUrl.id;
-
-  let id = jobIdFor(job.id, job.user_email);
-  const taken = await q1(`SELECT url FROM jobs WHERE id = $1`, [id]);
-  if (taken) {
-    const suffix = require('crypto').createHash('sha1').update(job.url).digest('hex').slice(0, 6);
-    id = `${id}-${suffix}`;
-  }
-
-  await q(`
-    INSERT INTO jobs (id, url, company, role, ats, source, run_id, found_at, status, tier, fit_score, location, notes, user_email)
-    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
-    ON CONFLICT (COALESCE(user_email, ''), url) DO NOTHING
-  `, [id, job.url, job.company, job.role, job.ats||null, job.source||null, job.run_id||null,
-      job.found_at, job.status||'new', job.tier||null, job.fit_score||null,
-      job.location||null, job.notes||'', job.user_email||null]);
-  return id;
+  await insertJob(job);
+  return (await getJobByUrl(job.url, job.user_email)).id;
 }
 
 async function setJobStatus(url, status, extra = {}, userEmail = null) {
@@ -301,39 +277,35 @@ async function setJobStatus(url, status, extra = {}, userEmail = null) {
   const rows = await q(`
     UPDATE jobs SET status = $1, applied_at = COALESCE($2, applied_at),
       notes = COALESCE($3, notes), updated_at = NOW(), status_updated_at = NOW()
-    WHERE url = $4 AND ($5::text IS NULL OR COALESCE(user_email, '') = $5)
+    WHERE canonical_url = $4 AND user_email = $5
     RETURNING id
-  `, [status, extra.applied_at||null, extra.notes||null, url, userEmail]);
+  `, [status, extra.applied_at||null, extra.notes||null, canonicalUrl(url), requireOwner(userEmail)]);
   return rows.length;
 }
 
 async function setKitGenerated(url, userEmail = null) {
   await q(`UPDATE jobs SET kit_generated_at = NOW()
-           WHERE url = $1 AND ($2::text IS NULL OR COALESCE(user_email, '') = $2)`,
-          [url, userEmail]);
+           WHERE canonical_url = $1 AND user_email = $2`,
+          [canonicalUrl(url), requireOwner(userEmail)]);
 }
 
 async function getJobByUrl(url, userEmail = null) {
-  return q1(`SELECT * FROM jobs WHERE url = $1
-             AND ($2::text IS NULL OR COALESCE(user_email, '') = $2)`, [url, userEmail]);
+  return q1(`SELECT * FROM jobs WHERE canonical_url = $1 AND user_email = $2`, [canonicalUrl(url), requireOwner(userEmail)]);
 }
 
 async function getJobs(status = null, limit = 200, userEmail = null) {
-  if (status && userEmail)  return q(`SELECT * FROM jobs WHERE status = $1 AND user_email = $2 ORDER BY found_at DESC, fit_score DESC LIMIT $3`, [status, userEmail, limit]);
-  if (status)               return q(`SELECT * FROM jobs WHERE status = $1 ORDER BY found_at DESC, fit_score DESC LIMIT $2`, [status, limit]);
-  if (userEmail)            return q(`SELECT * FROM jobs WHERE user_email = $1 ORDER BY found_at DESC, fit_score DESC LIMIT $2`, [userEmail, limit]);
-  return q(`SELECT * FROM jobs ORDER BY found_at DESC, fit_score DESC LIMIT $1`, [limit]);
+  requireOwner(userEmail);
+  if (status) return q('SELECT * FROM jobs WHERE status=$1 AND user_email=$2 ORDER BY found_at DESC,fit_score DESC LIMIT $3', [status,userEmail,limit]);
+  return q('SELECT * FROM jobs WHERE user_email=$1 ORDER BY found_at DESC,fit_score DESC LIMIT $2', [userEmail,limit]);
 }
 
-async function getJobsForRun(runId) {
-  return q(`SELECT * FROM jobs WHERE run_id = $1 ORDER BY fit_score DESC`, [runId]);
+async function getJobsForRun(runId, userEmail) {
+  return q(`SELECT * FROM jobs WHERE run_id = $1 AND user_email = $2 ORDER BY fit_score DESC`, [runId, requireOwner(userEmail)]);
 }
 
-async function getSeenUrls(userEmail = null) {
-  const rows = userEmail
-    ? await q(`SELECT url FROM jobs WHERE user_email = $1`, [userEmail])
-    : await q(`SELECT url FROM jobs`);
-  return new Set(rows.map(r => r.url));
+async function getSeenUrls(userEmail) {
+  const rows = await q('SELECT canonical_url FROM jobs WHERE user_email=$1 AND canonical_url IS NOT NULL', [requireOwner(userEmail)]);
+  return new Set(rows.map(r => r.canonical_url));
 }
 
 // What the user actually wants to know: how much ground we covered, over what
@@ -353,6 +325,7 @@ async function getCoverage(userEmail) {
 }
 
 async function getStatusCounts(userEmail = null) {
+  requireOwner(userEmail);
   const rows = userEmail
     ? await q(`SELECT status, COUNT(*) as n FROM jobs WHERE user_email = $1 GROUP BY status`, [userEmail])
     : await q(`SELECT status, COUNT(*) as n FROM jobs GROUP BY status`);
@@ -381,7 +354,7 @@ async function getDecisionSummary(userEmail) {
 // ── Profiles ──────────────────────────────────────────────────────────────────
 
 const PROFILE_FIELDS = ['first_name','last_name','email','phone','linkedin','github','twitter','website',
-  'location','work_authorization','salary','current_employer','school','bio','career_type','target_roles','location_pref','resume_text'];
+  'location','work_authorization','sponsorship','salary','current_employer','school','bio','career_type','target_roles','location_pref','resume_text'];
 
 async function getProfile(apiKey) {
   return q1(`SELECT * FROM profiles WHERE api_key = $1`, [apiKey]);
@@ -401,16 +374,18 @@ async function setProfile(key, data, isEmail = false) {
   const vals = fields.map(f => data[f]);
 
   if (isEmail) {
-    const existing = await q1(`SELECT api_key FROM profiles WHERE user_email = $1`, [key]);
-    if (existing) {
-      const sets = fields.map((f, i) => `${f} = $${i + 2}`).join(', ');
-      await q(`UPDATE profiles SET ${sets}, updated_at = NOW() WHERE user_email = $1`, [key, ...vals]);
-    } else {
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))', ['profile:' + key]);
+      const existing = (await client.query('SELECT api_key FROM profiles WHERE user_email=$1', [key])).rows[0];
       const cols = ['api_key', 'user_email', ...fields].join(', ');
-      const placeholders = ['api_key', 'user_email', ...fields].map((_, i) => `$${i + 1}`).join(', ');
-      await q(`INSERT INTO profiles (${cols}) VALUES (${placeholders})`,
-        [`email:${key}`, key, ...vals]);
-    }
+      const placeholders = ['api_key', 'user_email', ...fields].map((_, i) => '$' + (i + 1)).join(', ');
+      const updates = fields.map(f => f + ' = EXCLUDED.' + f).join(', ');
+      await client.query('INSERT INTO profiles (' + cols + ') VALUES (' + placeholders + ') ON CONFLICT (api_key) DO UPDATE SET ' + updates + ', updated_at=NOW()', [existing?.api_key || 'email:' + key,key,...vals]);
+      await client.query('COMMIT');
+    } catch (e) { await client.query('ROLLBACK'); throw e; }
+    finally { client.release(); }
   } else {
     const cols = ['api_key', ...fields].join(', ');
     const placeholders = ['api_key', ...fields].map((_, i) => `$${i + 1}`).join(', ');
@@ -447,78 +422,54 @@ async function deductUserCredits(email, amount) {
   `, [amount, email]);
 }
 
-async function applyStripePayment(eventId, email, credits) {
-  const client = await pool.connect();
-  try {
-    await client.query('BEGIN');
-    await client.query(`
-      CREATE TABLE IF NOT EXISTS stripe_events (
-        event_id TEXT PRIMARY KEY,
-        email TEXT NOT NULL,
-        credits INTEGER NOT NULL,
-        processed_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-      )
-    `);
-    const claimed = await client.query(
-      `INSERT INTO stripe_events (event_id, email, credits) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING RETURNING event_id`,
-      [eventId, email, credits]
-    );
-    if (!claimed.rowCount) {
-      await client.query('ROLLBACK');
-      return false;
-    }
-    await client.query(
-      `INSERT INTO users (email, credits, created_at) VALUES ($1, 0, $2) ON CONFLICT DO NOTHING`,
-      [email, new Date().toISOString()]
-    );
-    await client.query(`UPDATE users SET credits = credits + $1 WHERE email = $2`, [credits, email]);
-    await client.query('COMMIT');
-    return true;
-  } catch (error) {
-    await client.query('ROLLBACK');
-    throw error;
-  } finally {
-    client.release();
-  }
-}
-
 // ── Kits ──────────────────────────────────────────────────────────────────────
 
 async function saveKit(kit) {
-  // The same role reached from two URLs (an aggregator listing and the
-  // company's own careers page) yields the same AI-derived id. Keep every URL
-  // this kit has been seen at, so looking it up from either one still hits
-  // instead of quietly regenerating and charging for it twice.
-  const prior = await q1(`SELECT data FROM kits WHERE id = $1`, [kit.id]);
-  if (prior?.data) {
-    const known = new Set([prior.data.url, ...(prior.data.urls || []), ...(kit.urls || [])].filter(Boolean));
-    known.delete(kit.url);
-    if (known.size) kit = { ...kit, urls: [...known] };
-  }
-  await q(`
-    INSERT INTO kits (id, url, user_email, data)
-    VALUES ($1,$2,$3,$4)
-    ON CONFLICT (id) DO UPDATE SET
-      url = EXCLUDED.url, user_email = EXCLUDED.user_email,
-      data = EXCLUDED.data, updated_at = NOW()
-  `, [kit.id, kit.url || null, kit.user_email || null, JSON.stringify(kit)]);
-  return kit;
+  requireOwner(kit.user_email);
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1, 0))', ['kit:' + kit.id]);
+    const prior = (await client.query('SELECT * FROM kits WHERE id=$1 FOR UPDATE', [kit.id])).rows[0];
+    if (prior && prior.user_email !== kit.user_email) throw new Error('Kit ownership cannot change');
+    if (prior && kit.version != null && kit.version !== prior.data.version) throw Object.assign(new Error('Kit changed during this request; reload before retrying'), { status: 409 });
+    const version = (prior?.data?.version || 0) + 1;
+    kit = { ...kit, url: canonicalUrl(kit.url), version };
+    delete kit.urls;
+    if (prior) await client.query(`INSERT INTO kit_versions (kit_id,user_email,version,data)
+      VALUES ($1,$2,$3,$4) ON CONFLICT DO NOTHING`, [kit.id, kit.user_email, prior.data.version || 0, JSON.stringify(prior.data)]);
+    await client.query(`INSERT INTO kits (id,url,user_email,data,canonical_url) VALUES ($1,$2,$3,$4,$2)
+      ON CONFLICT (id) DO UPDATE SET url=EXCLUDED.url, canonical_url=EXCLUDED.canonical_url,
+      data=EXCLUDED.data, updated_at=NOW() WHERE kits.user_email=EXCLUDED.user_email`,
+    [kit.id, kit.url, kit.user_email, JSON.stringify(kit)]);
+    await client.query('COMMIT');
+    return kit;
+  } catch (error) { await client.query('ROLLBACK'); throw error; }
+  finally { client.release(); }
 }
 
-async function getKit(id) {
-  const row = await q1(`SELECT data FROM kits WHERE id = $1`, [id]);
+async function getKit(id, userEmail) {
+  const row = await q1(`SELECT data FROM kits WHERE id = $1 AND user_email=$2`, [id, requireOwner(userEmail)]);
   return row ? row.data : null;
 }
 
-async function getKits(userEmail = null) {
-  const rows = userEmail
-    ? await q(`SELECT data FROM kits WHERE user_email = $1 ORDER BY updated_at DESC`, [userEmail])
-    : await q(`SELECT data FROM kits ORDER BY updated_at DESC`);
+async function findKit(url, userEmail) {
+  const row = await q1(`SELECT data FROM kits WHERE user_email=$1 AND canonical_url=$2 ORDER BY updated_at DESC LIMIT 1`,
+    [requireOwner(userEmail), canonicalUrl(url)]);
+  return row?.data || null;
+}
+
+async function getKitVersions(id, userEmail) {
+  return q(`SELECT version,data,created_at FROM kit_versions WHERE kit_id=$1 AND user_email=$2 ORDER BY version DESC`, [id, requireOwner(userEmail)]);
+}
+
+async function getKits(userEmail) {
+  const rows = await q('SELECT data FROM kits WHERE user_email=$1 ORDER BY updated_at DESC', [requireOwner(userEmail)]);
   return rows.map(r => r.data);
 }
 
-async function deleteKit(id) {
-  await q(`DELETE FROM kits WHERE id = $1`, [id]);
+async function deleteKit(id, userEmail) {
+  await q(`DELETE FROM kits WHERE id = $1 AND user_email=$2`, [id, requireOwner(userEmail)]);
 }
 
 async function deleteKitsForUser(userEmail) {
@@ -615,8 +566,8 @@ function roleKeyFor(roleTitles) {
     .split(',').map(r => r.trim().toLowerCase()).filter(Boolean).sort().join('|');
 }
 
-function cacheKeyFor(source, roleTitles, sharedAcrossRoles = false) {
-  return sharedAcrossRoles ? `${source}::*` : `${source}::${roleKeyFor(roleTitles)}`;
+function cacheKeyFor(source, roleTitles, sharedAcrossRoles = false, locationPref = 'remote') {
+  return sharedAcrossRoles ? `v2::${source}::*` : `v2::${source}::${roleKeyFor(roleTitles)}::${locationPref}`;
 }
 
 async function getCachedSources(keys, maxAgeHours = 20) {
@@ -660,21 +611,22 @@ async function setSchedule(userEmail, { hour, minute, enabled, sources }, alread
       alreadyPassedToday ? new Date() : null]);
 }
 
-// Everything due at this wall-clock minute, skipping anything already run
-// within the last 23h so a restart mid-minute can't double-charge.
-// Matching the exact minute meant a single missed tick — a deploy, a restart,
-// a slow tick — silently cost a user their whole day of sourcing. Anyone whose
-// time has passed today and who has not run in 23 hours is due, so the next
-// tick picks up whatever the missed one dropped. The three-hour ceiling keeps
-// that a catch-up rather than a licence to fire at any later hour.
-async function getDueSchedules(hour, minute) {
+// Use a dated occurrence, not a 23-hour heuristic. The occurrence is also the
+// scheduler's idempotency key, including catch-up across local midnight.
+async function getDueSchedules(_hour, _minute, now = new Date()) {
   return q(`
-    SELECT * FROM schedules
-    WHERE enabled = true
-      AND (hour * 60 + minute) <= $1
-      AND $1 - (hour * 60 + minute) < 180
-      AND (last_run_at IS NULL OR last_run_at < NOW() - INTERVAL '23 hours')
-  `, [hour * 60 + minute]);
+    WITH today AS (
+      SELECT s.*, date_trunc('day', $1::timestamptz AT TIME ZONE $2)
+        + make_interval(hours => hour, mins => minute) AS wall_due
+      FROM schedules s WHERE enabled=true
+    ), due AS (
+      SELECT *, (CASE WHEN wall_due > ($1::timestamptz AT TIME ZONE $2)
+        THEN wall_due - INTERVAL '1 day' ELSE wall_due END) AT TIME ZONE $2 AS due_at
+      FROM today
+    )
+    SELECT * FROM due WHERE due_at <= $1 AND due_at > $1::timestamptz - INTERVAL '3 hours'
+      AND (last_run_at IS NULL OR last_run_at < due_at)
+  `, [now,process.env.SCHEDULE_TZ || 'America/Chicago']);
 }
 
 async function getAllEnabledSchedules() {
@@ -711,7 +663,7 @@ async function getMagicLink(token) {
 }
 
 async function useMagicLink(token) {
-  await q(`UPDATE magic_links SET used = 1 WHERE token = $1`, [token]);
+  return q1(`UPDATE magic_links SET used = 1 WHERE token = $1 AND used=0 AND expires_at>NOW() RETURNING *`, [token]);
 }
 
 async function getProfiledUsers() {
@@ -727,12 +679,13 @@ module.exports = {
   insertJob, upsertJob, ensureJob, setJobStatus, setKitGenerated, getJobByUrl, getJobs, getJobsForRun, getSeenUrls, getStatusCounts,
   recordDecision, getDecisionSummary, getCoverage,
   getProfile, getProfileByUserEmail, setProfile, getProfiledUsers,
-  saveKit, getKit, getKits, deleteKit, deleteKitsForUser, countKits,
+  saveKit, getKit, findKit, getKitVersions, getKits, deleteKit, deleteKitsForUser, countKits,
   saveResumeFile, getResumeFile, getResumeFileMeta,
   getEvidence, addEvidenceQuestions, addAnsweredEvidence, setEvidenceAnswer, deleteEvidence,
   getSetting, setSetting,
   getSchedule, setSchedule, getDueSchedules, markScheduleRun, getAllEnabledSchedules,
   roleKeyFor, cacheKeyFor, getCachedSources, putCachedSource,
-  getUser, getOrCreateUser, addUserCredits, deductUserCredits, applyStripePayment,
+  getUser, getOrCreateUser, addUserCredits, deductUserCredits,
   createMagicLink, getMagicLink, useMagicLink,
 };
+Object.assign(module.exports, require('./operations')(pool), require('./payments')(pool));

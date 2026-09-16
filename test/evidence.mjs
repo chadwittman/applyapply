@@ -1,11 +1,11 @@
 // The answers UI: autosave with no Save button, a running tally, and answers
 // that survive a reload.
 import { createRequire } from 'module';
-const require = createRequire('/Users/chaztyler/job-search/server/package.json');
+const require = createRequire(new URL('../server/package.json', import.meta.url));
 const { chromium } = require('playwright-core');
 const jwt = require('jsonwebtoken');
-const db = require('/Users/chaztyler/job-search/server/db.js');
-const B = 'http://localhost:5099';
+const db = require('./db.js');
+const B = process.env.APP_ORIGIN || 'http://localhost:5099';
 const EMAIL = 'ev@test.local';
 const T = jwt.sign({ email: EMAIL }, 'e2e-test-secret-not-production', { expiresIn: '1d' });
 

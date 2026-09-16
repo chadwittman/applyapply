@@ -2,10 +2,10 @@
 // Covers the defect classes this project keeps producing: endpoints that treat
 // "nobody" as "everybody", and two users sharing one row.
 import { createRequire } from 'module';
-const require = createRequire('/Users/chaztyler/job-search/server/package.json');
+const require = createRequire(new URL('../server/package.json', import.meta.url));
 const jwt = require('jsonwebtoken');
-const db = require('/Users/chaztyler/job-search/server/db.js');
-const B = 'http://localhost:5099';
+const db = require('./db.js');
+const B = process.env.APP_ORIGIN || 'http://localhost:5099';
 const SECRET = 'e2e-test-secret-not-production';
 const tok = e => jwt.sign({ email: e }, SECRET, { expiresIn: '1d' });
 const ALICE = tok('alice@test.local'), BOB = tok('bob@test.local');

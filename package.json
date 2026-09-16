@@ -7,8 +7,8 @@
   "scripts": {
     "build": "node server/check-templates.js && npm --prefix server install --omit=dev",
     "start": "npm --prefix server start",
-    "check": "node server/check-templates.js --self-test && node server/check-templates.js && eslint server/ source.js",
-    "lint": "eslint server/ source.js",
+    "check": "node server/check-templates.js --self-test && node server/check-templates.js && eslint server/ source.js extension/*.js",
+    "lint": "eslint server/ source.js extension/*.js",
     "test": "bash test/run.sh"
   },
   "devDependencies": {

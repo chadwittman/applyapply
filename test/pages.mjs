@@ -1,13 +1,13 @@
 // Every page, in a real browser, with a real session — after tightening auth
 // the risk is a page that silently renders empty because its fetch now 401s.
 import { createRequire } from 'module';
-const require = createRequire('/Users/chaztyler/job-search/server/package.json');
+const require = createRequire(new URL('../server/package.json', import.meta.url));
 const { chromium } = require('playwright-core');
 const jwt = require('jsonwebtoken');
-const B = 'http://localhost:5099';
+const B = process.env.APP_ORIGIN || 'http://localhost:5099';
 const T = jwt.sign({ email: 'alice@test.local' }, 'e2e-test-secret-not-production', { expiresIn: '1d' });
 
-const browser = await chromium.launch({ headless: true, executablePath: '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' });
+const browser = await chromium.launch({ headless: true, executablePath: process.env.AA_CHROME || undefined });
 const ctx = await browser.newContext();
 await ctx.addInitScript(t => { try { localStorage.setItem('aa_session', t); } catch (e) {} }, T);
 const page = await ctx.newPage();

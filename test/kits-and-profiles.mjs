@@ -1,10 +1,10 @@
 // The remaining per-user surfaces: kits, resumes, profiles, and the
 // destructive /clear.
 import { createRequire } from 'module';
-const require = createRequire('/Users/chaztyler/job-search/server/package.json');
+const require = createRequire(new URL('../server/package.json', import.meta.url));
 const jwt = require('jsonwebtoken');
-const db = require('/Users/chaztyler/job-search/server/db.js');
-const B = 'http://localhost:5099';
+const db = require('./db.js');
+const B = process.env.APP_ORIGIN || 'http://localhost:5099';
 const T = e => jwt.sign({ email: e }, 'e2e-test-secret-not-production', { expiresIn: '1d' });
 const A = T('alice@test.local'), Bo = T('bob@test.local');
 let pass = 0, fail = 0;

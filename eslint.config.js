@@ -25,6 +25,21 @@ const browserGlobals = {
 
 module.exports = [
   {
+    files: ['extension/*.js'],
+    languageOptions: {
+      ecmaVersion: 2023,
+      sourceType: 'script',
+      globals: { ...globals, ...browserGlobals, chrome: 'readonly', MutationObserver: 'readonly',
+        CSS: 'readonly', requestAnimationFrame: 'readonly', Event: 'readonly', MouseEvent: 'readonly',
+        KeyboardEvent: 'readonly', CustomEvent: 'readonly', HTMLInputElement: 'readonly',
+        HTMLTextAreaElement: 'readonly', HTMLSelectElement: 'readonly', FileReader: 'readonly',
+        File: 'readonly', Blob: 'readonly', DataTransfer: 'readonly', atob: 'readonly',
+        btoa: 'readonly', localStorage: 'readonly', MediaRecorder: 'readonly',
+        XMLHttpRequest: 'readonly', alert: 'readonly' },
+    },
+    rules: { 'no-undef': 'error', 'no-dupe-keys': 'error', 'no-unreachable': 'error', 'no-const-assign': 'error' },
+  },
+  {
     files: ['server/**/*.js'],
     ignores: ['**/node_modules/**'],
     languageOptions: {

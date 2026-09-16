@@ -4,6 +4,10 @@ let SERVER = CLOUD_URL;
 let API_KEY = '';
 let MODE = 'cloud';
 
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area === 'sync' && (changes.apiKey || changes.serverUrl)) window.location.reload();
+});
+
 function setMode(mode) {
   MODE = mode;
   SERVER = mode === 'local' ? LOCAL_URL : CLOUD_URL;
@@ -15,7 +19,7 @@ function setMode(mode) {
 
 const PROFILE_FIELDS = [
   'first_name', 'last_name', 'email', 'phone',
-  'linkedin', 'location', 'work_authorization', 'salary',
+  'linkedin', 'location', 'work_authorization', 'sponsorship', 'salary',
 ];
 
 function apiFetch(path, opts = {}) {
@@ -59,6 +63,13 @@ chrome.storage.sync.get(['mode', 'apiKey', 'profile', 'userEmail'], ({ mode, api
       // Legacy API key — show as signed in with email if we have it
       setAuthState(true, userEmail || '');
     }
+    apiFetch('/profile').then(r=>r.ok?r.json():null).then(profile=>{
+      if (!profile) return;
+      for (const field of PROFILE_FIELDS) {
+        const el=document.querySelector('[data-field="'+field+'"]');
+        if (el) el.value=profile[field] || '';
+      }
+    }).catch(()=>{});
     if (profile) {
       for (const field of PROFILE_FIELDS) {
         const el = document.querySelector(`[data-field="${field}"]`);
@@ -105,11 +116,11 @@ chrome.tabs.query({ active: true, currentWindow: true }, ([tab]) => {
     // button is dead on any page reached this way.
     try {
       await chrome.scripting.executeScript({
-        target: { tabId: tab.id, allFrames: true },
+        target: { tabId: tab.id },
         func: () => { window.__JAA_FORCE = true; },
       });
       await chrome.scripting.executeScript({
-        target: { tabId: tab.id, allFrames: true },
+        target: { tabId: tab.id },
         files: ['vendor/jspdf.umd.min.js', 'content.js'],
       });
     } catch (e) {
@@ -215,17 +226,18 @@ document.getElementById('saveSettings').addEventListener('click', async () => {
   const profile = {};
   for (const field of PROFILE_FIELDS) {
     const el = document.querySelector(`[data-field="${field}"]`);
-    if (el?.value.trim()) profile[field] = el.value.trim();
+    if (el) profile[field] = el.value.trim();
   }
   chrome.storage.sync.set({ mode: MODE, profile }, () => {});
   const s = document.getElementById('save-status');
   if (API_KEY) {
     try {
-      await apiFetch('/profile', {
+      const response = await apiFetch('/profile', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify(profile),
       });
+      if (!response.ok) throw new Error('Save failed');
       s.textContent = 'Saved';
     } catch {
       s.textContent = 'Saved locally';

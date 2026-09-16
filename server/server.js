@@ -11,6 +11,16 @@ const rateLimit = require('express-rate-limit');
 const { zipDirectory } = require('./zip');
 const { getProfileByUserEmail, setProfile, getUser, getOrCreateUser, addUserCredits, deductUserCredits, createMagicLink, getMagicLink, useMagicLink, PROFILE_FIELDS: DB_PROFILE_FIELDS } = require('./db');
 const db = require('./db');
+const { canonicalUrl } = require('./posting');
+const { publicFetch } = require('./public-fetch');
+const { SYSTEM, applicationOutput, mappingsOutput, resumeOutput } = require('./ai-output');
+const scriptJSON = value => JSON.stringify(value).replace(/</g, '\\u003c');
+async function providerFetch(url, options) {
+  const body = JSON.parse(options.body);
+  if (url.includes('anthropic.com')) body.system = SYSTEM;
+  else body.messages.unshift({ role: 'system', content: SYSTEM });
+  return fetch(url, { ...options, body: JSON.stringify(body), signal: AbortSignal.timeout(90000) });
+}
 
 process.on('unhandledRejection', (reason, promise) => {
   console.error('[unhandledRejection]', reason);
@@ -21,8 +31,14 @@ process.on('uncaughtException', (err) => {
 });
 
 const app = express();
+// Express 4 does not forward rejected async handlers to its error middleware.
+for (const method of ['get','post','put','patch','delete']) {
+  const register = app[method].bind(app);
+  app[method] = (route, ...handlers) => !handlers.length ? register(route) : register(route, ...handlers.flat().map(handler =>
+    (req, res, next) => { try { Promise.resolve(handler(req,res,next)).catch(next); } catch (e) { next(e); } }));
+}
 const PORT = process.env.PORT || 5000;
-const VERSION = '0.25.0';
+const VERSION = '0.26.0';
 const IS_PRODUCTION = process.env.NODE_ENV === 'production';
 const APP_ORIGIN = process.env.APP_ORIGIN || 'http://localhost:5000';
 const ALLOWED_WEB_ORIGINS = new Set(
@@ -205,7 +221,7 @@ app.disable('x-powered-by');
 app.use((req, res, next) => {
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('X-Frame-Options', 'DENY');
-  res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+  res.setHeader('Referrer-Policy', 'no-referrer');
   res.setHeader('Permissions-Policy', 'camera=(), geolocation=(), payment=()');
   if (IS_PRODUCTION) res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
   next();
@@ -217,8 +233,8 @@ app.use(cors({
     if (!origin || origin.startsWith('chrome-extension://') || ALLOWED_WEB_ORIGINS.has(origin)) return callback(null, true);
     return callback(new Error('Origin not allowed'));
   },
-  methods: ['GET', 'POST', 'OPTIONS'],
-  allowedHeaders: ['Authorization', 'Content-Type', 'X-API-Key'],
+  methods: ['GET', 'POST', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Authorization', 'Content-Type', 'X-API-Key', 'Idempotency-Key'],
 }));
 // Capture raw body for Stripe webhook signature verification
 app.use(express.json({ limit: '1mb',
@@ -318,6 +334,7 @@ async function sendEmail(to, subject, html, text) {
   const resendKey = loadResendKey();
   if (!resendKey) { console.log(`[email] ${to} — ${subject}`); return; }
   const r = await fetch('https://api.resend.com/emails', {
+    signal: AbortSignal.timeout(15000),
     method: 'POST',
     headers: { Authorization: `Bearer ${resendKey}`, 'content-type': 'application/json' },
     body: JSON.stringify({ from: 'applyapply <noreply@applyapply.xyz>', to: [to], subject, html, text }),
@@ -345,45 +362,9 @@ async function sendMagicLinkEmail(email, link) {
   );
 }
 
-// ── requireCredits — accepts JWT session OR legacy api key ────────────────────
+// ── requireCredits — owner-scoped reservations ────────────────────
 
-function requireCredits(action) {
-  return async (req, res, next) => {
-    const cost = CREDIT_COSTS[action] || 0;
-
-    // JWT session (magic link auth)
-    const bearer = req.headers['authorization']?.match(/^Bearer (.+)/)?.[1]
-      || (req.headers['x-api-key']?.startsWith('eyJ') ? req.headers['x-api-key'] : null);
-    if (bearer) {
-      const payload = verifySession(bearer);
-      if (!payload) return res.status(401).json({ error: 'Session expired — sign in again' });
-      const user = await getUser(payload.email);
-      if (!user) return res.status(401).json({ error: 'Account not found' });
-      if (user.credits < cost) return res.status(402).json({ error: 'Insufficient credits', balance: user.credits, required: cost });
-      if (cost > 0) {
-        const updated = await deductUserCredits(payload.email, cost);
-        if (!updated) return res.status(402).json({ error: 'Insufficient credits', balance: user.credits, required: cost });
-        // Reserve credits before expensive AI work to prevent concurrent requests
-        // from overspending. Return the reservation if the handler fails — or if
-        // it did no billable work, which a handler signals with res.noCharge().
-        let refunded = false;
-        res.noCharge = () => { res.locals.noCharge = true; };
-        res.on('finish', () => {
-          if ((res.statusCode < 400 && !res.locals.noCharge) || refunded) return;
-          refunded = true;
-          addUserCredits(payload.email, cost)
-            .catch(error => console.error(`[credits] refund failed for ${payload.email}:`, error.message));
-        });
-      }
-      req.userEmail = payload.email;
-      return next();
-    }
-
-    // Local bypass
-    if (isLocalRequest(req)) return next();
-    res.status(401).json({ error: 'Sign in required' });
-  };
-}
+const requireCredits = require('./billing')(db, CREDIT_COSTS, authFromRequest);
 
 function loadAdminSecret() {
   return process.env.APPLYAPPLY_ADMIN_SECRET || null;
@@ -877,7 +858,7 @@ input::placeholder{color:#a8a8a8}
   <div id="msg"></div>
 </div>
 <script>
-const EXT_ID=${JSON.stringify(extId)};
+const EXT_ID=${scriptJSON(extId)};
 async function send(){
   const email=document.getElementById('email').value.trim();
   const msg=document.getElementById('msg');
@@ -908,7 +889,7 @@ app.post('/auth/request', authLimiter, async (req, res) => {
   try {
     await createMagicLink(email.toLowerCase(), token, expiresAt);
 
-    const origin = `${req.protocol}://${req.get('host')}`;
+const origin = APP_ORIGIN;
     const extParam = ext ? `&ext=${encodeURIComponent(ext)}` : '';
     const link = `${origin}/auth/verify?token=${token}${extParam}`;
 
@@ -929,7 +910,7 @@ app.get('/auth/verify', async (req, res) => {
   if (link.used) return res.status(400).send('This link has already been used');
   if (new Date(link.expires_at) < new Date()) return res.status(400).send('Link expired — request a new one');
 
-  await useMagicLink(token);
+if (!await useMagicLink(token)) return res.status(400).send('Invalid or already used link');
   const existingUser = await getUser(link.email);
   await getOrCreateUser(link.email);
   const isNewUser = !existingUser;
@@ -957,6 +938,8 @@ app.get('/auth/verify', async (req, res) => {
 
 app.get('/auth/success', (req, res) => {
   const { session, ext } = req.query;
+  if (!verifySession(session)) return res.status(401).send('Invalid session');
+  if (ext && !/^[a-p]{32}$/.test(ext)) return res.status(400).send('Invalid extension');
   let email = '';
   try { email = verifySession(session)?.email || ''; } catch {}
   res.setHeader('Content-Type', 'text/html');
@@ -982,12 +965,12 @@ h1{font-size:22px;font-weight:700;letter-spacing:-.03em;margin-bottom:8px}
 <body>
 <a href="/" class="mark">applyapply</a>
 <h1>You're in.</h1>
-<p class="em">${email}</p>
+<p class="em">${escapeHtml(email)}</p>
 <a href="/setup" class="btn">Set up your profile →</a>
 <div id="extStatus"></div>
 <script>
-const SESSION=${JSON.stringify(session||'')};
-const EXT_ID=${JSON.stringify(ext||'')};
+const SESSION=${scriptJSON(session||'')};
+const EXT_ID=${scriptJSON(ext||'')};
 if(SESSION){
   try{localStorage.setItem('aa_session',SESSION);}catch(e){}
 }
@@ -1105,12 +1088,14 @@ async function checkout(){
 app.post('/checkout', async (req, res) => {
   const stripeKey = loadStripeKey();
   if (!stripeKey) return res.status(503).json({ error: 'Stripe not configured' });
-  const { email } = req.body;
-  if (!email) return res.status(400).json({ error: 'email required' });
+  const email = typeof req.body.email === 'string' ? req.body.email.trim().toLowerCase() : '';
+  if (!/^[^\s<>@]+@[^\s<>@]+\.[^\s<>@]+$/.test(email) || email.length > 254) return res.status(400).json({ error: 'Valid email required' });
   try {
     const stripe = require('stripe')(stripeKey);
     const host = APP_ORIGIN;
+    const purchase = await db.createPurchase(email, await stripe.prices.retrieve(STRIPE_PRICE_ID));
     const session = await stripe.checkout.sessions.create({
+      metadata: { purchase_id: purchase.id },
       payment_method_types: ['card'],
       line_items: [{ price: STRIPE_PRICE_ID, quantity: 1 }],
       mode: 'payment',
@@ -1118,6 +1103,7 @@ app.post('/checkout', async (req, res) => {
       success_url: `${host}/checkout/success?session_id={CHECKOUT_SESSION_ID}`,
       cancel_url: `${host}/buy`,
     });
+    await db.bindPurchase(purchase.id, session.id);
     res.json({ url: session.url });
   } catch (e) {
     console.error('[stripe checkout]', e.message);
@@ -1131,22 +1117,21 @@ app.get('/checkout/success', async (req, res) => {
   if (!session_id) return res.redirect('/buy');
 
   const stripeKey = loadStripeKey();
-  let apiKey = null, credits = 0, email = '';
+  let paid = false, email = '';
 
   try {
     const stripe = require('stripe')(stripeKey);
     const session = await stripe.checkout.sessions.retrieve(session_id);
     email = session.customer_details?.email || session.customer_email || '';
 
-    const user = await getUser(email);
-    if (user) credits = user.credits;
+    paid = session.payment_status === 'paid';
   } catch (e) {
     console.error('[checkout/success]', e.message);
   }
 
   res.send(`<!DOCTYPE html>
 <html lang="en">
-<head><meta charset="utf-8">${metaHead({title:"You're in — applyapply", desc:'Your credits are ready.', path:'/checkout/success', noindex:true})}
+<head><meta charset="utf-8">${metaHead({title:"Checkout — applyapply", desc:'Payment status.', path:'/checkout/success', noindex:true})}
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
 body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:#0a0a0a;color:#ccc;min-height:100vh;display:flex;align-items:center;justify-content:center}
@@ -1162,9 +1147,9 @@ h2{font-size:20px;font-weight:700;color:#fff;margin-bottom:8px}
 <body>
 <div class="card">
   <div class="check">✓</div>
-  <h2>You're in</h2>
-  <p class="sub">We've sent a sign-in link to:</p>
-  <div class="email-box">${email}</div>
+  <h2>${paid ? 'Payment received' : 'Payment processing'}</h2>
+  <p class="sub">A sign-in link will be sent after your payment is confirmed:</p>
+  <div class="email-box">${escapeHtml(email)}</div>
   <div class="steps">
     <b>1.</b> Click the link in your email to sign in<br>
     <b>2.</b> <a href="/setup" style="color:#4ade80">Set up your profile</a> — upload your resume and fill in your background<br>
@@ -1204,14 +1189,14 @@ app.post('/webhook/stripe', async (req, res) => {
     return res.status(400).send(`Webhook error: ${e.message}`);
   }
 
-  if (event.type === 'checkout.session.completed') {
+  if (['checkout.session.completed', 'checkout.session.async_payment_succeeded'].includes(event.type)) {
     const session = event.data.object;
-    const email = (session.customer_details?.email || session.customer_email || '').toLowerCase();
-    const amountPaid = session.amount_total || 0;
-    const credits = Math.floor((amountPaid / 100) * CREDITS_PER_DOLLAR);
+    const email = (session.customer_email || session.customer_details?.email || '').trim().toLowerCase();
+    if (session.payment_status !== 'paid') return res.json({ received: true, pending: true });
+    const credits = 1000;
 
     if (email && event.id) {
-      const credited = await db.applyStripePayment(event.id, email, credits);
+      const credited = await db.fulfillPurchase(event.id, session);
       if (!credited) return res.json({ received: true, duplicate: true });
       console.log(`[stripe] ${email} +${credits} credits`);
 
@@ -1230,30 +1215,8 @@ app.post('/webhook/stripe', async (req, res) => {
 
 // ─────────────────────────────────────────────────────────────────────────────
 
-// Default profile used for local/self-hosted mode (no API key)
-// Self-hosted single-user mode only. This is one real person's identity, so it
-// must never reach a signed-in account: merged as a fallback it quietly filled
-// this name, email and phone into other people's applications wherever their
-// own profile had a gap, and an account with no profile row got all of it.
-const LOCAL_PROFILE = {
-  first_name: 'Chad', last_name: 'Wittman',
-  email: 'wittman.c@gmail.com', phone: '920-378-6761',
-  linkedin: 'https://linkedin.com/in/chadwittman',
-  github: 'https://github.com/chadwittman',
-  twitter: 'https://x.com/ChadWittman',
-  website: 'https://chadwittman.com',
-  location: 'Austin, TX', work_authorization: 'U.S. Citizen, no sponsorship needed',
-  current_employer: 'ELDRICK', school: 'University of Wisconsin (UWEC)',
-  bio: `Two exits: EdgeRank Checker (250K brands, sold to Socialbakers), Dolly (500K users, $10M+ ARR, sold to IKEA via TaskRabbit). Co-founded Krause House — raised $5M in 15 min, executed the first DAO acquisition bid on an NBA team.
-
-Current: co-founder and CEO of ELDRICK, an AI golf fitting platform. Built it end-to-end: deterministic constraints, probabilistic recommendations, model reasoning, and expert-in-the-loop review. Fit 12,000+ golfers across ELDRICK Scout, ELDRICK Marshal, and the ELDRICK API. Built Haley, an AI employee that runs ELDRICK's marketing, sales, and analytics on a fully automated loop.
-
-At Filmhub (a16z-backed): built the AI creative engine for Stash, Filmhub's short-film streaming brand. The system covered thumbnails, titles, artwork, testing, designer workflows, and quality control end-to-end. Drove Stash revenue up 161% and gross revenue per published title 4.5x despite YouTube CPMs falling ~40%. Added $600k+ in annualized revenue while cutting publishing costs 50%. Also built the founding AI-powered go-to-market system for Relay across editorial, copy, social, merchandising, and collection strategy.
-
-Superpowers: AI systems in production, growth/GTM, 0-to-1 product and company building, experimentation, cross-functional leadership, speed.
-
-Portfolio: https://chadwittman.com`,
-};
+// No bundled identity, including in local mode.
+const LOCAL_PROFILE = Object.fromEntries(DB_PROFILE_FIELDS.map(key => [key, '']));
 
 // Every profile key, blank. A missing field must stay missing rather than
 // inherit somebody else's answer.
@@ -1266,10 +1229,11 @@ function isLocalMode(req) {
 }
 
 async function resolveProfile(req) {
-  if (req.userEmail) {
-    const p = await getProfileByUserEmail(req.userEmail);
+  const owner = reqUserEmail(req);
+  if (owner) {
+    const p = await getProfileByUserEmail(owner);
     const merged = { ...BLANK_PROFILE };
-    for (const [k, v] of Object.entries(p || {})) { if (v != null && v !== '') merged[k] = v; }
+    for (const k of DB_PROFILE_FIELDS) { if (p?.[k] != null) merged[k] = p[k]; }
     return merged;
   }
   return isLocalMode(req) ? LOCAL_PROFILE : { ...BLANK_PROFILE };
@@ -1292,7 +1256,8 @@ app.get('/profile', async (req, res) => {
   const auth = authFromRequest(req);
   if (!auth) return res.status(401).json({ error: 'Sign in required' });
   if (auth.type === 'local') return res.json(isLocalMode(req) ? LOCAL_PROFILE : {});
-  res.json(await getProfileByUserEmail(auth.email) || {});
+  const profile = await getProfileByUserEmail(auth.email);
+  res.json(profile ? Object.fromEntries(DB_PROFILE_FIELDS.map(k => [k,profile[k] || ''])) : {});
 });
 
 app.post('/profile', async (req, res) => {
@@ -1303,14 +1268,19 @@ app.post('/profile', async (req, res) => {
   // "leave alone". The extension popup posts 8 contact fields; it must not null
   // out bio/resume_text/target_roles just because it doesn't know about them.
   const data = {};
-  for (const f of DB_PROFILE_FIELDS) if (req.body[f] !== undefined) data[f] = req.body[f];
+  for (const f of DB_PROFILE_FIELDS) {
+    if (req.body[f] === undefined) continue;
+    if (typeof req.body[f] !== 'string' || req.body[f].length > (['bio','resume_text','evidence'].includes(f) ? 100000 : 4000)) return res.status(400).json({ error: 'Invalid profile field: ' + f });
+    if (['work_authorization','sponsorship'].includes(f) && !['','yes','no'].includes(req.body[f])) return res.status(400).json({ error: 'Choose yes, no, or unknown for ' + f });
+    data[f] = req.body[f];
+  }
   await setProfile(auth.email, data, true);
   res.json({ ok: true });
 });
 
 // ── Resume parse ─────────────────────────────────────────────────────────────
 
-const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 8 * 1024 * 1024 } });
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 8 * 1024 * 1024, files: 1, fields: 0, parts: 1 } });
 
 app.post('/resume/parse', apiLimiter, async (req, res) => {
   const auth = authFromRequest(req);
@@ -1319,6 +1289,7 @@ app.post('/resume/parse', apiLimiter, async (req, res) => {
   upload.single('resume')(req, res, async (uploadError) => {
     if (uploadError) return res.status(400).json({ error: uploadError.message });
   if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
+  if (!req.file.buffer.subarray(0,1024).includes(Buffer.from('%PDF-'))) return res.status(400).json({ error: 'Invalid PDF' });
   if (!req.file.mimetype.includes('pdf') && !req.file.originalname.toLowerCase().endsWith('.pdf')) {
     return res.status(400).json({ error: 'PDF only' });
   }
@@ -1330,9 +1301,8 @@ app.post('/resume/parse', apiLimiter, async (req, res) => {
     // Keep the file itself. Only the extracted text was stored before, so the
     // original could never be reviewed or re-downloaded once uploaded.
     if (req.userEmail) {
-      db.saveResumeFile(req.userEmail, req.file.originalname || 'resume.pdf',
-        req.file.mimetype || 'application/pdf', req.file.buffer)
-        .catch(e => console.error('[resume file]', e.message));
+      await db.saveResumeFile(req.userEmail, req.file.originalname || 'resume.pdf',
+        'application/pdf', req.file.buffer);
     }
 
     if (!keys) return res.json({ text });
@@ -1362,7 +1332,7 @@ For target_roles: infer from career trajectory and seniority shown in the resume
 RESUME:
 ${text.slice(0, 6000)}`;
 
-    const r = await fetch('https://api.anthropic.com/v1/messages', {
+    const r = await providerFetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
       headers: { 'x-api-key': keys.key, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
       body: JSON.stringify({ model: 'claude-haiku-4-5-20251001', max_tokens: 2500, messages: [{ role: 'user', content: prompt }] }),
@@ -1376,7 +1346,8 @@ ${text.slice(0, 6000)}`;
       console.error('Resume JSON parse failed:', e.message, '| raw:', raw.slice(0, 500));
       parsed = {};
     }
-    res.json({ text, ...parsed });
+    const fields = Object.fromEntries(DB_PROFILE_FIELDS.filter(k => !['work_authorization','sponsorship','resume_text'].includes(k) && typeof parsed[k] === 'string').map(k => [k,parsed[k].slice(0,12000)]));
+    res.json({ ...fields, text });
   } catch (e) {
     console.error('Resume parse error:', e.message);
     res.status(500).json({ error: e.message });
@@ -1495,7 +1466,8 @@ textarea{min-height:200px;resize:vertical;line-height:1.65}
   </div>
   <div class="row">
     <div class="field"><label>Location</label><input id="location" placeholder="Austin, TX"/></div>
-    <div class="field"><label>Work authorization</label><input id="work_authorization" placeholder="U.S. Citizen, no sponsorship needed"/></div>
+    <div class="field"><label>Need visa sponsorship?</label><select id="sponsorship"><option value="">Unknown</option><option value="yes">Yes</option><option value="no">No</option></select></div>
+    <div class="field"><label>Authorized to work in the US?</label><select id="work_authorization"><option value="">Unknown</option><option value="yes">Yes</option><option value="no">No</option></select></div>
   </div>
 </div>
 
@@ -1591,7 +1563,7 @@ Numbers beat adjectives. Name the companies."></textarea>
 </div>
 
 <script>
-const FIELDS=['first_name','last_name','email','phone','location','work_authorization','linkedin','github','twitter','website','current_employer','school','salary','bio','career_type','target_roles','location_pref','resume_text'];
+const FIELDS=['first_name','last_name','email','phone','location','work_authorization','sponsorship','linkedin','github','twitter','website','current_employer','school','salary','bio','career_type','target_roles','location_pref','resume_text'];
 
 function getKey(){
   const params=new URLSearchParams(location.search);
@@ -1830,34 +1802,15 @@ const MODEL_OPENROUTER = 'anthropic/claude-haiku-4-5';
 const MODEL_ANTHROPIC = 'claude-haiku-4-5-20251001';
 
 async function loadApps(userEmail = null) {
-  try { return await db.getKits(userEmail); } catch { return []; }
+  return userEmail ? db.getKits(userEmail) : [];
 }
 
-async function findApplicationByUrl(url, userEmail = null) {
-  const normalize = p => p.replace(/\/(apply|application)$/, '');
-  try {
-    // An unowned kit (generated in local mode) is not "everyone's" — getKits
-    // scopes to the caller whenever we know who they are.
-    for (const app of await db.getKits(userEmail)) {
-      const urls = [app.url, ...(app.urls || [])].filter(Boolean);
-      if (urls.some(u => {
-        try {
-          const appPath = normalize(new URL(u).pathname);
-          const pagePath = normalize(new URL(url).pathname);
-          return pagePath === appPath || pagePath.startsWith(appPath + '/');
-        } catch { return false; }
-      })) return app;
-    }
-  } catch {}
-  return null;
+async function findApplicationByUrl(url, userEmail) {
+  return db.findKit(url, userEmail);
 }
 
 async function loadKit(id, userEmail) {
-  let kit = null;
-  try { kit = await db.getKit(id); } catch { return null; }
-  if (!kit) return null;
-  if (userEmail && kit.user_email !== userEmail) return 'forbidden';
-  return kit;
+  return db.getKit(id, userEmail);
 }
 
 // Standard fields come back with stable names; custom questions get opaque
@@ -1893,7 +1846,7 @@ async function leverQuestions(company, postingId) {
 }
 
 async function ashbyQuestions(applicationUrl) {
-  const r = await fetch(applicationUrl, { signal: AbortSignal.timeout(8000), headers: { 'User-Agent': ATS_UA } });
+const r = await publicFetch(applicationUrl);
   if (!r.ok) return null;
   const html = await r.text();
   const found = [];
@@ -1944,8 +1897,8 @@ async function fetchATSFormQuestions(url) {
 
 async function fetchJobPageText(url) {
   try {
-    const r = await fetch(url, {
-      signal: AbortSignal.timeout(10000),
+const r = await publicFetch(url, {
+      timeout: 10000,
       headers: { 'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36' },
     });
     if (!r.ok) return null;
@@ -1964,7 +1917,7 @@ async function fetchJobPageText(url) {
 async function callClaude(prompt, maxTokens = 4096, model = null) {
   if (!keys) throw new Error('No API key configured');
   if (keys.provider === 'openrouter') {
-    const r = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+    const r = await providerFetch('https://openrouter.ai/api/v1/chat/completions', {
       method: 'POST',
       headers: { 'Authorization': `Bearer ${keys.key}`, 'Content-Type': 'application/json', 'HTTP-Referer': APP_ORIGIN },
       body: JSON.stringify({ model: MODEL_OPENROUTER, max_tokens: maxTokens, messages: [{ role: 'user', content: prompt }] }),
@@ -1973,7 +1926,7 @@ async function callClaude(prompt, maxTokens = 4096, model = null) {
     return (await r.json()).choices[0].message.content;
   } else {
     const useModel = model || MODEL_ANTHROPIC;
-    const r = await fetch('https://api.anthropic.com/v1/messages', {
+    const r = await providerFetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
       headers: { 'x-api-key': keys.key, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
       body: JSON.stringify({ model: useModel, max_tokens: maxTokens, messages: [{ role: 'user', content: prompt }] }),
@@ -2005,7 +1958,7 @@ function cleanEmDashes(obj) {
 // Vision-capable call — content is a string or array of content blocks (text + image)
 async function callClaudeVision(content, maxTokens = 2048) {
   if (!keys) throw new Error('No API key configured');
-  const r = await fetch('https://api.anthropic.com/v1/messages', {
+  const r = await providerFetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
     headers: { 'x-api-key': keys.key, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
     body: JSON.stringify({ model: 'claude-sonnet-4-6', max_tokens: maxTokens, messages: [{ role: 'user', content }] }),
@@ -2015,8 +1968,9 @@ async function callClaudeVision(content, maxTokens = 2048) {
 }
 
 app.get('/health', async (req, res) => {
-  const count = await db.countKits().catch(() => 0);
-  res.json({ status: 'ok', version: VERSION, applications: count, ai: !!keys, provider: keys?.provider });
+  try { await db.pool.query('SELECT 1'); }
+  catch { return res.status(503).json({ status: 'unavailable' }); }
+  res.json({ status: 'ok', version: VERSION, ai: !!keys, provider: keys?.provider });
 });
 
 // Lookup a previously generated application by job URL
@@ -2041,6 +1995,13 @@ app.get('/application/:id', async (req, res) => {
   if (!kit) return res.status(404).json({ error: 'Not found' });
   if (kit === 'forbidden') return res.status(403).json({ error: 'Forbidden' });
   res.json(kit);
+});
+
+app.get('/application/:id/versions', async (req, res) => {
+  const owner = reqUserEmail(req);
+  if (!owner) return res.status(401).json({ error: 'Sign in required' });
+  if (!await db.getKit(req.params.id, owner)) return res.status(404).json({ error: 'Not found' });
+  res.json(await db.getKitVersions(req.params.id, owner));
 });
 
 app.get('/applications', async (req, res) => {
@@ -2116,9 +2077,7 @@ Return ONLY valid JSON — no markdown, no explanation:
 Rules:
 - Any field with both "first" and "last" → full name "${p.first_name} ${p.last_name}"
 - "First name" alone → "${p.first_name}" | "Last name" alone → "${p.last_name}"
-- Work authorization radio → "Yes"
-- Visa sponsorship radio → "No" / "do not require"
-- Location/hybrid radio → remote / willing to relocate option
+- Leave authorization, sponsorship, qualifications, consent and relocation questions blank for the candidate to confirm.
 - Portfolio, work samples, website → ${p.website}
 - Open-ended textareas → closest Q&A answer; fall back to cover note
 - "Tell us about yourself" / bio → cover note
@@ -2140,7 +2099,7 @@ Rules:
       raw = await callClaude(prompt, 1024);
     }
     const json = JSON.parse(raw.match(/\{[\s\S]*\}/)[0]);
-    res.json(json);
+    res.json(mappingsOutput(json, fields, p));
   } catch (e) {
     console.error('AI analyze error:', e.message);
     res.status(500).json({ error: e.message });
@@ -2157,7 +2116,6 @@ function reqUserEmail(req) {
   const bearer = req.headers['authorization']?.match(/^Bearer (.+)/)?.[1]
     || (req.headers['x-api-key']?.startsWith('eyJ') ? req.headers['x-api-key'] : null);
   if (bearer) { const p = verifySession(bearer); if (p) return p.email; }
-  if (isLocalRequest(req)) return 'wittman.c@gmail.com'; // local mode = Chad
   return null;
 }
 
@@ -2203,8 +2161,8 @@ app.get('/runs/:id/jobs', async (req, res) => {
   const userEmail = reqUserEmail(req);
   if (!userEmail) return res.status(401).json({ error: 'Sign in required' });
   try {
-    const rows = await db.getJobsForRun(req.params.id);
-    res.json(rows.filter(j => !j.user_email || j.user_email === userEmail));
+    const rows = await db.getJobsForRun(req.params.id, userEmail);
+    res.json(rows);
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -2351,13 +2309,6 @@ app.post('/generate', apiLimiter, requireCredits('generate'), async (req, res) =
       }).catch(e => console.error('[pipeline backfill]', e.message));
       return res.json(cached);
     }
-  } else {
-    // Delete any existing application for this URL so we regenerate fresh
-    const existing = await findApplicationByUrl(url, userEmail);
-    if (existing) {
-      await db.deleteKit(existing.id);
-      console.log(`Force regenerate: deleted ${existing.id}`);
-    }
   }
 
   const profile = await resolveProfile(req);
@@ -2451,13 +2402,14 @@ Concrete over abstract: "built a pipeline that drove 4.5x revenue per title as C
   try {
     const raw = await callClaude(prompt, 4096, 'claude-sonnet-4-6');
     const parsed = JSON.parse(raw.match(/\{[\s\S]*\}/)[0]);
-    if (!parsed.id) throw new Error('Invalid response: missing id');
-    // Strip em/en dashes from all generated text — model sometimes ignores the prompt rule
-    const generated = cleanEmDashes(parsed);
+    const existing = await findApplicationByUrl(url, userEmail);
+    const generated = applicationOutput(cleanEmDashes(parsed), {
+      owner: userEmail, url, profile, company, role, questions: form_questions, existing,
+    });
 
     // Save to applications/
     if (userEmail) generated.user_email = userEmail;
-    // saveKit merges in any URLs this kit was previously reached at
+    // Persist only the authenticated owner and canonical posting.
     const stored = await db.saveKit(generated);
     Object.assign(generated, stored);
 
@@ -2478,28 +2430,9 @@ Concrete over abstract: "built a pipeline that drove 4.5x revenue per title as C
       location: generated.profile?.location || null,
       user_email: userEmail || null,
     });
-    await db.setKitGenerated(url);
+    await db.setKitGenerated(url, userEmail);
 
-    // Tailor the resume in the same pass. It needs the kit's why_role, so it
-    // cannot run earlier, and doing it here saves the user a second wait.
-    // Charged separately and skipped rather than failing if the balance is
-    // short — a missing resume must not cost them the kit they just paid for.
-    if (profile.resume_text && userEmail) {
-      try {
-        const bal = await getUser(userEmail);
-        if ((bal?.credits ?? 0) >= CREDIT_COSTS.resume) {
-          generated.tailored_resume = await buildTailoredResume(profile, generated, userEmail);
-          await db.deductUserCredits(userEmail, CREDIT_COSTS.resume);
-          await db.saveKit(generated);
-          console.log(`Tailored resume included for ${generated.company} (+${CREDIT_COSTS.resume} credits)`);
-        } else {
-          generated.resume_skipped = `Needed ${CREDIT_COSTS.resume} more credits to tailor your resume.`;
-        }
-      } catch (e) {
-        console.error('Auto resume tailor failed:', e.message);
-        generated.resume_skipped = 'Tailored resume could not be generated — you can retry it from the kit.';
-      }
-    }
+    // Resume tailoring is a separate, explicitly priced action.
 
     console.log(`Generated: ${generated.company} — ${generated.role}`);
     res.json(generated);
@@ -2551,7 +2484,7 @@ Banned patterns:
 - No metaphor or mic-drop final line — end on the clearest concrete sentence`;
 
   try {
-    const r = await fetch('https://api.anthropic.com/v1/messages', {
+    const r = await providerFetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
       headers: { 'x-api-key': keys.key, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
       body: JSON.stringify({ model: 'claude-sonnet-4-6', max_tokens: 1024, messages: [{ role: 'user', content: prompt }] }),
@@ -2608,7 +2541,7 @@ async function buildTailoredResume(profile, appData, userEmail, previous = null)
   const evidenceRows = userEmail
     ? await db.getEvidence(userEmail, { answeredOnly: true }).catch(() => [])
     : [];
-  const resumeName = `${appData.profile?.first_name || profile.first_name || ''} ${appData.profile?.last_name || profile.last_name || ''}`.trim();
+  const resumeName = `${profile.first_name || ''} ${profile.last_name || ''}`.trim();
 
   const prompt = `Rewrite this candidate's resume experience for ${appData.role} at ${appData.company}.
 
@@ -2647,7 +2580,7 @@ Return ONLY valid JSON, no markdown:
   const raw = await callClaude(prompt, 2800, 'claude-sonnet-4-6');
   const match = raw.match(/\{[\s\S]*\}/);
   if (!match) throw new Error('No JSON in response');
-  const tailored = tidyResume(cleanEmDashes(JSON.parse(match[0])));
+  const tailored = tidyResume(resumeOutput(cleanEmDashes(JSON.parse(match[0]))));
   return {
     name: resumeName, company: appData.company, role: appData.role, ...tailored,
     version: (previous?.version || 0) + 1,
@@ -2675,7 +2608,7 @@ app.post('/resume-tailor', requireCredits('resume'), async (req, res) => {
   try {
     const out = await buildTailoredResume(profile, resumeKit, userEmail, resumeKit.tailored_resume);
     resumeKit.tailored_resume = out;
-    await db.saveKit(resumeKit).catch(() => {});
+    await db.saveKit(resumeKit);
     res.json(out);
   } catch (e) {
     console.error('Resume tailor error:', e.message);
@@ -2744,7 +2677,7 @@ ${asked.length ? `ALREADY ASKED — do not repeat these or ask a near-duplicate:
 Find where the evidence a hiring manager for this target would look for is thin or absent, then write 4-6 questions that would surface real work this person did but did not put on their resume.
 
 Rules:
-- Anchor every question to something specific and named in their background. "You were CEO at ELDRICK — which product decisions did you personally own?" not "Tell me about your product experience."
+- Anchor every question to something specific and named in their background. "Which product decisions did you personally own in your most recent role?" not "Tell me about your product experience."
 - Go after the delta: what the target demands that this resume does not currently evidence. If they are crossing a role boundary, mine the adjacent work inside their old title.
 - Ask for specifics they can actually answer: what they owned, what shipped, what they decided, what moved.
 - One gap per question. No compound questions.
@@ -2805,12 +2738,7 @@ app.post('/voice', requireCredits('voice'), async (req, res) => {
   if (!keys) return res.status(503).json({ error: 'No API key' });
 
   const id = appId || kitId;
-  const properNouns = [
-    'Filmhub', 'ELDRICK', 'Relay', 'OpenClaw', 'Haley', 'Krause House',
-    'Claude', 'Anthropic', 'Ashby', 'Greenhouse', 'Lever', 'ChatGPT', 'OpenAI',
-    'Cursor', 'GitHub', 'Linear', 'Figma', 'Notion', 'Slack',
-    'University of Wisconsin', 'UWEC', 'Chad Wittman',
-  ];
+  const properNouns = [];
 
   let kitContext = '';
   if (id) {
@@ -2846,7 +2774,7 @@ Editing rules:
 - Return only the cleaned text, no preamble`;
 
   try {
-    const r = await fetch('https://api.anthropic.com/v1/messages', {
+    const r = await providerFetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
       headers: { 'x-api-key': keys.key, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
       body: JSON.stringify({ model: 'claude-sonnet-4-6', max_tokens: 1024, messages: [{ role: 'user', content: prompt }] }),
@@ -2883,7 +2811,7 @@ WRITING RULES:
 - Return only the answer text, no preamble`;
 
   try {
-    const r = await fetch('https://api.anthropic.com/v1/messages', {
+    const r = await providerFetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
       headers: { 'x-api-key': keys.key, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
       body: JSON.stringify({ model: 'claude-sonnet-4-6', max_tokens: 512, messages: [{ role: 'user', content: prompt }] }),
@@ -2979,81 +2907,20 @@ async function runNightlyPrefetch() {
 }
 
 async function runScheduledSourcing(row) {
-  const email = row.user_email;
-  const names = Array.isArray(row.sources) ? row.sources : null;
-  const selected = names?.length
-    ? SOURCE_CATALOG.filter(s => names.includes(s.name))
-    : SOURCE_CATALOG.filter(s => s.on);
+  const selected = row.sources?.length ? SOURCE_CATALOG.filter(s => row.sources.includes(s.name)) : SOURCE_CATALOG.filter(s=>s.on);
   if (!selected.length) return;
-  const cost = selected.reduce((n, s) => n + s.credits, 0);
-
-  // Stamp before doing anything expensive: a crash mid-run must not let the
-  // next tick start a second run and charge twice.
-  await db.markScheduleRun(email);
-
-  const user = await getUser(email);
-  if (!user || user.credits < cost) {
-    console.log(`[cron] skipped ${email} — needs ${cost}, has ${user?.credits ?? 0}`);
-    sendEmail(email, 'applyapply — nightly sourcing skipped',
-      `<div style="font-family:-apple-system,sans-serif;max-width:480px;margin:40px auto;padding:32px;background:#fff;border:1px solid #e5e5e5;border-radius:8px">
-        <h2 style="font-size:16px;font-weight:700;margin-bottom:10px">Nightly sourcing didn't run</h2>
-        <p style="color:#555;font-size:14px;margin-bottom:20px">It needed ${cost} credits and your balance is ${user?.credits ?? 0}. Top up and tonight's run will go ahead as normal.</p>
-        <a href="${APP_ORIGIN}/buy" style="display:inline-block;background:#0a0a0a;color:#fff;text-decoration:none;padding:10px 20px;border-radius:6px;font-size:14px;font-weight:600">Add credits →</a>
-      </div>`,
-      `Nightly sourcing needed ${cost} credits, balance ${user?.credits ?? 0}. Top up: ${APP_ORIGIN}/buy`
-    ).catch(() => {});
-    return;
+  const due = row.due_at ? new Date(row.due_at).toISOString() : new Date().toISOString().slice(0,10) + ':' + row.hour + ':' + row.minute;
+  try {
+    const op = await db.reserveOperation({ userEmail:row.user_email,action:'source',resource:'source',
+      key:'schedule:' + due,cost:selected.reduce((n,s)=>n+s.credits,0),queued:true,
+      payload:{ sources:selected.map(s=>s.name) } });
+    if (op.request_key !== 'source:schedule:' + due) return op;
+    await db.markScheduleRun(row.user_email);
+    return op;
+  } catch (e) {
+    if (e.status === 402) await db.markScheduleRun(row.user_email);
+    throw e;
   }
-
-  await db.deductUserCredits(email, cost);
-  console.log(`[cron] ${email}: ${cost} credits for [${selected.map(s => s.name).join(', ')}]`);
-
-  const { spawn } = require('child_process');
-  const logDir = path.join(__dirname, '../logs');
-  if (!fs.existsSync(logDir)) fs.mkdirSync(logDir, { recursive: true });
-  const logFile = sourceLogFor(email);
-  const ls = fs.createWriteStream(logFile, { flags: 'w' });
-
-  const child = spawn('node', [path.join(__dirname, '../source.js')], {
-    cwd: path.join(__dirname, '..'),
-    stdio: ['ignore', 'pipe', 'pipe'],
-    detached: true,
-    env: {
-      ...process.env,
-      JAA_USER_EMAIL: email,
-      JAA_ENABLED_SOURCES: JSON.stringify(selected.map(s => s.name)),
-    },
-  });
-  child.stdout.pipe(ls);
-  child.stderr.pipe(ls);
-  // Also to the container log. The file lives on the ephemeral disk and is
-  // gone after any deploy, so without this a failed run leaves no record at
-  // all and there is nothing to diagnose from.
-  child.stdout.on('data', d => process.stdout.write(`[source:${email}] ${d}`));
-  child.stderr.on('data', d => process.stderr.write(`[source:${email}] ${d}`));
-  child.on('error', err => console.error(`[source:${email}] spawn failed:`, err.message));
-  sourcingPids.set(email, child.pid);
-  child.unref();
-
-  child.on('exit', async (code) => {
-    sourcingPids.delete(email);
-    ls.end();
-    console.log(`[cron] ${email} finished, exit ${code}`);
-    // A failed run bought nothing — give the credits back.
-    if (code !== 0) {
-      await db.addUserCredits(email, cost).catch(() => {});
-      console.log(`[cron] refunded ${cost} to ${email} after a failed run`);
-      return;
-    }
-    sendEmail(email, 'applyapply — daily sourcing complete',
-      `<div style="font-family:-apple-system,sans-serif;max-width:480px;margin:40px auto;padding:32px;background:#fff;border:1px solid #e5e5e5;border-radius:8px">
-        <h2 style="font-size:16px;font-weight:700;margin-bottom:10px">Daily sourcing finished</h2>
-        <p style="color:#555;font-size:14px;margin-bottom:20px">New matches are waiting in your pipeline.</p>
-        <a href="${APP_ORIGIN}/pipeline" style="display:inline-block;background:#0a0a0a;color:#fff;text-decoration:none;padding:10px 20px;border-radius:6px;font-size:14px;font-weight:600">View pipeline →</a>
-      </div>`,
-      `Daily sourcing complete. View pipeline: ${APP_ORIGIN}/pipeline`
-    ).catch(() => {});
-  });
 }
 
 app.get('/schedule', async (req, res) => {
@@ -3097,180 +2964,95 @@ app.post('/schedule', async (req, res) => {
   });
 });
 
-// Source new jobs on demand
-// Per-user sourcing pid map — key is userEmail or '__local__' for anonymous
-const sourcingPids = new Map();
-// Legacy single-pid accessor for cron status endpoint
-function getSourcingPid() { return sourcingPids.size > 0 ? [...sourcingPids.values()][0] : null; }
-
-app.get('/source/status', async (req, res) => {
-  res.setHeader('Cache-Control', 'no-store');
-  const userEmail = reqUserEmail(req);
-  if (!userEmail) return res.status(401).json({ error: 'Sign in required' });
-  const key = userEmail || '__local__';
-  const active = sourcingPids.has(key);
-  try {
-    const counts = await db.getStatusCounts(userEmail);
-    const total = Object.values(counts).reduce((a, b) => a + b, 0);
-    const runs = await db.getRuns(1, userEmail);
-    const last_sourced = runs[0]?.date || null;
-    res.json({ active, last_sourced, counts, total });
-  } catch {
-    res.json({ active, last_sourced: null, counts: {}, total: 0 });
-  }
+// Source progress is durable and scoped to the authenticated account.
+app.get('/source/status', async (req,res) => {
+  res.setHeader('Cache-Control','no-store');
+  const userEmail=reqUserEmail(req);
+  if (!userEmail) return res.status(401).json({error:'Sign in required'});
+  const op=await db.latestSourceOperation(userEmail);
+  const counts=await db.getStatusCounts(userEmail);
+  const runs=await db.getRuns(1,userEmail);
+  res.json({active:!!op && ['queued','running'].includes(op.status),operation_id:op?.id,
+    outcome:op?.status,error:op?.error,last_sourced:runs[0]?.date || null,counts,
+    total:Object.values(counts).reduce((a,b)=>a+b,0)});
 });
-
-const SOURCE_LOG_FILE = path.join(__dirname, '../logs/last-run.log');
-
-// One log per user. Keyed by a hash of the whole address because the part
-// before the @ is not unique, and a run's log names the companies and roles
-// someone is targeting.
-function sourceLogFor(userEmail) {
-  if (!userEmail) return SOURCE_LOG_FILE;
-  const tag = crypto.createHash('sha1').update(userEmail.toLowerCase()).digest('hex').slice(0, 12);
-  return `${SOURCE_LOG_FILE}.${tag}`;
-}
 
 app.get('/source/catalog', (req, res) => {
   res.json(SOURCE_CATALOG);
 });
 
-app.post('/source/run', apiLimiter, async (req, res) => {
-  const userEmail = reqUserEmail(req);
-  const pidKey = userEmail || '__local__';
-  if (sourcingPids.has(pidKey)) return res.json({ status: 'already_running' });
-
-  // Resolve which sources to run
-  const requestedNames = Array.isArray(req.body?.sources) && req.body.sources.length
-    ? req.body.sources
-    : SOURCE_CATALOG.filter(s => s.on).map(s => s.name);
-
-  const selectedSources = SOURCE_CATALOG.filter(s => requestedNames.includes(s.name));
-  if (!selectedSources.length) return res.status(400).json({ error: 'no valid sources selected' });
-
-  const totalCredits = selectedSources.reduce((n, s) => n + s.credits, 0);
-
-  // Manual credit check (replaces requireCredits since cost is dynamic).
-  // authFromRequest returns null when there is no session, and dereferencing
-  // that threw before anything spawned — so in production, where requests are
-  // never "local", a run could never start at all.
-  const auth = authFromRequest(req);
-  if (!auth) return res.status(401).json({ error: 'Sign in required' });
-  if (auth.type === 'jwt') {
-    const user = await db.getUser(auth.email);
-    if (!user) return res.status(401).json({ error: 'user not found' });
-    if (user.credits < totalCredits) return res.status(402).json({ error: 'Insufficient credits', balance: user.credits, required: totalCredits });
-    await db.deductUserCredits(auth.email, totalCredits);
-  }
-  // local mode: no credit check
-
-  const { spawn } = require('child_process');
-  if (!fs.existsSync(path.join(__dirname, '../logs'))) fs.mkdirSync(path.join(__dirname, '../logs'), { recursive: true });
-  const logFile = sourceLogFor(userEmail);
-  const logStream = fs.createWriteStream(logFile, { flags: 'w' });
-  const sourceScript = path.join(__dirname, '../source.js');
-  const child = spawn('node', [sourceScript], {
-    cwd: path.join(__dirname, '..'),
-    stdio: ['ignore', 'pipe', 'pipe'],
-    detached: true,
-    env: {
-      ...process.env,
-      ...(userEmail ? { JAA_USER_EMAIL: userEmail } : {}),
-      JAA_ENABLED_SOURCES: JSON.stringify(selectedSources.map(s => s.name)),
-      ...(Array.isArray(req.body?.roles) && req.body.roles.length ? { JAA_TARGET_ROLES: req.body.roles.join(', ') } : {}),
-    },
-  });
-  child.stdout.pipe(logStream);
-  child.stderr.pipe(logStream);
-  // Mirror to the container log so a failure survives the ephemeral disk.
-  child.stdout.on('data', d => process.stdout.write(`[source] ${d}`));
-  child.stderr.on('data', d => process.stderr.write(`[source] ${d}`));
-  // A spawn that never starts emits nothing on either stream, so without this
-  // the failure is completely silent.
-  child.on('error', err => {
-    console.error('[source] spawn failed:', err.message);
-    try { logStream.write(`\nspawn failed: ${err.message}\n`); } catch {}
-  });
-  console.log(`[source] spawned pid ${child.pid} for ${pidKey} — ${selectedSources.map(s => s.name).join(', ')}`);
-  sourcingPids.set(pidKey, child.pid);
-  child.unref();
-  const runEmail = userEmail;
-  child.on('exit', async (code) => {
-    sourcingPids.delete(pidKey);
-    logStream.end();
-    console.log('[source] run complete, exit', code);
-    if (runEmail) {
-      const pipelineUrl = `${req.protocol}://${req.get('host')}/pipeline`;
-      sendEmail(runEmail, 'applyapply — sourcing run complete',
-        `<div style="font-family:-apple-system,sans-serif;max-width:480px;margin:40px auto;padding:32px;background:#fff;border:1px solid #e5e5e5;border-radius:8px">
-          <h2 style="font-size:16px;font-weight:700;margin-bottom:10px">Sourcing run finished</h2>
-          <p style="color:#555;font-size:14px;margin-bottom:20px">Your sourcing run completed. Check your pipeline for new leads.</p>
-          <a href="${pipelineUrl}" style="display:inline-block;background:#0a0a0a;color:#fff;text-decoration:none;padding:10px 20px;border-radius:6px;font-size:14px;font-weight:600">View pipeline →</a>
-        </div>`,
-        `Sourcing run complete. View pipeline: ${pipelineUrl}`
-      ).catch(() => {});
-    }
-  });
-  console.log(`[source] started pid ${child.pid}, ${totalCredits} credits charged for [${selectedSources.map(s=>s.name).join(', ')}]`);
-  res.json({ status: 'started', pid: child.pid, credits_charged: totalCredits, sources: selectedSources.map(s => s.name) });
+app.post('/source/run', apiLimiter, async (req,res) => {
+  const userEmail=reqUserEmail(req);
+  if (!userEmail) return res.status(401).json({error:'Sign in required'});
+  const names=Array.isArray(req.body.sources) && req.body.sources.length ? req.body.sources : SOURCE_CATALOG.filter(s=>s.on).map(s=>s.name);
+  const selected=SOURCE_CATALOG.filter(s=>names.includes(s.name));
+  if (!selected.length) return res.status(400).json({error:'No valid sources selected'});
+  const roles=Array.isArray(req.body.roles) ? req.body.roles.filter(r=>typeof r==='string').slice(0,20).map(r=>r.slice(0,100)) : [];
+  const op=await db.reserveOperation({userEmail,action:'source',resource:'source',key:req.get('Idempotency-Key') || crypto.randomUUID(),
+    cost:selected.reduce((n,s)=>n+s.credits,0),queued:true,payload:{sources:selected.map(s=>s.name),roles}});
+  res.json({status:op.replay ? 'already_running' : 'started',operation_id:op.id,credits_charged:op.cost,sources:op.payload.sources});
 });
 
-app.get('/source/log', (req, res) => {
-  res.setHeader('Cache-Control', 'no-store');
-  const userEmail = reqUserEmail(req);
-  if (!userEmail) return res.status(401).type('text/plain').send('Sign in required');
-  try {
-    // Per-user file first: the shared one is this user's only in local mode.
-    const file = sourceLogFor(userEmail);
-    const text = fs.existsSync(file) ? fs.readFileSync(file, 'utf-8') : '(no log yet)';
-    res.type('text/plain').send(text);
-  } catch { res.status(500).send('error reading log'); }
+app.get('/operations/:id', async (req,res) => {
+  const userEmail=reqUserEmail(req);
+  if (!userEmail) return res.status(401).json({error:'Sign in required'});
+  const op=await db.getOperation(req.params.id,userEmail);
+  if (!op) return res.status(404).json({error:'Not found'});
+  res.json({id:op.id,status:op.status,cost:op.cost,result:op.result,error:op.error});
 });
 
-app.get('/source/stream', (req, res) => {
-  const payload = req.query.token ? verifySession(String(req.query.token)) : null;
-  const userEmail = payload?.email || reqUserEmail(req);
+app.get('/source/log', async (req,res) => {
+  const userEmail=reqUserEmail(req);
+  if (!userEmail) return res.status(401).send('Sign in required');
+  const op=await db.latestSourceOperation(userEmail);
+  const events=op ? await db.getOperationEvents(op.id,userEmail) : [];
+  res.setHeader('Cache-Control','no-store');
+  res.type('text/plain').send(events.map(e=>e.message).join(''));
+});
+
+const sourceStreams = new Map();
+app.get('/source/stream', async (req,res) => {
+  const userEmail=(req.query.token ? verifySession(String(req.query.token))?.email : null) || reqUserEmail(req);
   if (!userEmail) return res.status(401).end();
-  const logPath = sourceLogFor(userEmail);
-
-  res.setHeader('Content-Type', 'text/event-stream');
-  res.setHeader('Cache-Control', 'no-cache');
-  res.setHeader('Connection', 'keep-alive');
+  if ((sourceStreams.get(userEmail) || 0) >= 3) return res.status(429).end();
+  sourceStreams.set(userEmail,(sourceStreams.get(userEmail) || 0) + 1);
+  res.setHeader('Content-Type','text/event-stream');
+  res.setHeader('Cache-Control','no-store');
+  res.setHeader('Connection','keep-alive');
   res.flushHeaders();
-
-  let pos = 0;
-  const send = () => {
+  let after=0, operationId=null, busy=false, closed=false;
+  const send=async()=>{
+    if (busy || closed) return;
+    busy=true;
     try {
-      if (!fs.existsSync(logPath)) return;
-      const stat = fs.statSync(logPath);
-      if (stat.size <= pos) return;
-      const buf = Buffer.alloc(stat.size - pos);
-      const fd = fs.openSync(logPath, 'r');
-      fs.readSync(fd, buf, 0, buf.length, pos);
-      fs.closeSync(fd);
-      pos = stat.size;
-      const lines = buf.toString().split('\n');
-      for (const line of lines) {
-        if (line.trim()) res.write(`data: ${JSON.stringify(line)}\n\n`);
+      const op=await db.latestSourceOperation(userEmail);
+      if (op && op.id!==operationId) { operationId=op.id;after=0; }
+      const events=op ? await db.getOperationEvents(op.id,userEmail,after) : [];
+      for (const event of events) {
+        after=event.id;
+        for (const line of event.message.split('\n')) if (line.trim()) res.write('data: '+JSON.stringify(line)+'\n\n');
       }
-    } catch {}
+      if (!events.length) res.write(': keepalive\n\n');
+    } catch { res.write('event: error\ndata: "Progress temporarily unavailable"\n\n'); }
+    finally { busy=false; }
   };
-
-  const iv = setInterval(send, 400);
-  req.on('close', () => clearInterval(iv));
+  const timer=setInterval(()=>void send(),1000);
+  req.on('close',()=>{
+    closed=true;clearInterval(timer);
+    const remaining=(sourceStreams.get(userEmail) || 1)-1;
+    if (remaining) sourceStreams.set(userEmail,remaining); else sourceStreams.delete(userEmail);
+  });
+  void send();
 });
 
 // ── Sourcing audit page ───────────────────────────────────────────────────────
 
 app.get('/sourcing', async (req, res) => {
   res.setHeader('Cache-Control', 'no-store');
-  const detailFile = path.join(__dirname, '../logs/last-run-detail.json');
-  const FEEDBACK_FILE_LOCAL = path.join(__dirname, '../logs/audit-feedback.json');
-  const HEALTH_FILE = path.join(__dirname, '../logs/source-health.json');
-  let data = null, feedback = [], healthData = [];
-  try { data = fs.existsSync(detailFile) ? JSON.parse(fs.readFileSync(detailFile, 'utf-8')) : null; } catch {}
-  try { feedback = fs.existsSync(FEEDBACK_FILE_LOCAL) ? JSON.parse(fs.readFileSync(FEEDBACK_FILE_LOCAL, 'utf-8')) : []; } catch {}
-  try { healthData = fs.existsSync(HEALTH_FILE) ? JSON.parse(fs.readFileSync(HEALTH_FILE, 'utf-8')) : []; } catch {}
+  const userEmail = reqUserEmail(req);
+  const data = userEmail ? await db.latestRunDetail(userEmail) : null;
+  const feedback = userEmail ? await db.getActivity(userEmail,'feedback') : [];
+  const healthData = [];
   const profile = await resolveProfile(req).catch(() => ({ ...BLANK_PROFILE }));
   const savedRoles = (profile.target_roles || '').split(',').map(r => r.trim().toLowerCase()).filter(Boolean);
 
@@ -3292,9 +3074,9 @@ app.get('/sourcing', async (req, res) => {
       const cls = fb.feedback === 'correct' ? 'fb-ok' : fb.feedback === 'should_include' ? 'fb-miss' : 'fb-wrong';
       return `<span class="fb-done ${cls}" title="${esc(fb.note||'')}">${label}</span>`;
     }
-    const eu = encodeURIComponent(j.url);
-    const ec = encodeURIComponent(j.company || '');
-    const er = encodeURIComponent(j.role || '');
+    const eu = encodeURIComponent(j.url).replace(/'/g, "%27");
+    const ec = encodeURIComponent(j.company || "").replace(/'/g, "%27");
+    const er = encodeURIComponent(j.role || "").replace(/'/g, "%27");
     return `<span class="fb-btns">
       <button class="fb-b fb-b-ok" onclick="doFb(this,'correct','${eu}','${ec}','${er}','${j.outcome}')">✓</button>
       <button class="fb-b fb-b-miss" onclick="doFb(this,'should_include','${eu}','${ec}','${er}','${j.outcome}')">+ miss</button>
@@ -3304,12 +3086,10 @@ app.get('/sourcing', async (req, res) => {
 
   // Kit detection: build set of normalized URLs that have generated kits
   const normUrl = u => { try { const p = new URL(u); return p.hostname + p.pathname.replace(/\/(apply|application)$/, '').replace(/\/$/, ''); } catch { return u; } };
-  const kitUrlSet = new Set((await loadApps()).flatMap(a => [a.url, ...(a.urls||[])].filter(Boolean).map(normUrl)));
+  const kitUrlSet = new Set((await loadApps(userEmail)).flatMap(a => [a.url, ...(a.urls||[])].filter(Boolean).map(normUrl)));
 
   // Opened tracking: load click history
-  const OPENED_FILE = path.join(__dirname, '../logs/opened.json');
-  let openedSet = new Set();
-  try { JSON.parse(fs.readFileSync(OPENED_FILE, 'utf-8')).forEach(o => openedSet.add(o.url)); } catch {}
+  const openedSet = new Set(userEmail ? (await db.getActivity(userEmail,'opened')).map(x=>x.url) : []);
 
   const alertBanners = [];
   const sourcesHtml = !data?.sources?.length
@@ -3352,14 +3132,14 @@ app.get('/sourcing', async (req, res) => {
           const hasKit = kitUrlSet.has(normUrl(j.url));
           const wasOpened = openedSet.has(j.url);
           return `<div class="fit-row">
-            <a href="${esc(j.url)}" target="_blank" class="fit-link" onclick="trackOpen('${esc(j.url)}')">${esc(j.company||'')} — ${esc(j.role||'')}</a>
+            <a href="${esc(j.url)}" target="_blank" class="fit-link" rel="noopener noreferrer" onclick="trackOpen(this.href)">${esc(j.company||'')} — ${esc(j.role||'')}</a>
             <span class="fit-badges">${hasKit?'<span class="badge b-kit">kit</span>':''}${wasOpened?'<span class="badge b-opened">opened</span>':''}</span>
           </div>`;
         };
 
         const makeOtherRow = j => {
           const label = {dupe:'dupe',cross_dupe:'dupe',role_mismatch:'mismatch',low_fit:'low fit',excluded:'excluded',url_dead:'dead'}[j.outcome]||j.outcome;
-          return `<div class="other-row"><span class="other-lbl">${label}</span><a href="${esc(j.url)}" target="_blank" class="other-link" onclick="trackOpen('${esc(j.url)}')">${esc(j.company||'')} — ${esc(j.role||'')}</a></div>`;
+          return `<div class="other-row"><span class="other-lbl">${esc(label)}</span><a href="${esc(j.url)}" target="_blank" class="other-link" rel="noopener noreferrer" onclick="trackOpen(this.href)">${esc(j.company||'')} — ${esc(j.role||'')}</a></div>`;
         };
 
         const fitHtml = fitJobs.length
@@ -3395,6 +3175,11 @@ app.get('/sourcing', async (req, res) => {
   const schedText = sched.enabled
     ? `auto ${String(sched.hour).padStart(2,'0')}:${String(sched.minute).padStart(2,'0')} CT`
     : 'no schedule';
+
+  if (req.query.fragment === '1') {
+    if (!userEmail) return res.status(401).json({ error: 'Sign in required' });
+    return res.json({ html: sourcesHtml, meta: runMeta });
+  }
 
   res.send(`<!DOCTYPE html>
 <html lang="en">
@@ -3659,7 +3444,7 @@ ${alertBanners.join('\n')}
   <div class="live-feed" id="live-feed"></div>
 </div>
 <div class="body">
-${sourcesHtml}
+<div id="source-results">${sourcesHtml}</div>
 <div class="missed-section">
   <div class="missed-label">paste a URL you found manually that was missed:</div>
   <div class="missed-row">
@@ -3755,7 +3540,7 @@ function parseLine(raw){
   if(scannedM&&src){setSrcStatus(src,'scanned '+scannedM[1]+'…','searching');return;}
 
   // New job
-  if(l.match(/✓\s*NEW:/)){addFeedLine(l.replace(/^\s*[✓~–]\s*/,'+ ').trim(),'new');return;}
+  if(l.match(/NEW:/)){addFeedLine(l.replace(/^\s*[✓~–]\s*/,'+ ').trim(),'new');return;}
 
   // Skip
   if(l.match(/–\s*skip:/)){addFeedLine(l.replace(/^\s*[–~]\s*/,'').trim(),'skip');return;}
@@ -3783,6 +3568,8 @@ async function loadBalance(){
     userBalance=d.balance??d.credits??null;
     const el=document.getElementById('src-balance');
     if(el&&userBalance!==null)el.textContent=userBalance+' available';
+    const top=document.getElementById('balance-display');
+    if(top&&userBalance!==null){top.textContent=userBalance+' cr';top.style.color=userBalance<20?'#b45309':'#444';}
   }catch{}
 }
 
@@ -4016,7 +3803,7 @@ function startLive(userInitiated){
   var sp=document.getElementById('source-panel');if(sp)sp.style.display='none';
   var sc=document.getElementById('sched-panel');if(sc)sc.style.display='none';
   var rp=document.getElementById('runs-panel');if(rp)rp.style.display='none';
-  document.getElementById('live-panel').style.display='';
+  document.getElementById('live-panel').style.display='block';
   document.getElementById('live-panel').scrollIntoView({behavior:'smooth',block:'start'});
   document.getElementById('sdot').className='sdot active';
   document.getElementById('topbar-meta').textContent='sourcing in progress…';
@@ -4025,7 +3812,6 @@ function startLive(userInitiated){
   setPhase(1);
 
   var panel=document.getElementById('run-failed');if(panel)panel.style.display='none';
-  var sawOutput=false;
   var startedAt=Date.now();
 
   // A visible clock and a running count, so it is never ambiguous whether
@@ -4045,7 +3831,6 @@ function startLive(userInitiated){
   es=new EventSource(BASE+'/source/stream?token='+encodeURIComponent(sessionToken()));
   es.onmessage=e=>{
     try{
-      sawOutput=true;
       var line=JSON.parse(e.data);
       parseLine(line);
       narrate(String(line||''));
@@ -4069,10 +3854,11 @@ function startLive(userInitiated){
       // Reconnecting to an existing run is not the same as starting one: a
       // quiet reconnect must never be reported as a failed launch, which is
       // exactly what a stale cached status used to produce.
-      var quick=Date.now()-startedAt<15000;
-      if(userInitiated&&!sawOutput&&quick){
+      if(st.outcome==='refunded'){
+        loadBalance();
         document.getElementById('topbar-meta').textContent='run failed';
         showRunFailure();
+        document.getElementById('rf-sub').textContent=st.error || 'The run failed. Credits have been returned.';
         return;
       }
       document.getElementById('topbar-meta').textContent='run complete';
@@ -4107,7 +3893,7 @@ async function showRunFailure(){
   var logEl=document.getElementById('rf-log');
   document.getElementById('live-panel').style.display='none';
   panel.style.display='block';
-  sub.textContent='The run exited within seconds without producing any output, so nothing was searched.';
+  sub.textContent='The run did not finish. Credits have been returned.';
   logEl.textContent='Loading the run log…';
   panel.scrollIntoView({behavior:'smooth',block:'start'});
   var text='';
@@ -4137,6 +3923,13 @@ function liveNote(text,cls){
   feed.scrollTop=feed.scrollHeight;
 }
 
+// Load user results after browser session authentication.
+fetch(BASE+'/sourcing?fragment=1',{cache:'no-store',headers:authHeaders()}).then(r=>r.ok?r.json():null).then(d=>{
+  if(!d)return;
+  document.getElementById('source-results').innerHTML=d.html;
+  if(!document.getElementById('run-btn').disabled)document.getElementById('topbar-meta').textContent=d.meta;
+}).catch(()=>{document.getElementById('source-results').textContent='Results could not be loaded. Refresh to retry.';});
+
 // On page load — auto-connect if a run is already in progress
 fetch(BASE+'/source/status',{cache:'no-store',headers:authHeaders()}).then(r=>r.json()).then(st=>{
   if(st.active) startLive(false);
@@ -4165,51 +3958,32 @@ async function submitMissed(){
 </html>`);
 });
 
-app.post('/track/open', (req, res) => {
-  if (!reqUserEmail(req)) return res.status(401).json({ error: 'Sign in required' });
-  const { url } = req.body;
-  if (!url) return res.json({ ok: false });
-  const file = path.join(__dirname, '../logs/opened.json');
-  try {
-    let opened = [];
-    try { opened = JSON.parse(fs.readFileSync(file, 'utf-8')); } catch {}
-    if (!opened.some(o => o.url === url)) {
-      opened.push({ url, opened_at: new Date().toISOString() });
-      fs.writeFileSync(file, JSON.stringify(opened, null, 2));
-    }
-  } catch {}
-  res.json({ ok: true });
+app.post('/track/open', async (req,res) => {
+  const email=reqUserEmail(req);
+  if (!email) return res.status(401).json({error:'Sign in required'});
+  await db.saveActivity(email,req.body.url,'opened',{opened_at:new Date().toISOString()});
+  res.json({ok:true});
 });
 
-app.get('/audit/data', (req, res) => {
-  if (!reqUserEmail(req)) return res.status(401).json({ error: 'Sign in required' });
-  const detailFile = path.join(__dirname, '../logs/last-run-detail.json');
-  try {
-    res.json(fs.existsSync(detailFile) ? JSON.parse(fs.readFileSync(detailFile, 'utf-8')) : null);
-  } catch { res.status(500).json({ error: 'read error' }); }
+app.get('/audit/data', async (req,res) => {
+  const email=reqUserEmail(req);
+  if (!email) return res.status(401).json({error:'Sign in required'});
+  res.json(await db.latestRunDetail(email));
 });
 
-const FEEDBACK_FILE = path.join(__dirname, '../logs/audit-feedback.json');
-
-app.get('/audit/feedback', (req, res) => {
-  if (!reqUserEmail(req)) return res.status(401).json({ error: 'Sign in required' });
-  try { res.json(fs.existsSync(FEEDBACK_FILE) ? JSON.parse(fs.readFileSync(FEEDBACK_FILE, 'utf-8')) : []); }
-  catch { res.json([]); }
+app.get('/audit/feedback', async (req,res) => {
+  const email=reqUserEmail(req);
+  if (!email) return res.status(401).json({error:'Sign in required'});
+  res.json(await db.getActivity(email,'feedback'));
 });
 
-app.post('/audit/feedback', (req, res) => {
-  if (!reqUserEmail(req)) return res.status(401).json({ error: 'Sign in required' });
-  const { url, company, role, outcome_was, feedback, note } = req.body;
-  if (!url || !feedback) return res.status(400).json({ error: 'url and feedback required' });
-  try {
-    let log = [];
-    try { log = JSON.parse(fs.readFileSync(FEEDBACK_FILE, 'utf-8')); } catch {}
-    const idx = log.findIndex(f => f.url === url);
-    const entry = { url, company, role, outcome_was, feedback, note: note || '', date: new Date().toISOString().slice(0, 10) };
-    if (idx >= 0) log[idx] = entry; else log.push(entry);
-    fs.writeFileSync(FEEDBACK_FILE, JSON.stringify(log, null, 2));
-    res.json({ ok: true });
-  } catch (e) { res.status(500).json({ error: e.message }); }
+app.post('/audit/feedback', async (req,res) => {
+  const email=reqUserEmail(req);
+  if (!email) return res.status(401).json({error:'Sign in required'});
+  const {url,company,role,feedback,note}=req.body;
+  if (!url || !feedback) return res.status(400).json({error:'URL and feedback required'});
+  await db.saveActivity(email,url,'feedback',{company,role,feedback,note:String(note||'').slice(0,2000)});
+  res.json({ok:true});
 });
 
 app.post('/audit/missed', async (req, res) => {
@@ -4226,7 +4000,7 @@ app.post('/audit/missed', async (req, res) => {
       else company = u.hostname.replace(/^www\./, '').split('.')[0];
     } catch {}
     const userEmail = reqUserEmail(req);
-    const existing = await db.getJobByUrl(url);
+    const existing = await db.getJobByUrl(url, userEmail);
     if (existing) return res.json({ ok: true, status: 'already_exists' });
     const today = new Date().toISOString().slice(0, 10);
     const id = `manual-${today}-${Math.random().toString(36).slice(2, 6)}`;
@@ -4244,7 +4018,7 @@ app.get('/pipeline', async (req, res) => {
   // its own list with the session it holds.
   const userEmail = reqUserEmail(req);
   const allJobs = userEmail ? await db.getJobs(null, 2000, userEmail) : [];
-  const jobsJson = JSON.stringify(allJobs).replace(/<\/script>/gi, '<\\/script>');
+  const jobsJson = scriptJSON(allJobs);
 
   res.send(`<!DOCTYPE html><html><head><meta charset="utf-8">${metaHead({title:'Pipeline — applyapply', desc:'Everything sourced for you, and what is left to work through.', path:'/pipeline', noindex:true})}
 <style>
@@ -4857,7 +4631,7 @@ a{text-decoration:none;color:inherit}
 </div>
 
 <script>
-var JOB_URL = ${JSON.stringify(jobUrl)};
+var JOB_URL = ${scriptJSON(jobUrl)};
 var kitData = null;
 var resumeData = null;
 var RESUME_COST = ${CREDIT_COSTS.resume};
@@ -5343,8 +5117,8 @@ app.use((error, _req, res, _next) => {
     return res.status(400).json({ error: 'Malformed JSON body' });
   }
   if (error?.type === 'entity.too.large') return res.status(413).json({ error: 'Request body too large' });
-  console.error('[request error]', error);
-  res.status(500).json({ error: 'Internal server error' });
+  console.error('[request error]', error.message);
+  res.status(error.status || 500).json({ error: error.status ? error.message : 'Internal server error' });
 });
 
 if (require.main === module) {
@@ -5357,9 +5131,19 @@ if (require.main === module) {
         const count = await db.countKits().catch(() => 0);
         console.log(`${count} kits in database`);
         console.log(`AI: ${keys ? `enabled via ${keys.provider} (haiku)` : 'disabled — no API key found'}\n`);
-        startCron();
+        if (process.env.NODE_ENV !== 'test') {
+          startCron();
+          const worker = require('./source-worker')(db, undefined, async op => {
+            const complete = op.status === 'succeeded';
+            const message = complete ? 'Sourcing finished. ' + (op.result?.added || 0) + ' new leads added.' : 'Sourcing did not finish. Your credits have been returned.';
+            const link = APP_ORIGIN + '/sourcing';
+            await sendEmail(op.user_email, 'applyapply: ' + (complete ? 'sourcing complete' : 'sourcing failed'),
+              '<p>' + escapeHtml(message) + '</p><p><a href="' + escapeHtml(link) + '">View sourcing</a></p>', message + ' ' + link);
+          });
+          worker.start();
+        }
       });
     });
 }
 
-module.exports = { app };
+module.exports = { app, runScheduledSourcing };

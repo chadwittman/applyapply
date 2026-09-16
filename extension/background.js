@@ -4,23 +4,40 @@ const CLOUD_URL = 'https://applyapply-production.up.railway.app';
 const LOCAL_URL = 'http://localhost:5000';
 let SERVER = LOCAL_URL;
 let API_KEY = '';
-chrome.storage.sync.get(['mode', 'serverUrl', 'apiKey'], (s) => {
-  if (s.serverUrl) SERVER = s.serverUrl;
-  // Match the popup and content script: cloud is the safe default for a
-  // fresh install, while localhost is an explicit development choice.
-  else SERVER = s.mode === 'local' ? LOCAL_URL : CLOUD_URL;
-  API_KEY = s.apiKey || '';
+let sessionEpoch = 0;
+async function readSession() {
+  const state = await chrome.storage.sync.get(['mode', 'serverUrl', 'apiKey']);
+  SERVER = state.serverUrl || (state.mode === 'local' ? LOCAL_URL : CLOUD_URL);
+  API_KEY = state.apiKey || '';
+}
+let sessionReady = readSession();
+
+// Reject stale responses and clear account-specific state on every session change.
+chrome.storage.onChanged.addListener(async (changes, area) => {
+  if (area !== 'sync' || !['apiKey', 'mode', 'serverUrl'].some(k => changes[k])) return;
+  sessionEpoch++;
+  voicePending = null;
+  iframeQuestionsMap.clear();
+  sessionReady = readSession();
+  await sessionReady;
+  chrome.action.setBadgeText({ text: '' });
 });
 
-// Handle SET_SESSION from auth success page (externally connectable)
 chrome.runtime.onMessageExternal.addListener((msg, sender, sendResponse) => {
-  if (msg.type === 'SET_SESSION' && msg.token) {
-    chrome.storage.sync.set({ apiKey: msg.token }, () => {
-      API_KEY = msg.token;
-      sendResponse({ ok: true });
-    });
-    return true;
-  }
+  if (msg.type !== 'SET_SESSION' || typeof msg.token !== 'string') return;
+  (async () => {
+    await sessionReady;
+    const origin = new URL(sender.url).origin;
+    const allowed = SERVER === CLOUD_URL ? [CLOUD_URL, 'https://applyapply.xyz'] : [new URL(SERVER).origin];
+    if (!allowed.includes(origin) || new URL(sender.url).pathname !== '/auth/success') throw new Error('Untrusted sign-in page');
+    const r = await fetch(SERVER + '/auth/me', { headers: { 'x-api-key': msg.token } });
+    if (!r.ok) throw new Error('Invalid session');
+    const account = await r.json();
+    await chrome.storage.sync.remove(['profile', 'userEmail']);
+    await chrome.storage.sync.set({ apiKey: msg.token, userEmail: account.email || '' });
+    sendResponse({ ok: true });
+  })().catch(e => sendResponse({ ok: false, error: e.message }));
+  return true;
 });
 
 function serverHeaders(extra = {}) {
@@ -49,39 +66,23 @@ async function ensureOffscreen() {
 
 async function cleanupVoice(transcript, question) {
   if (!transcript?.trim()) return '';
-  let text = transcript;
+  await sessionReady;
+  const epoch = sessionEpoch;
   try {
-    const r = await fetch(`${SERVER}/voice`, {
-      method: 'POST',
-      headers: serverHeaders(),
+    const r = await fetch(SERVER + '/voice', {
+      method: 'POST', headers: serverHeaders(),
       body: JSON.stringify({ transcript, question }),
     });
-    if (r.ok) { const d = await r.json(); text = d.text || transcript; }
-  } catch {
-    const { apiKey } = await chrome.storage.sync.get('apiKey');
-    if (apiKey) {
-      try {
-        const prompt = `Clean up this voice transcript into polished written prose.
-${question ? `\nQuestion: ${question}` : ''}
-Transcript: ${transcript}
-
-Rules: remove filler words, fix grammar, no em dashes, short sentences. Return only the cleaned text.`;
-        const r = await fetch('https://api.anthropic.com/v1/messages', {
-          method: 'POST',
-          headers: { 'x-api-key': apiKey, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
-          body: JSON.stringify({ model: 'claude-haiku-4-5-20251001', max_tokens: 1024, messages: [{ role: 'user', content: prompt }] }),
-        });
-        if (r.ok) { const d = await r.json(); text = d.content?.[0]?.text?.trim() || transcript; }
-      } catch {}
-    }
-  }
-  return text;
+    if (epoch !== sessionEpoch) return '';
+    if (r.ok) return (await r.json()).text || transcript;
+  } catch {}
+  return epoch === sessionEpoch ? transcript : '';
 }
 
 // ── Main message listener ─────────────────────────────────────────────────────
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg.type === 'OPEN_SIGNIN') {
-    chrome.tabs.create({ url: `${SERVER}/login?ext=${chrome.runtime.id}` });
+    sessionReady.then(() => chrome.tabs.create({ url: `${SERVER}/login?ext=${chrome.runtime.id}` }));
     sendResponse({ ok: true });
     return true;
   }
@@ -139,18 +140,27 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   }
 
   if (msg.type === 'SERVER_FETCH') {
-    fetch(msg.url, {
-      method: msg.options?.method || 'GET',
-      headers: msg.options?.headers || {},
-      body: msg.options?.body || null,
-    })
-      .then(async res => {
-        const text = await res.text();
+    const epoch = sessionEpoch;
+    (async () => {
+      await sessionReady;
+      if (epoch !== sessionEpoch) throw new Error('Session changed');
+      if ((msg.options?.headers?.['x-api-key'] || '') !== API_KEY) throw new Error('Session changed');
+      const target = new URL(msg.url);
+      if (target.origin !== new URL(SERVER).origin || target.username || target.password) throw new Error('Untrusted server');
+      const method = msg.options?.method || 'GET';
+      if (!['GET', 'POST', 'DELETE'].includes(method)) throw new Error('Unsupported method');
+      fetch(target.href, {
+        method, headers: serverHeaders({ 'Idempotency-Key': msg.options?.headers?.['Idempotency-Key'] || crypto.randomUUID() }),
+        body: method === 'GET' ? undefined : msg.options?.body,
+        redirect: 'error',
+      }).then(async res => {
+        const body = await res.text();
+        if (epoch !== sessionEpoch) return sendResponse({ ok: false, error: 'Session changed' });
         let data;
-        try { data = JSON.parse(text); } catch { data = text; }
+        try { data = JSON.parse(body); } catch { data = body; }
         sendResponse({ ok: res.ok, status: res.status, data });
-      })
-      .catch(err => sendResponse({ ok: false, error: err.message }));
+      }).catch(e => sendResponse({ ok: false, error: e.message }));
+    })().catch(e => sendResponse({ ok: false, error: e.message }));
     return true;
   }
 
@@ -161,7 +171,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
   // Route voice through offscreen doc (works in cross-origin iframes)
   if (msg.type === 'VOICE_START') {
-    voicePending = { tabId: sender.tab?.id, frameId: sender.frameId, question: msg.question };
+    voicePending = { tabId: sender.tab?.id, frameId: sender.frameId, question: msg.question, epoch: sessionEpoch };
     ensureOffscreen()
       .then(() => chrome.runtime.sendMessage({ target: 'offscreen', type: 'START_REC' }))
       .catch(err => {
@@ -193,6 +203,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     voicePending = null;
     if (!pending) return;
     cleanupVoice(msg.transcript, pending.question).then(text => {
+      if (pending.epoch !== sessionEpoch) return;
       // Fill the field in the content script
       chrome.tabs.sendMessage(pending.tabId, { type: 'VOICE_RESULT', text }, { frameId: pending.frameId }).catch(() => {});
       // Also write to clipboard in the tab as a fallback (paste always works)
@@ -218,43 +229,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 });
 
 async function handleVoiceCleanup(transcript, question) {
-  // Try server first (has richer context from app)
-  try {
-    const r = await fetch(`${SERVER}/voice`, {
-      method: 'POST',
-      headers: serverHeaders(),
-      body: JSON.stringify({ transcript, question }),
-    });
-    if (r.ok) return r.json();
-  } catch {}
-
-  // Fall back to direct Anthropic call using stored API key
-  const { apiKey } = await chrome.storage.sync.get('apiKey');
-  if (!apiKey) return { text: transcript };
-
-  const prompt = `Clean up this voice transcript into polished written prose.
-
-${question ? `Question being answered: ${question}\n` : ''}Raw transcript: ${transcript}
-
-Rules:
-- Remove filler words: um, uh, like, you know, sort of, kind of, I mean, basically, literally
-- Break up run-on sentences — if a sentence has multiple clauses joined by "and" or "so", split it
-- Fix grammar throughout
-- Keep every idea — do not drop substance, do not add new content
-- No em dashes. Use periods and short sentences.
-- Write how a direct, confident person writes, not how they talk
-- Return only the cleaned text, no preamble`;
-
-  const r = await fetch('https://api.anthropic.com/v1/messages', {
-    method: 'POST',
-    headers: { 'x-api-key': apiKey, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
-    body: JSON.stringify({ model: 'claude-haiku-4-5-20251001', max_tokens: 1024, messages: [{ role: 'user', content: prompt }] }),
-  });
-  if (!r.ok) return { text: transcript };
-  const data = await r.json();
-  return { text: data.content?.[0]?.text?.trim() || transcript };
+  return { text: await cleanupVoice(transcript, question) };
 }
-
 
 chrome.runtime.onInstalled.addListener(() => {
   console.log('applyapply installed');
@@ -324,6 +300,10 @@ function atsFromUrl(url) {
 const injected = new Set();
 
 chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+  if (changeInfo.status === 'loading') {
+    for (const key of injected) if (key.startsWith(tabId + ':')) injected.delete(key);
+    iframeQuestionsMap.delete(tabId);
+  }
   if (changeInfo.status !== 'complete') return;
   // Without host access to a site Chrome omits tab.url entirely. That is the
   // intended state now: the extension asks for named ATS domains only, and

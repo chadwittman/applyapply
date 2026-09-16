@@ -2,19 +2,16 @@ const CLOUD_URL = 'https://applyapply-production.up.railway.app';
 const LOCAL_URL = 'http://localhost:5000';
 let SERVER = LOCAL_URL;
 let API_KEY = '';
+let sessionEpoch = 0;
+const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const safeLink = value => { try { const u=new URL(value); return /^https?:$/.test(u.protocol) ? esc(u.href) : '#'; } catch { return '#'; } };
 
-chrome.storage.sync.get(['mode', 'serverUrl', 'apiKey', 'profile'], (s) => {
+const sessionReady = new Promise(resolve => chrome.storage.sync.get(['mode', 'serverUrl', 'apiKey'], (s) => {
   if (s.serverUrl) SERVER = s.serverUrl; // legacy key
   // Cloud is the normal extension mode. Only use localhost when it was
   // explicitly selected; a fresh install has no `mode` value yet.
   else SERVER = s.mode === 'local' ? LOCAL_URL : CLOUD_URL;
   API_KEY = s.apiKey || '';
-  // Seed DEFAULTS from locally-stored profile (fast, no network)
-  if (s.profile) {
-    for (const [k, v] of Object.entries(s.profile)) {
-      if (v != null && v !== '' && k in DEFAULTS) DEFAULTS[k] = v;
-    }
-  }
   // If API key set, also fetch full profile from server (bio + any server-set fields)
   if (API_KEY) {
     serverFetch('/profile').then(res => {
@@ -31,7 +28,8 @@ chrome.storage.sync.get(['mode', 'serverUrl', 'apiKey', 'profile'], (s) => {
       if (res.ok && res.data?.costs) { COSTS = res.data.costs; applyCostLabels(); }
     }).catch(() => {});
   }
-});
+  resolve();
+}));
 
 // Credit prices live on the server; duplicating them here would drift.
 let COSTS = null;
@@ -72,8 +70,12 @@ function applyCostLabels() {
   }
 }
 
-function serverFetch(path, options = {}) {
+async function serverFetch(path, options = {}) {
+  const epoch = sessionEpoch;
+  await sessionReady;
+  if (epoch !== sessionEpoch) throw new Error('Account changed; retry this action');
   const headers = { ...(options.headers || {}) };
+  if (options.method === 'POST') headers['Idempotency-Key'] = crypto.randomUUID();
   if (API_KEY) headers['x-api-key'] = API_KEY;
   const opts = { ...options, headers };
   // Requests must go through the background worker: a fetch issued here carries
@@ -94,6 +96,7 @@ function serverFetch(path, options = {}) {
           res => {
             if (chrome.runtime.lastError) return reject(new Error(STALE));
             if (!res) return reject(new Error(STALE));
+            if (epoch !== sessionEpoch) return reject(new Error('Account changed; retry this action'));
             resolve(res);
           }
         );
@@ -131,6 +134,7 @@ const DEFAULTS = {
   linkedin: '',
   location: '',
   work_authorization: '',
+  sponsorship: '',
   salary: '',
   current_employer: '',
   school: '',
@@ -140,9 +144,7 @@ const DEFAULTS = {
 };
 
 function mergeProfile(profile) {
-  const merged = { ...DEFAULTS };
-  if (profile) Object.entries(profile).forEach(([k, v]) => { if (v != null && v !== '') merged[k] = v; });
-  return merged;
+  return { ...(profile || {}), ...DEFAULTS };
 }
 
 let currentApp = null;
@@ -234,7 +236,7 @@ async function init() {
       if (res.ok) currentApp = res.data;
     } catch {}
     setTimeout(() => {
-      if (currentApp) deterministicFill(currentApp);
+      // Filling is initiated explicitly by the applicant.
       injectCopyButtons();
     }, 1800);
     // Report actual form questions to background so the parent frame can use them
@@ -265,26 +267,12 @@ async function init() {
   injectCopyButtons();
   observeFields();
 
-  if (isApplicationPage() && currentApp) {
-    const fillDelay = detectATS() === 'greenhouse' ? 3500 : 1800;
-    setTimeout(async () => {
-      deterministicFill(currentApp);
-      progressBar(bar, 85);
-      try { await aiFill(currentApp); } catch {}
-      finishBar(bar);
-    }, fillDelay);
-  } else {
-    finishBar(bar);
-  }
+  finishBar(bar);
 }
 
 function buildLocBadge(locType) {
-  const jobText = (document.body?.innerText || '').slice(0, 3000).toLowerCase();
-  const isAustin = /austin/.test(jobText);
-  const isOnsite = /on.?site/i.test(locType);
-  const warn = isOnsite && !isAustin;
-  const color = locType === 'Remote' ? '#16a34a' : locType === 'Hybrid' ? '#2563eb' : warn ? '#dc2626' : '#92400e';
-  const label = warn ? `${locType} (not Austin)` : locType;
+  const color = locType === 'Remote' ? '#16a34a' : locType === 'Hybrid' ? '#2563eb' : '#92400e';
+  const label = locType;
   return `<span style="display:inline-block;padding:1px 6px;border-radius:3px;font-size:9px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;background:${color}22;color:${color};margin-top:5px;">${label}</span>`;
 }
 
@@ -451,8 +439,8 @@ function buildHTML(serverDown) {
   <div class="sh">
     <div class="sh-info">
       <div class="sh-eyebrow">applyapply</div>
-      <div class="sh-company">${a ? a.company : (serverDown ? 'Server offline' : (API_KEY ? 'Ready' : 'Not signed in'))}</div>
-      <div class="sh-role">${a ? a.role : (serverDown ? 'npm start in ~/job-search/server' : (API_KEY ? 'Generate application below' : 'Sign in to start applying'))}</div>
+      <div class="sh-company">${a ? esc(a.company) : (serverDown ? 'Server offline' : (API_KEY ? 'Ready' : 'Not signed in'))}</div>
+      <div class="sh-role">${a ? esc(a.role) : (serverDown ? 'npm start in ~/job-search/server' : (API_KEY ? 'Generate application below' : 'Sign in to start applying'))}</div>
       ${a ? `<div class="sh-meta">Tier ${a.tier} &nbsp;·&nbsp; ${a.fit_score}/10</div>` : ''}
       ${locBadge}
     </div>
@@ -479,7 +467,7 @@ function buildHTML(serverDown) {
 
 function appHTML(a) {
   const p = mergeProfile(a.profile);
-  const t = a.tailored;
+  const t = a.tailored || {};
 
   const rows = [
     ['Name', `${p.first_name} ${p.last_name}`],
@@ -499,7 +487,7 @@ function appHTML(a) {
   return `
 <div class="sec">
   <div class="sec-hd" data-sec="profile"><span class="sec-label">Profile</span><span class="chev">▾</span></div>
-  <div class="sec-body">${rows.map(([l, v]) => `<div class="field" data-copy="${v}"><span class="field-lbl">${l}</span><span class="field-val">${v}</span><span class="field-copy">copy</span></div>`).join('')}</div>
+  <div class="sec-body">${rows.map(([l, v]) => `<div class="field" data-copy="${esc(v)}"><span class="field-lbl">${l}</span><span class="field-val">${esc(v)}</span><span class="field-copy">copy</span></div>`).join('')}</div>
 </div>
 
 <div class="sec">
@@ -507,7 +495,7 @@ function appHTML(a) {
     <span class="sec-label">Why this role</span>
     <div class="sec-actions"><button class="copy-btn" data-key="why_role" title="Copy · ⌥↩ when field focused">Copy</button><span class="chev">▾</span></div>
   </div>
-  <div class="sec-body"><div class="prose">${t.why_role}</div></div>
+  <div class="sec-body"><div class="prose">${esc(t.why_role)}</div></div>
 </div>
 
 <div class="sec">
@@ -516,7 +504,7 @@ function appHTML(a) {
     <div class="sec-actions"><button class="copy-btn" data-key="cover_note" title="Copy · ⌥↩ when field focused">Copy</button><span class="chev">▾</span></div>
   </div>
   <div class="sec-body">
-    <div class="prose">${t.cover_note}</div>
+    <div class="prose">${esc(t.cover_note)}</div>
   </div>
 </div>
 
@@ -525,15 +513,15 @@ ${t.headline ? `<div class="sec">
     <span class="sec-label">Headline</span>
     <div class="sec-actions"><button class="copy-btn" data-key="headline" title="Copy · ⌥↩ when field focused">Copy</button><span class="chev">▾</span></div>
   </div>
-  <div class="sec-body"><div class="prose">${t.headline}</div></div>
+  <div class="sec-body"><div class="prose">${esc(t.headline)}</div></div>
 </div>` : ''}
 
 ${t.qa?.length ? `<div class="sec">
   <div class="sec-hd" data-sec="qa"><span class="sec-label">Q & A</span><span class="chev">▾</span></div>
   <div class="sec-body">
     ${t.qa.map((item, i) => `<div class="qa">
-      <div class="qa-q">${item.q}</div>
-      <div class="qa-a" id="jaa-qa-a-${i}">${item.a}</div>
+      <div class="qa-q">${esc(item.q)}</div>
+      <div class="qa-a" id="jaa-qa-a-${i}">${esc(item.a)}</div>
       <div class="qa-actions">
         <button class="copy-btn" data-qa-copy="${i}" title="Copy · ⌥↩ when field focused">Copy</button>
         <button class="qa-mic" data-qa-idx="${i}" data-qa-q="${encodeURIComponent(item.q)}" title="Record your answer">🎤</button>
@@ -544,10 +532,10 @@ ${t.qa?.length ? `<div class="sec">
 
 ${a.warm_path ? `<div class="sec">
   <div class="sec-hd" data-sec="warm"><span class="sec-label">Warm path</span><span class="chev">▾</span></div>
-  <div class="sec-body"><div class="prose" style="font-size:11px;color:#6b6b6b;">${a.warm_path}</div></div>
+  <div class="sec-body"><div class="prose" style="font-size:11px;color:#6b6b6b;">${esc(a.warm_path)}</div></div>
 </div>` : ''}
 
-<a class="job-link" href="${a.url}" target="_blank">Open job posting ↗</a>
+<a class="job-link" href="${safeLink(a.url)}" target="_blank">Open job posting ↗</a>
 <a class="job-link" href="${SERVER}/setup" target="_blank">Profile &amp; settings ↗</a>
 <a class="job-link" href="${SERVER}/pipeline" target="_blank">Pipeline ↗</a>
 
@@ -577,7 +565,7 @@ function noAppBody() {
   return `
 <div class="sec">
   <div class="sec-hd" data-sec="profile"><span class="sec-label">Profile</span><span class="chev">▾</span></div>
-  <div class="sec-body">${rows.map(([l, v]) => `<div class="field" data-copy="${v}"><span class="field-lbl">${l}</span><span class="field-val">${v}</span><span class="field-copy">copy</span></div>`).join('')}</div>
+  <div class="sec-body">${rows.map(([l, v]) => `<div class="field" data-copy="${esc(v)}"><span class="field-lbl">${l}</span><span class="field-val">${esc(v)}</span><span class="field-copy">copy</span></div>`).join('')}</div>
 </div>
 <div class="gen-wrap">
   ${locBadgeHTML}<button id="jaa-generate" class="gen-btn">Generate application</button>
@@ -613,12 +601,29 @@ function reloadAfterSignIn() {
   } catch {}
 }
 
-chrome.storage.onChanged.addListener((changes, area) => {
-  if (area !== 'sync' || !changes.apiKey) return;
-  const next = changes.apiKey.newValue || '';
-  if (next === API_KEY) return;
-  API_KEY = next;
-  if (next) reloadAfterSignIn();
+chrome.storage.onChanged.addListener(async (changes, area) => {
+  if (area !== 'sync' || !changes.apiKey && !changes.profile && !changes.mode && !changes.serverUrl) return;
+  const epoch=++sessionEpoch;
+  const state=await chrome.storage.sync.get(['apiKey','mode','serverUrl']);
+  if (epoch!==sessionEpoch) return;
+  API_KEY=state.apiKey || '';
+  SERVER=state.serverUrl || (state.mode==='local' ? LOCAL_URL : CLOUD_URL);
+  currentApp=null;
+  evidenceCount=null;
+  window.__jaaApplied=false;
+  voiceQaSR?.stop();
+  for (const key of Object.keys(DEFAULTS)) DEFAULTS[key]='';
+  document.querySelectorAll('[data-jaa-copy],.jaa-copy-btn').forEach(el=>el.remove());
+  JAA_COPY_MAP.clear();
+  reloadAfterSignIn();
+  if (!API_KEY) return;
+  try {
+    const [profile,kit]=await Promise.all([serverFetch('/profile'),serverFetch('/application?url='+encodeURIComponent(location.href))]);
+    if (epoch!==sessionEpoch) return;
+    if (profile.ok) for (const key of Object.keys(DEFAULTS)) DEFAULTS[key]=profile.data[key] || '';
+    if (kit.ok) currentApp=kit.data;
+    reloadAfterSignIn();
+  } catch {}
 });
 
 function quickAnswerSection() {
@@ -637,7 +642,7 @@ function quickAnswerSection() {
 
 function quickCopySection(a) {
   const p = mergeProfile(a.profile);
-  const t = a.tailored;
+  const t = a.tailored || {};
 
   const fields = [
     ['First name', p.first_name],
@@ -658,15 +663,15 @@ function quickCopySection(a) {
     ['Cover note', t.cover_note],
     t.headline ? ['Headline', t.headline] : null,
     ...(t.qa || []).map((item, i) => [`Q${i + 1}: ${item.q}`, item.a]),
-  ].filter(Boolean);
+  ].filter(Boolean).map(([label,value]) => [String(label),String(value ?? '')]);
 
   return `<div class="sec collapsed">
   <div class="sec-hd" data-sec="quickcopy"><span class="sec-label">Quick copy</span><span class="chev">▾</span></div>
   <div class="sec-body" style="padding-bottom:14px;">
     ${fields.map(([label, value]) => `
     <div class="field" style="align-items:flex-start;padding:6px 0;">
-      <span class="field-lbl" style="padding-top:2px;">${label}</span>
-      <span class="field-val" style="font-size:11px;line-height:1.5;flex:1;color:#444;white-space:pre-wrap;">${value.length > 60 ? value.slice(0, 60) + '…' : value}</span>
+      <span class="field-lbl" style="padding-top:2px;">${esc(label)}</span>
+      <span class="field-val" style="font-size:11px;line-height:1.5;flex:1;color:#444;white-space:pre-wrap;">${esc(value.length > 60 ? value.slice(0, 60) + '…' : value)}</span>
       <button class="copy-btn" data-text="${encodeURIComponent(value)}" title="Copy · ⌥↩ when field focused" style="flex-shrink:0;margin-left:6px;margin-top:2px;">Copy</button>
     </div>`).join('')}
   </div>
@@ -881,7 +886,7 @@ function bindEvents() {
     });
   });
 
-  // Quick answer mic — speak a question, get an AI answer from Chad's background
+  // Quick answer mic uses the current account's background.
   const quickMic = shadow.getElementById('jaa-quick-mic');
   const quickOut = shadow.getElementById('jaa-quick-out');
   const quickCopy = shadow.getElementById('jaa-quick-copy');
@@ -947,6 +952,7 @@ function bindEvents() {
 
   const genResumeBtn = shadow.getElementById('jaa-gen-resume');
   const resumeOut = shadow.getElementById('jaa-resume-out');
+  if (resumeOut && currentApp?.tailored_resume) renderResume(currentApp.tailored_resume, resumeOut);
   if (genResumeBtn && resumeOut) {
     genResumeBtn.addEventListener('click', async () => {
       setBtn('jaa-gen-resume', 'Tailoring…', false);
@@ -1041,10 +1047,11 @@ async function aiFill(app) {
   for (const m of mappings) {
     if (!m.value) { skipped++; continue; }
     if (m.type === 'radio') {
-      clickRadioByGroupLabel(m.label, m.value) ? filled++ : skipped++;
+      const answer = binaryAnswerForLabel(m.label);
+      answer && clickRadioByGroupLabel(m.label, answer) ? filled++ : skipped++;
     } else if (m.type === 'select') {
       const input = findByLabel(m.label);
-      const answer = binaryAnswerForLabel(m.label) || (/^\s*no\b/i.test(m.value) ? 'No' : /^\s*yes\b/i.test(m.value) ? 'Yes' : null);
+      const answer = binaryAnswerForLabel(m.label);
       if (answer && chooseGreenhouseCombobox(input, answer)) filled++; else skipped++;
     } else {
       const el = findByLabel(m.label);
@@ -1084,7 +1091,7 @@ function deterministicFill(app) {
     { test: l => /website|personal\s*site|project\s*site|online\s*presence|portfolio\s*url|personal\s*url|additional\s*link/.test(l), value: p.website || '' },
     { test: l => /salary|compensation/.test(l), value: p.salary || '' },
     { test: l => /cover letter|additional info|tell us|message/.test(l), value: t.cover_note || '', textarea: true },
-    { test: l => /how did you hear|how did you find|referred by|referral source|where did you (hear|learn)|source of (hire|application)/.test(l), value: 'LinkedIn' },
+
   ];
 
   for (const rule of rules) {
@@ -1093,81 +1100,22 @@ function deterministicFill(app) {
     if (el) { setVal(el, rule.value); filled++; } else skipped++;
   }
 
-  if (clickRadioByPattern(/authorized to work|legally authorized/, 'yes')) filled++; else skipped++;
-  if (clickRadioByPattern(/sponsorship|visa/, 'no')) filled++; else skipped++;
+  const authorization = binaryAnswerForLabel('authorized to work', p);
+  const sponsorship = binaryAnswerForLabel('visa sponsorship', p);
+  if (authorization && clickRadioByPattern(/authorized to work|legally authorized/, authorization)) filled++;
+  if (sponsorship && clickRadioByPattern(/sponsorship|visa/, sponsorship)) filled++;
   // Greenhouse's current form uses React comboboxes for binary questions,
   // rather than native radios. Select the actual Yes/No option—never paste
   // the generated prose answer into its search input.
   filled += fillGreenhouseBinaryQuestions();
 
-  // Select dropdowns — phone country code and country fields
+  // Only explicit profile facts may answer eligibility dropdowns.
   for (const sel of document.querySelectorAll('select')) {
-    const attr = (sel.getAttribute('aria-label') || sel.id || sel.name || sel.getAttribute('data-qa') || '').toLowerCase().replace(/[-_]/g, ' ');
-    const labelEl = sel.id ? document.querySelector(`label[for="${CSS.escape(sel.id)}"]`) : null;
-    const labelTxt = (labelEl?.textContent || '').toLowerCase().replace(/\*/g, '').trim();
-    const combined = attr + ' ' + labelTxt;
-
-    // Phone country code — prefer "+1" (US dial code) over "United States"
-    // Catches explicit labels AND Greenhouse's "Country" dropdown next to a phone input (name="phone_country")
-    const selName = (sel.name || '').toLowerCase();
-    // A "Country" select sitting next to a phone input is the dial code, not
-    // country of residence. The old check only looked one container up, which
-    // missed Greenhouse's nesting and filled "United States" where the field
-    // wanted "+1". Widen the search, and treat a list whose options are dial
-    // codes as a phone-country select regardless of how it is labelled.
-    const optionsLookLikeDialCodes = (() => {
-      const texts = [...sel.options].slice(0, 12).map(o => (o.text || '').trim());
-      const withPlus = texts.filter(t => /\+\d{1,4}/.test(t)).length;
-      return texts.length > 2 && withPlus >= Math.min(3, texts.length - 1);
-    })();
-    const nearPhoneInput = (() => {
-      let node = sel.parentElement;
-      for (let i = 0; i < 5 && node; i++, node = node.parentElement) {
-        if (node.querySelector('input[type="tel"], input[name*="phone" i], input[id*="phone" i], input[aria-label*="phone" i]')) return true;
-      }
-      return false;
-    })();
-    const isPhoneCountry = /phone.*country|country.*code|dial.*code|calling.*code|phone.*prefix/.test(combined)
-      || selName.includes('phone_country')
-      || selName.includes('phone-country')
-      || optionsLookLikeDialCodes
-      || (/^country/.test(combined.trim()) && nearPhoneInput);
-    if (isPhoneCountry) {
-      // These dropdowns almost never label the option exactly "+1" — it's
-      // "United States +1", "🇺🇸 United States (+1)", "US +1". Matching the
-      // bare string failed on essentially every real ATS. Note \+1(?!\d) so
-      // the NANP territories (+1284, +1876…) don't win the match.
-      const opts = [...sel.options];
-      const txt = o => (o.text || '').trim();
-      const plusOne =
-           opts.find(o => /united states/i.test(txt(o)) && /\+1(?!\d)/.test(txt(o)))
-        || opts.find(o => /^\+?1$/.test(txt(o)) || o.value === '+1' || o.value === '1')
-        || opts.find(o => /\+1(?!\d)/.test(txt(o)))
-        || opts.find(o => /^united states/i.test(txt(o)))
-        || opts.find(o => ['US', 'USA'].includes(String(o.value).toUpperCase()));
-      if (plusOne && sel.value !== plusOne.value) {
-        if (setSelectVal(sel, plusOne.value)) filled++;
-      }
-      continue;
-    }
-
-    // How did you hear — pick LinkedIn option
-    if (/how.*hear|how.*find|referral.*source|source.*hire|where.*hear|where.*learn|how.*learn/.test(combined)) {
-      const li = [...sel.options].find(o => /linkedin/i.test(o.text));
-      if (li && setSelectVal(sel, li.value)) filled++;
-      continue;
-    }
-
-    // Country of residence / location country — prefer United States
-    if (/^country$|country.*residence|country.*address|country.*location/.test(combined) && !/phone|code|dial/.test(combined)) {
-      const us = [...sel.options].find(o =>
-        /^united states$/i.test(o.text.trim()) || o.value === 'US' || o.value === 'USA' || o.value === 'United States'
-      );
-      if (us && !sel.value) {
-        if (setSelectVal(sel, us.value)) filled++;
-      }
-      continue;
-    }
+    const label = sel.labels?.[0]?.textContent || sel.getAttribute('aria-label') || sel.name || '';
+    const answer = binaryAnswerForLabel(label, p);
+    if (!answer || sel.value) continue;
+    const option = [...sel.options].find(o => o.text.trim().toLowerCase() === answer.toLowerCase());
+    if (option && setSelectVal(sel, option.value)) filled++;
   }
 
   filled += fillCheckboxGroups(t);
@@ -1314,17 +1262,11 @@ async function fillComboboxes(t) {
 
     const p = mergeProfile(currentApp?.profile);
     let want = null;
-    if (/authorized to work|legally authorized|work authorization/.test(label)) want = 'Yes';
-    else if (/sponsorship|visa/.test(label)) want = 'No';
-    else if (/how did you hear|referral source/.test(label)) want = 'LinkedIn';
-    else if (/^country/.test(label)) want = 'United States';
+    if (/authorized to work|legally authorized|work authorization|sponsorship|visa/.test(label)) want = binaryAnswerForLabel(label,p);
+    else if (/how did you hear|referral source|^country/.test(label)) continue;
     // "Location (City)" wants the city, not the whole "Austin, TX" string.
     else if (/location|city/.test(label)) want = (p.location || '').split(',')[0].trim() || null;
-    else {
-      // Fall back to an answer already written for this question in the kit.
-      const qa = (t?.qa || []).find(item => item.q && label.includes(item.q.toLowerCase().slice(0, 30)));
-      if (qa?.a) want = /^\s*yes\b/i.test(qa.a) ? 'Yes' : /^\s*no\b/i.test(qa.a) ? 'No' : null;
-    }
+    else continue;
     if (!want) continue;
 
     const options = await openCombo(combo);
@@ -1348,57 +1290,9 @@ function getCheckboxText(cb) {
 // questions were never touched. Compliance blocks ("select all that apply",
 // sanctions/export control) are the common case and they always carry a
 // "None of the above" option.
-function fillCheckboxGroups(t) {
-  const boxes = [...document.querySelectorAll('input[type="checkbox"]')]
-    .filter(cb => !cb.disabled && cb.offsetParent !== null);
-  if (!boxes.length) return 0;
-
-  // Group by the nearest ancestor that holds more than one checkbox.
-  const groups = new Map();
-  for (const cb of boxes) {
-    let container = cb;
-    let node = cb.parentElement;
-    for (let i = 0; node && i < 6; i++, node = node.parentElement) {
-      if (node.querySelectorAll('input[type="checkbox"]').length > 1) { container = node; break; }
-    }
-    if (!groups.has(container)) groups.set(container, []);
-    groups.get(container).push(cb);
-  }
-
-  let filled = 0;
-  for (const [container, group] of groups) {
-    if (group.some(cb => cb.checked)) continue; // already answered — leave it
-
-    const optionText = group.map(getCheckboxText).join(' ');
-    let question = (container.textContent || '').trim().replace(/\s+/g, ' ');
-    // Strip the options back out so what's left is the question itself.
-    for (const o of group.map(getCheckboxText)) question = question.replace(o, ' ');
-    question = question.replace(/\s+/g, ' ').trim();
-
-    // Never answer these for someone. They are the applicant's to disclose.
-    if (/gender|race|ethnic|veteran|disabilit|sexual orientation|transgender|pronoun|hispanic|latino/i.test(question + ' ' + optionText)) continue;
-    // Consent and attestation are affirmations only the applicant can make.
-    if (/i (agree|consent|certify|acknowledge|authorize)|terms|privacy policy|accurate to the best/i.test(question + ' ' + optionText)) continue;
-
-    const none = group.find(cb => /^none of the above|^none$/i.test(getCheckboxText(cb).trim()));
-    if (none) {
-      fireRadioClick(none);
-      filled++;
-      continue;
-    }
-
-    // Otherwise only act on an explicit answer already written for this
-    // question in the kit — never guess at a multi-select.
-    const qa = (t.qa || []).find(item => {
-      const q = (item.q || '').toLowerCase();
-      return q && question.toLowerCase().includes(q.slice(0, 40));
-    });
-    if (qa?.a) {
-      const match = group.find(cb => qa.a.toLowerCase().includes(getCheckboxText(cb).trim().toLowerCase()));
-      if (match) { fireRadioClick(match); filled++; }
-    }
-  }
-  return filled;
+function fillCheckboxGroups() {
+  // Consent, compliance, and multi-select qualifications require direct input.
+  return 0;
 }
 
 function buildRadioGroups() {
@@ -1471,6 +1365,7 @@ function getRadioOptionText(radio) {
 }
 
 function fireRadioClick(radio) {
+  if (radio.name && [...document.querySelectorAll('input[type="radio"]')].some(r=>r.name===radio.name && r.checked)) return;
   radio.checked = true;
   radio.click();
   radio.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
@@ -1478,27 +1373,19 @@ function fireRadioClick(radio) {
   radio.dispatchEvent(new Event('input', { bubbles: true }));
 }
 
-function binaryAnswerForLabel(label) {
+function binaryAnswerForLabel(label, profile = mergeProfile(currentApp?.profile)) {
   const text = label.toLowerCase();
-  if (/sponsor(ship)?|visa/.test(text)) return 'No';
-  if (/authorized|eligible.*work|right to work/.test(text)) return 'Yes';
-  if (/directly managed.*product marketing/.test(text)) return 'Yes';
-  if (/ai-native|ai\/?ml|marketing ai/.test(text)) return 'Yes';
-  if (/10\+.*product marketing/.test(text)) return 'Yes';
-  return null;
+  const value = /sponsor(ship)?|visa/.test(text) ? profile.sponsorship
+    : /authorized|eligible.*work|right to work/.test(text) ? profile.work_authorization : '';
+  return /^yes$/i.test(value || '') ? 'Yes' : /^no$/i.test(value || '') ? 'No' : null;
 }
 
 function chooseGreenhouseCombobox(input, answer) {
-  if (!input || input.getAttribute('role') !== 'combobox') return false;
+  if (!input || input.getAttribute('role') !== 'combobox' || comboCommitted(input)) return false;
   input.focus();
   input.click();
-  // Greenhouse's React Select displays Yes before No. Arrow navigation lets
-  // React own the state change and triggers its required-field validation.
-  setTimeout(() => {
-    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }));
-    if (answer === 'No') input.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }));
-    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
-  }, 40);
+  // Select by its actual label; option order differs between ATS forms.
+  chooseComboOption(input, answer).catch(() => {});
   return true;
 }
 
@@ -1621,7 +1508,7 @@ function highlightResumeField() {
 }
 
 function setSelectVal(sel, value) {
-  if (!sel || sel.disabled) return false;
+  if (!sel || sel.disabled || sel.value) return false;
   const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value')?.set;
   try {
     if (setter) setter.call(sel, value); else sel.value = value;
@@ -1632,7 +1519,7 @@ function setSelectVal(sel, value) {
 }
 
 function setVal(el, value) {
-  if (!el || el.type === 'file' || el.disabled || el.readOnly) return;
+  if (!el || el.type === 'file' || el.disabled || el.readOnly || el.value?.trim()) return;
   const proto = el.tagName === 'TEXTAREA' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
   const setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
   try {
@@ -1695,12 +1582,6 @@ async function generateApp(btn) {
       if (out) { renderResume(currentApp.tailored_resume, out); setBtn('jaa-gen-resume', 'Regenerate'); }
     }
 
-    // Generating a kit is only ever a step toward filling the form, so go
-    // straight there instead of leaving the user to press the next button.
-    if (isApplicationPage()) {
-      const fillBtn = shadow?.getElementById('jaa-fill');
-      if (fillBtn && !fillBtn.disabled) setTimeout(() => fillBtn.click(), 600);
-    }
 
     // Auto-generate cover letter
     autoGenerateCoverLetter();
@@ -1845,7 +1726,9 @@ function renderResume(resume, out) {
         // answer, and a dropped connection is the save's problem, not theirs:
         // it retries with backoff and says so instead of losing the text.
         let timer = null, lastSaved = '', attempt = 0;
+        const ownerEpoch = sessionEpoch;
         const save = () => {
+          if (ownerEpoch !== sessionEpoch || !ta.isConnected) return;
           const value = ta.value.trim();
           if (!value || value === lastSaved) return;
           st.style.color = '#777';
@@ -2187,7 +2070,7 @@ function attachResumeToForm(r) {
 function printCoverLetter(text) {
   const w = window.open('', '_blank');
   if (!w) return;
-  const paragraphs = text.split(/\n\n+/).map(p => `<p>${p.replace(/\n/g, '<br>')}</p>`).join('');
+  const paragraphs = text.split(/\n\n+/).map(p => `<p>${esc(p).replace(/\n/g, '<br>')}</p>`).join('');
   w.document.write(`<!DOCTYPE html><html><head><title>Cover Letter</title>
 <style>body{font-family:Georgia,serif;font-size:12pt;line-height:1.7;max-width:680px;margin:72pt auto;color:#111}p{margin:0 0 1.2em}</style>
 </head><body>${paragraphs}</body></html>`);
@@ -2548,13 +2431,13 @@ new MutationObserver(() => {
   if (!pathChanged) return;
 
   checkForSubmission();
-  const prevApp = currentApp;
+  sessionEpoch++;
   currentApp = null;
   isOpen = false;
   document.getElementById('jaa-root')?.remove();
   document.body.style.marginRight = '';
   shadow = null;
-  setTimeout(() => { currentApp = prevApp; init(); }, 1200);
+  setTimeout(() => { init(); }, 1200);
 }).observe(document.body, { childList: true, subtree: true });
 
 init();

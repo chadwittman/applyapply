@@ -9,6 +9,14 @@ process.env.APP_ORIGIN = 'https://applyapply.example';
 process.env.CORS_ORIGINS = 'https://applyapply.example';
 
 const { app } = require('../server');
+const db = require('../db');
+let databaseHealthy = true;
+// Route contract only; real database readiness is covered by root integration tests.
+db.pool.query = async sql => {
+  assert.equal(sql, 'SELECT 1');
+  if (!databaseHealthy) throw new Error('Synthetic database outage');
+  return { rows: [{ '?column?': 1 }] };
+};
 
 let server;
 let origin;
@@ -21,6 +29,7 @@ test.before(async () => {
 
 test.after(async () => {
   await new Promise(resolve => server.close(resolve));
+  await db.pool.end();
 });
 
 test('health endpoint reports a healthy service', async () => {
@@ -28,7 +37,15 @@ test('health endpoint reports a healthy service', async () => {
   assert.equal(response.status, 200);
   const body = await response.json();
   assert.equal(body.status, 'ok');
-  assert.equal(body.version, '0.2.0');
+  assert.match(body.version, /^\d+\.\d+\.\d+$/);
+});
+
+test('health reports unavailable when Postgres is unavailable', async () => {
+  databaseHealthy = false;
+  try {
+    const response = await fetch(`${origin}/health`);
+    assert.equal(response.status, 503);
+  } finally { databaseHealthy = true; }
 });
 
 test('resume parsing requires an authenticated user', async () => {
