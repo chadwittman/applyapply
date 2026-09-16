@@ -286,9 +286,20 @@ function buildLocBadge(locType) {
 
 // ── Widget ──────────────────────────────────────────────────────────────────
 
+const SIDEBAR_W = 360;
+
 function setBodyPush(open) {
   document.body.style.transition = 'margin-right .28s cubic-bezier(.4,0,.2,1)';
-  document.body.style.marginRight = open ? '360px' : '28px';
+  document.body.style.marginRight = open ? `${SIDEBAR_W}px` : '28px';
+  // The push reflows every field over 280ms, but the copy buttons are
+  // position:fixed and only repositioned on scroll or resize — neither of
+  // which fires here — so they were left pointing at where the fields used to
+  // be. Track the animation instead of guessing at a single delay.
+  const until = Date.now() + 420;
+  (function follow() {
+    repositionCopyBtns();
+    if (Date.now() < until) requestAnimationFrame(follow);
+  })();
 }
 
 function injectWidget(serverDown = false) {
@@ -655,9 +666,18 @@ function bindEvents() {
       setBtn('jaa-fill', 'Re-fill');
       fillBtn.disabled = false;
       injectCopyButtons();
+      // The upload field is part of filling the form. If a tailored resume
+      // exists, attach it in the same action rather than making the user find
+      // a separate button.
+      let attached = null;
+      if (currentApp?.tailored_resume) {
+        try { attached = attachResumeToForm(currentApp.tailored_resume); } catch {}
+      }
+
       if (note) {
         if (result?.filled > 0) {
           note.textContent = `${result.filled} filled · ${result.skipped} manual`
+            + (attached?.ok ? ' · resume attached' : '')
             + (currentApp ? '' : ' · generate a kit for the written answers');
         } else if (!currentApp) {
           note.textContent = 'No fields matched. Generate a kit for this job to answer its questions.';
@@ -1528,6 +1548,13 @@ async function generateApp(btn) {
       if (out) { renderResume(currentApp.tailored_resume, out); setBtn('jaa-gen-resume', 'Regenerate'); }
     }
 
+    // Generating a kit is only ever a step toward filling the form, so go
+    // straight there instead of leaving the user to press the next button.
+    if (isApplicationPage()) {
+      const fillBtn = shadow?.getElementById('jaa-fill');
+      if (fillBtn && !fillBtn.disabled) setTimeout(() => fillBtn.click(), 600);
+    }
+
     // Auto-generate cover letter
     autoGenerateCoverLetter();
   } catch (e) {
@@ -1867,9 +1894,13 @@ function attachResumeToForm(r) {
     const dt = new DataTransfer();
     dt.items.add(file);
     resumeInput.files = dt.files;
+    // Confirm before dispatching: Greenhouse reads the file on change and then
+    // clears the native input, so checking afterwards reports failure for an
+    // attach that actually worked.
+    const ok = resumeInput.files.length === 1;
     resumeInput.dispatchEvent(new Event('input', { bubbles: true }));
     resumeInput.dispatchEvent(new Event('change', { bubbles: true }));
-    return { ok: resumeInput.files.length === 1, filename: built.filename };
+    return { ok, filename: built.filename };
   } catch (e) {
     return { ok: false, why: e.message };
   }
@@ -2025,11 +2056,15 @@ function repositionCopyBtns() {
   for (const [el, btn] of JAA_COPY_MAP) {
     if (!el.isConnected) { btn.remove(); JAA_COPY_MAP.delete(el); continue; }
     const r = el.getBoundingClientRect();
-    const visible = r.width > 0 && r.height > 0 && r.bottom > 0 && r.top < window.innerHeight;
+    // Anything under the open sidebar has to hide, or the icons float on top
+    // of it rather than beside their field.
+    const rightEdge = isOpen ? window.innerWidth - SIDEBAR_W : window.innerWidth;
+    const visible = r.width > 0 && r.height > 0 && r.bottom > 0 && r.top < window.innerHeight
+      && r.right - 26 < rightEdge - 4;
     if (!visible) { btn.style.display = 'none'; continue; }
     btn.style.display = 'flex';
     btn.style.top = `${r.top + Math.max(0, (r.height - 22) / 2)}px`;
-    btn.style.left = `${r.right - 26}px`;
+    btn.style.left = `${Math.min(r.right - 26, rightEdge - 30)}px`;
   }
 }
 
