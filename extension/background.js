@@ -319,6 +319,10 @@ const injected = new Set();
 
 chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
   if (changeInfo.status !== 'complete') return;
+  // Without host access to a site Chrome omits tab.url entirely. That is the
+  // intended state now: the extension asks for named ATS domains only, and
+  // automatic detection everywhere else is opt-in. On a site we cannot see,
+  // clicking the toolbar icon still injects through activeTab.
   const url = tab.url;
   if (!url || !isEmbeddedJobPage(url)) return;
 

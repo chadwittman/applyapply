@@ -71,7 +71,28 @@ chrome.storage.sync.get(['mode', 'apiKey', 'profile', 'userEmail'], ({ mode, api
 
   document.getElementById('btn-audit').href = `${SERVER}/sourcing`;
   checkHealth();
+  initAutoDetect();
 });
+
+// Reading every page you visit is not something to take by default, so the
+// broad host permission is optional and asked for here, on a click, with the
+// trade-off stated. Chrome only grants it from a user gesture.
+const ANY_SITE = { origins: ['*://*/*'] };
+
+function initAutoDetect() {
+  const row = document.getElementById('auto-row');
+  const box = document.getElementById('auto-detect');
+  if (!row || !box || !chrome.permissions) return;
+  row.style.display = '';
+  chrome.permissions.contains(ANY_SITE, granted => { box.checked = !!granted; });
+  box.addEventListener('change', () => {
+    if (box.checked) {
+      chrome.permissions.request(ANY_SITE, granted => { box.checked = !!granted; });
+    } else {
+      chrome.permissions.remove(ANY_SITE, removed => { if (removed) box.checked = false; });
+    }
+  });
+}
 
 // Force-inject sidebar on popup open
 chrome.tabs.query({ active: true, currentWindow: true }, ([tab]) => {

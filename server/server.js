@@ -1031,15 +1031,23 @@ app.post('/webhook/stripe', async (req, res) => {
   const webhookSecret = loadStripeWebhookSecret();
   let event;
 
-  if (webhookSecret && req.rawBody) {
-    try {
-      event = stripe.webhooks.constructEvent(req.rawBody, req.headers['stripe-signature'], webhookSecret);
-    } catch (e) {
-      console.error('[stripe webhook] signature failed:', e.message);
-      return res.status(400).send(`Webhook error: ${e.message}`);
-    }
-  } else {
-    event = req.body;
+  // This endpoint mints credits, so an unverified event is never trusted. The
+  // previous form fell back to req.body whenever the secret or the raw body was
+  // missing, which would have turned a body-parser change into a way for anyone
+  // to grant themselves credits by POSTing a checkout.session.completed.
+  if (!webhookSecret) {
+    console.error('[stripe webhook] STRIPE_WEBHOOK_SECRET is not set — refusing to process');
+    return res.status(503).send('Webhook not configured');
+  }
+  if (!req.rawBody) {
+    console.error('[stripe webhook] no raw body captured — refusing to process');
+    return res.status(400).send('Webhook error: raw body unavailable');
+  }
+  try {
+    event = stripe.webhooks.constructEvent(req.rawBody, req.headers['stripe-signature'], webhookSecret);
+  } catch (e) {
+    console.error('[stripe webhook] signature failed:', e.message);
+    return res.status(400).send(`Webhook error: ${e.message}`);
   }
 
   if (event.type === 'checkout.session.completed') {

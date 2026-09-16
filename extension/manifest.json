@@ -1,27 +1,44 @@
 {
   "manifest_version": 3,
   "name": "applyapply",
-  "version": "1.9.25",
+  "version": "1.10.0",
   "description": "Auto-fill job applications with AI-generated apply kits",
   "permissions": [
     "activeTab",
     "storage",
     "clipboardWrite",
     "scripting",
-    "tabs",
     "offscreen"
   ],
   "host_permissions": [
+    "https://applyapply-production.up.railway.app/*",
+    "https://applyapply.xyz/*",
+    "http://localhost:5000/*",
     "https://jobs.ashbyhq.com/*",
     "https://job-boards.greenhouse.io/*",
     "https://jobs.greenhouse.io/*",
     "https://boards.greenhouse.io/*",
     "https://jobs.lever.co/*",
     "https://instacart.careers/*",
-    "https://applyapply-production.up.railway.app/*",
-    "https://applyapply.xyz/*",
-    "http://localhost:5000/*",
-    "*://*/*"
+    "https://jobs.a16z.com/*",
+    "https://stripe.com/jobs/*",
+    "*://*.gem.com/*",
+    "*://*.workable.com/*",
+    "*://*.smartrecruiters.com/*",
+    "*://*.myworkdayjobs.com/*",
+    "*://*.jobvite.com/*",
+    "*://*.icims.com/*",
+    "*://*.breezy.hr/*",
+    "*://*.recruitee.com/*",
+    "*://*.teamtailor.com/*",
+    "*://*.careerpuck.com/*",
+    "*://*.comeet.com/*",
+    "*://*.rippling.com/*",
+    "*://*.paylocity.com/*",
+    "*://*.dover.com/*",
+    "*://*.pinpointhq.com/*",
+    "*://*.jazzhr.com/*",
+    "*://*.bamboohr.com/*"
   ],
   "background": {
     "service_worker": "background.js"
@@ -44,15 +61,6 @@
       ],
       "run_at": "document_idle",
       "all_frames": true
-    },
-    {
-      "matches": [
-        "<all_urls>"
-      ],
-      "js": [
-        "voice.js"
-      ],
-      "run_at": "document_idle"
     }
   ],
   "action": {
@@ -65,5 +73,8 @@
       "https://applyapply-production.up.railway.app/*",
       "https://applyapply.xyz/*"
     ]
-  }
+  },
+  "optional_host_permissions": [
+    "*://*/*"
+  ]
 }
