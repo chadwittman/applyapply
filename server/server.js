@@ -22,7 +22,7 @@ process.on('uncaughtException', (err) => {
 
 const app = express();
 const PORT = process.env.PORT || 5000;
-const VERSION = '0.23.0';
+const VERSION = '0.24.0';
 const IS_PRODUCTION = process.env.NODE_ENV === 'production';
 const APP_ORIGIN = process.env.APP_ORIGIN || 'http://localhost:5000';
 const ALLOWED_WEB_ORIGINS = new Set(
@@ -1231,7 +1231,11 @@ app.post('/webhook/stripe', async (req, res) => {
 // ─────────────────────────────────────────────────────────────────────────────
 
 // Default profile used for local/self-hosted mode (no API key)
-const PROFILE = {
+// Self-hosted single-user mode only. This is one real person's identity, so it
+// must never reach a signed-in account: merged as a fallback it quietly filled
+// this name, email and phone into other people's applications wherever their
+// own profile had a gap, and an account with no profile row got all of it.
+const LOCAL_PROFILE = {
   first_name: 'Chad', last_name: 'Wittman',
   email: 'wittman.c@gmail.com', phone: '920-378-6761',
   linkedin: 'https://linkedin.com/in/chadwittman',
@@ -1251,18 +1255,24 @@ Superpowers: AI systems in production, growth/GTM, 0-to-1 product and company bu
 Portfolio: https://chadwittman.com`,
 };
 
-// Resolve profile for a request: DB lookup by email (JWT) or API key (legacy), fallback to local PROFILE const
+// Every profile key, blank. A missing field must stay missing rather than
+// inherit somebody else's answer.
+const BLANK_PROFILE = Object.fromEntries(Object.keys(LOCAL_PROFILE).map(k => [k, '']));
+
+// Local self-hosted mode keeps its convenience profile; a real account never
+// falls back past its own data.
+function isLocalMode(req) {
+  return !IS_PRODUCTION && !req.userEmail && isLocalRequest(req);
+}
+
 async function resolveProfile(req) {
-  const merge = (dbProfile) => {
-    const merged = { ...PROFILE };
-    for (const [k, v] of Object.entries(dbProfile)) { if (v != null && v !== '') merged[k] = v; }
-    return merged;
-  };
   if (req.userEmail) {
     const p = await getProfileByUserEmail(req.userEmail);
-    if (p) return merge(p);
+    const merged = { ...BLANK_PROFILE };
+    for (const [k, v] of Object.entries(p || {})) { if (v != null && v !== '') merged[k] = v; }
+    return merged;
   }
-  return PROFILE;
+  return isLocalMode(req) ? LOCAL_PROFILE : { ...BLANK_PROFILE };
 }
 
 // ── Profile endpoints ─────────────────────────────────────────────────────────
@@ -1281,7 +1291,7 @@ function authFromRequest(req) {
 app.get('/profile', async (req, res) => {
   const auth = authFromRequest(req);
   if (!auth) return res.status(401).json({ error: 'Sign in required' });
-  if (auth.type === 'local') return res.json(PROFILE);
+  if (auth.type === 'local') return res.json(isLocalMode(req) ? LOCAL_PROFILE : {});
   res.json(await getProfileByUserEmail(auth.email) || {});
 });
 
@@ -2025,7 +2035,7 @@ app.post('/analyze', apiLimiter, requireCredits('analyze'), async (req, res) => 
     appData = { company: company || 'this company', role: role || 'this role', profile: prof, tailored: {} };
   }
 
-  const p = { ...PROFILE, ...appData.profile };
+  const p = { ...BLANK_PROFILE, ...appData.profile };
   const t = appData.tailored || {};
   const qaBlock = (t.qa || []).map((item, i) => `Q${i + 1}: ${item.q}\nA${i + 1}: ${item.a}`).join('\n\n');
 
@@ -3172,7 +3182,7 @@ app.get('/sourcing', async (req, res) => {
   try { data = fs.existsSync(detailFile) ? JSON.parse(fs.readFileSync(detailFile, 'utf-8')) : null; } catch {}
   try { feedback = fs.existsSync(FEEDBACK_FILE_LOCAL) ? JSON.parse(fs.readFileSync(FEEDBACK_FILE_LOCAL, 'utf-8')) : []; } catch {}
   try { healthData = fs.existsSync(HEALTH_FILE) ? JSON.parse(fs.readFileSync(HEALTH_FILE, 'utf-8')) : []; } catch {}
-  const profile = await resolveProfile(req).catch(() => PROFILE);
+  const profile = await resolveProfile(req).catch(() => ({ ...BLANK_PROFILE }));
   const savedRoles = (profile.target_roles || '').split(',').map(r => r.trim().toLowerCase()).filter(Boolean);
 
   const fbMap = Object.fromEntries((feedback || []).map(f => [f.url, f]));

@@ -39,6 +39,20 @@ ok('bob write did not touch alice', (await call('GET', '/profile', A)).d?.first_
 ok('partial write kept bob bio', (await call('GET', '/profile', Bo)).d?.bio === 'bob bio');
 ok('partial write kept alice resume_text', (await call('GET', '/profile', A)).d?.resume_text === 'ALICE RESUME');
 
+console.log('\n── a profile never inherits somebody else\'s identity ──');
+// The extension and the server both used to carry one real person's name,
+// email and phone as fallbacks, so a new account with gaps in its profile got
+// those values written into its applications.
+await db.getOrCreateUser('empty@test.local');
+const E = T('empty@test.local');
+const ep = (await call('GET', '/profile', E)).d || {};
+const LEAK = /wittman|Wittman|920-378|chadwittman|ELDRICK/;
+ok('empty account gets an empty profile', !LEAK.test(JSON.stringify(ep)), JSON.stringify(ep).slice(0, 80));
+await call('POST', '/profile', E, { first_name: 'Dana' });
+const partial = (await call('GET', '/profile', E)).d || {};
+ok('partial profile stays partial', partial.first_name === 'Dana' && !partial.phone, JSON.stringify(partial).slice(0, 90));
+ok('no leaked identity anywhere in it', !LEAK.test(JSON.stringify(partial)));
+
 console.log('\n── /clear is scoped and authenticated ──');
 ok('anonymous /clear -> 401', (await call('POST', '/clear', null)).status === 401);
 await call('POST', '/clear', Bo, {});

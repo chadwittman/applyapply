@@ -119,20 +119,24 @@ function directFetch(path, options = {}) {
 }
 
 // Full profile — shown immediately without waiting for generation
+// Field names only. These used to carry one real person's name, email, phone
+// and salary as fallbacks, which meant a fresh install showed a stranger's
+// contact details and the copy buttons pasted them into the user's own
+// application. A field nobody has filled in stays blank.
 const DEFAULTS = {
-  first_name: 'Chad',
-  last_name: 'Wittman',
-  email: 'wittman.c@gmail.com',
-  phone: '920-378-6761',
-  linkedin: 'https://linkedin.com/in/chadwittman',
-  location: 'Austin, TX',
-  work_authorization: 'U.S. Citizen, no sponsorship needed',
-  salary: '265000',
-  current_employer: 'ELDRICK',
-  school: 'University of Wisconsin (UWEC)',
-  github: 'https://github.com/chadwittman',
-  twitter: 'https://x.com/ChadWittman',
-  website: 'https://youtu.be/lS140EUgOg4',
+  first_name: '',
+  last_name: '',
+  email: '',
+  phone: '',
+  linkedin: '',
+  location: '',
+  work_authorization: '',
+  salary: '',
+  current_employer: '',
+  school: '',
+  github: '',
+  twitter: '',
+  website: '',
 };
 
 function mergeProfile(profile) {
@@ -435,6 +439,11 @@ function buildHTML(serverDown) {
 .attach-btn{margin-top:8px;padding:5px 10px;background:#0a0a0a;color:#fff;border:none;font-size:10px;font-weight:600;letter-spacing:.04em;cursor:pointer;font-family:inherit;}
 .attach-btn:hover{background:#333;}
 .attach-btn:disabled{background:#ccc;cursor:default;}
+.signin-wrap{padding:22px 16px 18px;}
+.signin-hd{font-size:15px;font-weight:700;letter-spacing:-.02em;color:#000;margin-bottom:8px;}
+.signin-sub{font-size:12px;line-height:1.6;color:#333;margin-bottom:16px;}
+.signin-foot{font-size:11px;color:#333;margin-top:14px;}
+.signin-link{color:#000;font-weight:600;text-decoration:underline;cursor:pointer;}
 </style>
 
 <div class="sidebar" id="jaa-sidebar">
@@ -442,8 +451,8 @@ function buildHTML(serverDown) {
   <div class="sh">
     <div class="sh-info">
       <div class="sh-eyebrow">applyapply</div>
-      <div class="sh-company">${a ? a.company : (serverDown ? 'Server offline' : 'Ready')}</div>
-      <div class="sh-role">${a ? a.role : (serverDown ? 'npm start in ~/job-search/server' : 'Generate application below')}</div>
+      <div class="sh-company">${a ? a.company : (serverDown ? 'Server offline' : (API_KEY ? 'Ready' : 'Not signed in'))}</div>
+      <div class="sh-role">${a ? a.role : (serverDown ? 'npm start in ~/job-search/server' : (API_KEY ? 'Generate application below' : 'Sign in to start applying'))}</div>
       ${a ? `<div class="sh-meta">Tier ${a.tier} &nbsp;·&nbsp; ${a.fit_score}/10</div>` : ''}
       ${locBadge}
     </div>
@@ -463,7 +472,7 @@ function buildHTML(serverDown) {
   <div class="body">
     <div id="jaa-cl-out"></div>
     <div id="jaa-resume-out"></div>
-    ${a ? appHTML(a) : noAppBody()}
+    ${a ? appHTML(a) : (API_KEY ? noAppBody() : signedOutBody())}
   </div>
 </div>`;
 }
@@ -579,6 +588,39 @@ ${quickAnswerSection()}
 <a class="job-link" href="${SERVER}/pipeline" target="_blank">Pipeline ↗</a>`;
 }
 
+// Shown before anyone has signed in. The old behaviour was a profile section
+// full of placeholder values and a Generate button that failed with a message
+// telling you to go find the toolbar icon yourself.
+function signedOutBody() {
+  return `
+<div class="signin-wrap">
+  <div class="signin-hd">Sign in to applyapply</div>
+  <div class="signin-sub">Your profile, credits and generated kits live in your account. Signing in takes one click and a magic link &mdash; no password.</div>
+  <button id="jaa-signin" class="gen-btn">Sign in</button>
+  <div id="jaa-signin-status" class="gen-status"></div>
+  <div class="signin-foot">Already signed in on another tab? <span id="jaa-signin-recheck" class="signin-link">Check again</span></div>
+</div>`;
+}
+
+function reloadAfterSignIn() {
+  try {
+    document.getElementById('jaa-root')?.remove();
+    shadow = null;
+    injectWidget(false);
+    injectCopyButtons();
+    const sb = shadow?.getElementById('jaa-sidebar');
+    if (sb) { sb.classList.add('open'); setBodyPush(true); }
+  } catch {}
+}
+
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area !== 'sync' || !changes.apiKey) return;
+  const next = changes.apiKey.newValue || '';
+  if (next === API_KEY) return;
+  API_KEY = next;
+  if (next) reloadAfterSignIn();
+});
+
 function quickAnswerSection() {
   return `<div class="sec">
   <div class="sec-hd" data-sec="quickanswer"><span class="sec-label">Quick answer</span><span class="chev">▾</span></div>
@@ -640,6 +682,21 @@ function bindEvents() {
 
   tab.addEventListener('click', () => { isOpen = !isOpen; sidebar.classList.toggle('open', isOpen); setBodyPush(isOpen); });
   closeBtn?.addEventListener('click', () => { isOpen = false; sidebar.classList.remove('open'); setBodyPush(false); });
+
+  const signinBtn = shadow.getElementById('jaa-signin');
+  signinBtn?.addEventListener('click', () => {
+    const st = shadow.getElementById('jaa-signin-status');
+    if (st) st.textContent = 'Opening sign-in in a new tab. Come back here when you are done.';
+    chrome.runtime.sendMessage({ type: 'OPEN_SIGNIN' }, () => void chrome.runtime.lastError);
+  });
+  shadow.getElementById('jaa-signin-recheck')?.addEventListener('click', () => {
+    const st = shadow.getElementById('jaa-signin-status');
+    if (st) st.textContent = 'Checking…';
+    chrome.storage.sync.get(['apiKey'], (r) => {
+      if (r.apiKey) { API_KEY = r.apiKey; reloadAfterSignIn(); }
+      else if (st) st.textContent = 'Still signed out.';
+    });
+  });
 
   const fillBtn = shadow.getElementById('jaa-fill');
   const note = shadow.getElementById('jaa-note');

@@ -80,6 +80,12 @@ Rules: remove filler words, fix grammar, no em dashes, short sentences. Return o
 
 // ── Main message listener ─────────────────────────────────────────────────────
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+  if (msg.type === 'OPEN_SIGNIN') {
+    chrome.tabs.create({ url: `${SERVER}/login?ext=${chrome.runtime.id}` });
+    sendResponse({ ok: true });
+    return true;
+  }
+
   if (msg.type === 'STORE_IFRAME_QUESTIONS') {
     if (sender.tab?.id) iframeQuestionsMap.set(sender.tab.id, msg.questions);
     return;
