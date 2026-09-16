@@ -21,7 +21,7 @@ process.on('uncaughtException', (err) => {
 
 const app = express();
 const PORT = process.env.PORT || 5000;
-const VERSION = '0.19.0';
+const VERSION = '0.19.1';
 const IS_PRODUCTION = process.env.NODE_ENV === 'production';
 const APP_ORIGIN = process.env.APP_ORIGIN || 'http://localhost:5000';
 const ALLOWED_WEB_ORIGINS = new Set(
@@ -4183,7 +4183,6 @@ function setFilter(f) {
   renderFilters();
   renderList();
   loadCoverage();
-  loadJobs();
 }
 
 function getFiltered() {
@@ -4358,6 +4357,8 @@ fetch('/credits').then(function(r){return r.json();}).then(function(d){
 
 renderFilters();
 renderList();
+loadCoverage();
+loadJobs();
 </script>
 </body></html>`);
 });
