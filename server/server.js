@@ -21,7 +21,7 @@ process.on('uncaughtException', (err) => {
 
 const app = express();
 const PORT = process.env.PORT || 5000;
-const VERSION = '0.19.1';
+const VERSION = '0.19.2';
 const IS_PRODUCTION = process.env.NODE_ENV === 'production';
 const APP_ORIGIN = process.env.APP_ORIGIN || 'http://localhost:5000';
 const ALLOWED_WEB_ORIGINS = new Set(
@@ -4357,7 +4357,9 @@ fetch('/credits').then(function(r){return r.json();}).then(function(d){
 
 renderFilters();
 renderList();
-loadCoverage();
+// Viewing one run has its own claim line; the 30-day coverage line would
+// resolve later and overwrite it.
+if(!new URLSearchParams(location.search).get('run')) loadCoverage();
 loadJobs();
 </script>
 </body></html>`);
