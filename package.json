@@ -7,6 +7,10 @@
   "scripts": {
     "build": "node server/check-templates.js && npm --prefix server install --omit=dev",
     "start": "npm --prefix server start",
-    "check": "node server/check-templates.js"
+    "check": "node server/check-templates.js --self-test && node server/check-templates.js && eslint server/ source.js",
+    "lint": "eslint server/ source.js"
+  },
+  "devDependencies": {
+    "eslint": "^10.10.0"
   }
 }

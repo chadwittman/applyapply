@@ -21,7 +21,7 @@ process.on('uncaughtException', (err) => {
 
 const app = express();
 const PORT = process.env.PORT || 5000;
-const VERSION = '0.21.0';
+const VERSION = '0.21.1';
 const IS_PRODUCTION = process.env.NODE_ENV === 'production';
 const APP_ORIGIN = process.env.APP_ORIGIN || 'http://localhost:5000';
 const ALLOWED_WEB_ORIGINS = new Set(
@@ -2920,9 +2920,7 @@ app.post('/source/run', apiLimiter, async (req, res) => {
     },
   });
   child.stdout.pipe(logStream);
-  child.stdout.pipe(mainLogStream);
   child.stderr.pipe(logStream);
-  child.stderr.pipe(mainLogStream);
   // Mirror to the container log so a failure survives the ephemeral disk.
   child.stdout.on('data', d => process.stdout.write(`[source] ${d}`));
   child.stderr.on('data', d => process.stderr.write(`[source] ${d}`));
@@ -2939,7 +2937,6 @@ app.post('/source/run', apiLimiter, async (req, res) => {
   child.on('exit', async (code) => {
     sourcingPids.delete(pidKey);
     logStream.end();
-    mainLogStream.end();
     console.log('[source] run complete, exit', code);
     if (runEmail) {
       const pipelineUrl = `${req.protocol}://${req.get('host')}/pipeline`;
