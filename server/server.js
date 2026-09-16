@@ -21,7 +21,7 @@ process.on('uncaughtException', (err) => {
 
 const app = express();
 const PORT = process.env.PORT || 5000;
-const VERSION = '0.18.0';
+const VERSION = '0.18.1';
 const IS_PRODUCTION = process.env.NODE_ENV === 'production';
 const APP_ORIGIN = process.env.APP_ORIGIN || 'http://localhost:5000';
 const ALLOWED_WEB_ORIGINS = new Set(
@@ -713,11 +713,6 @@ input::placeholder{color:#a8a8a8}
 </head>
 <body>
 <a href="/" class="mark">applyapply</a>
-<div style="position:fixed;top:16px;right:20px;display:flex;gap:14px">
-  <a href="/pipeline" style="font-size:12px;color:#b9b9b9;text-decoration:none">Pipeline</a>
-  <a href="/sourcing" style="font-size:12px;color:#b9b9b9;text-decoration:none">Sourcing</a>
-  <a href="/setup" style="font-size:12px;color:#b9b9b9;text-decoration:none">Profile</a>
-</div>
 <h1>Sign in</h1>
 <p class="sub">We'll email you a link. No password.</p>
 <div class="form">
@@ -918,6 +913,11 @@ button:disabled{opacity:.3;cursor:default}
 </head>
 <body>
 <a href="/" class="mark">applyapply</a>
+<div style="position:fixed;top:16px;right:20px;display:flex;gap:14px">
+  <a href="/pipeline" style="font-size:12px;color:#b9b9b9;text-decoration:none">Pipeline</a>
+  <a href="/sourcing" style="font-size:12px;color:#b9b9b9;text-decoration:none">Sourcing</a>
+  <a href="/setup" style="font-size:12px;color:#b9b9b9;text-decoration:none">Profile</a>
+</div>
 <div class="price">$10</div>
 <div class="price-s">1,000 credits · no subscription · never expires</div>
 <p style="font-size:14px;color:#aaa;max-width:280px;text-align:center;line-height:1.7;margin-bottom:28px">Credits are Hyperbrowser sessions and Claude API calls at cost plus 20%. You could build this. We charge what it costs to run, not what the market will bear.</p>
