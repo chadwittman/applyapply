@@ -1,6 +1,7 @@
 const CLOUD_URL = 'https://applyapply.xyz';
 const LEGACY_CLOUD_URL = 'https://applyapply-production.up.railway.app';
 const LOCAL_URL = 'http://localhost:5000';
+const FILL_SHORTCUT_HINT = 'Fill this field and move to the next: Alt+Enter (Option+Return on Mac)';
 let SERVER = LOCAL_URL;
 let API_KEY = '';
 let sessionEpoch = 0;
@@ -2181,7 +2182,8 @@ function makeFillBtn(el, value) {
   const btn = document.createElement('button');
   btn.type = 'button';
   btn.setAttribute('data-jaa-copy', '1');
-  btn.title = (value.length > 80 ? value.slice(0, 80) + '…' : value) + '\n\n⌥↩  paste when field is focused';
+  btn.title = (value.length > 80 ? value.slice(0, 80) + '…' : value) + `\n\n${FILL_SHORTCUT_HINT}`;
+  btn.setAttribute('aria-label', FILL_SHORTCUT_HINT);
   btn.innerHTML = '<svg width="11" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/><rect x="8" y="2" width="8" height="4" rx="1"/><line x1="9" y1="12" x2="15" y2="12"/><line x1="9" y1="16" x2="13" y2="16"/></svg>';
   btn.style.cssText = 'position:fixed;width:22px;height:22px;background:#fff;color:#999;border:1px solid #d8d8d8;border-radius:4px;cursor:pointer;z-index:2147483646;display:flex;align-items:center;justify-content:center;padding:0;box-shadow:0 1px 3px rgba(0,0,0,.12);';
   btn.addEventListener('mousedown', e => e.stopPropagation());
