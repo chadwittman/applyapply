@@ -495,7 +495,7 @@ function appHTML(a) {
 <div class="sec">
   <div class="sec-hd" data-sec="why">
     <span class="sec-label">Why this role</span>
-    <div class="sec-actions"><button class="copy-btn" data-key="why_role" title="Copy · ⌥↩ when field focused">Copy</button><span class="chev">▾</span></div>
+    <div class="sec-actions"><button class="copy-btn" data-key="why_role" title="Copy. Then use Alt+Enter (Option+Return on Mac) in a form field to paste and advance">Copy</button><span class="chev">▾</span></div>
   </div>
   <div class="sec-body"><div class="prose">${esc(t.why_role)}</div></div>
 </div>
@@ -503,7 +503,7 @@ function appHTML(a) {
 <div class="sec">
   <div class="sec-hd" data-sec="cover">
     <span class="sec-label">Cover note</span>
-    <div class="sec-actions"><button class="copy-btn" data-key="cover_note" title="Copy · ⌥↩ when field focused">Copy</button><span class="chev">▾</span></div>
+    <div class="sec-actions"><button class="copy-btn" data-key="cover_note" title="Copy. Then use Alt+Enter (Option+Return on Mac) in a form field to paste and advance">Copy</button><span class="chev">▾</span></div>
   </div>
   <div class="sec-body">
     <div class="prose">${esc(t.cover_note)}</div>
@@ -513,7 +513,7 @@ function appHTML(a) {
 ${t.headline ? `<div class="sec">
   <div class="sec-hd" data-sec="hl">
     <span class="sec-label">Headline</span>
-    <div class="sec-actions"><button class="copy-btn" data-key="headline" title="Copy · ⌥↩ when field focused">Copy</button><span class="chev">▾</span></div>
+    <div class="sec-actions"><button class="copy-btn" data-key="headline" title="Copy. Then use Alt+Enter (Option+Return on Mac) in a form field to paste and advance">Copy</button><span class="chev">▾</span></div>
   </div>
   <div class="sec-body"><div class="prose">${esc(t.headline)}</div></div>
 </div>` : ''}
@@ -525,7 +525,7 @@ ${t.qa?.length ? `<div class="sec">
       <div class="qa-q">${esc(item.q)}</div>
       <div class="qa-a" id="jaa-qa-a-${i}">${esc(item.a)}</div>
       <div class="qa-actions">
-        <button class="copy-btn" data-qa-copy="${i}" title="Copy · ⌥↩ when field focused">Copy</button>
+        <button class="copy-btn" data-qa-copy="${i}" title="Copy. Then use Alt+Enter (Option+Return on Mac) in a form field to paste and advance">Copy</button>
         <button class="qa-mic" data-qa-idx="${i}" data-qa-q="${encodeURIComponent(item.q)}" title="Dictate an answer (optional)">🎤</button>
       </div>
     </div>`).join('')}
@@ -676,7 +676,7 @@ function quickCopySection(a) {
     <div class="field" style="align-items:flex-start;padding:6px 0;">
       <span class="field-lbl" style="padding-top:2px;">${esc(label)}</span>
       <span class="field-val" style="font-size:11px;line-height:1.5;flex:1;color:#444;white-space:pre-wrap;">${esc(value.length > 60 ? value.slice(0, 60) + '…' : value)}</span>
-      <button class="copy-btn" data-text="${encodeURIComponent(value)}" title="Copy · ⌥↩ when field focused" style="flex-shrink:0;margin-left:6px;margin-top:2px;">Copy</button>
+      <button class="copy-btn" data-text="${encodeURIComponent(value)}" title="Copy. Then use Alt+Enter (Option+Return on Mac) in a form field to paste and advance" style="flex-shrink:0;margin-left:6px;margin-top:2px;">Copy</button>
     </div>`).join('')}
   </div>
 </div>`;
@@ -2252,7 +2252,7 @@ function tryInjectCopyBtn(el) {
   const value = getValueForField(label, el.name || el.id || '');
   // Only mark it done once a button actually exists. Marking on entry meant a
   // field scanned before the profile loaded or a kit was generated stayed
-  // flagged forever, so no copy button and no ⌥↩ target ever appeared for it.
+  // flagged forever, so no copy button and no keyboard-shortcut target ever appeared for it.
   if (!value) return;
   el.dataset.jaaCopyDone = '1';
 
@@ -2289,7 +2289,7 @@ function observeFields() {
   window.addEventListener('scroll', repositionCopyBtns, { passive: true, capture: true });
   window.addEventListener('resize', repositionCopyBtns, { passive: true });
 
-  // Alt+Enter (Option+Enter on Mac) fills the focused field and moves to the next
+  // Alt+Enter (Option+Return on Mac) fills the focused field and moves to the next
   document.addEventListener('keydown', e => {
     if (!e.altKey || e.key !== 'Enter') return;
     const active = document.activeElement;
