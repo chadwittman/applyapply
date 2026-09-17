@@ -446,7 +446,7 @@ function buildHTML(serverDown) {
       ${locBadge}
     </div>
     <div class="sh-actions">
-      ${a ? '<button class="hdr-btn" id="jaa-regen" title="Regenerate this kit from scratch">↺</button>' : ''}
+      ${a ? '<button class="hdr-btn" id="jaa-regen" title="Regenerate this application using your latest saved answers">↺</button>' : ''}
       <button class="x-btn" id="jaa-close">×</button>
     </div>
   </div>
@@ -525,7 +525,7 @@ ${t.qa?.length ? `<div class="sec">
       <div class="qa-a" id="jaa-qa-a-${i}">${esc(item.a)}</div>
       <div class="qa-actions">
         <button class="copy-btn" data-qa-copy="${i}" title="Copy · ⌥↩ when field focused">Copy</button>
-        <button class="qa-mic" data-qa-idx="${i}" data-qa-q="${encodeURIComponent(item.q)}" title="Record your answer">🎤</button>
+        <button class="qa-mic" data-qa-idx="${i}" data-qa-q="${encodeURIComponent(item.q)}" title="Dictate an answer (optional)">🎤</button>
       </div>
     </div>`).join('')}
   </div>
@@ -762,8 +762,10 @@ function bindEvents() {
       regenBtn.disabled = true;
       regenBtn.textContent = '↻'; regenBtn.style.opacity = '.5';
       const note = shadow.getElementById('jaa-note');
-      if (note) note.textContent = 'Regenerating…';
+      if (note) { note.style.color = '#555'; note.textContent = 'Regenerating with your latest saved answers…'; }
+      regenBtn.setAttribute('aria-busy', 'true');
       await fetchIframeQuestions();
+      if (note) note.textContent = 'Writing the updated application and tailored resume…';
       try {
         const details = scrapeJobDetails();
         const res = await serverFetch('/generate', {
@@ -779,11 +781,20 @@ function bindEvents() {
         injectCopyButtons();
         const sidebar = shadow?.getElementById('jaa-sidebar');
         if (sidebar) { isOpen = true; sidebar.classList.add('open'); setBodyPush(true); }
+        const answerCount = evidenceCount || 0;
+        const freshNote = shadow?.getElementById('jaa-note');
+        if (freshNote) {
+          freshNote.style.color = '#15803d';
+          freshNote.textContent = answerCount
+            ? `Updated with ${answerCount} saved answer${answerCount === 1 ? '' : 's'}. Review the refreshed application below.`
+            : 'Application updated. Review the refreshed answers and resume below.';
+        }
       } catch (e) {
         regenBtn.disabled = false;
         regenBtn.textContent = '↺'; regenBtn.style.opacity = '';
-        if (note) note.textContent = 'Regenerate failed — try again';
+        if (note) { note.style.color = '#b91c1c'; note.textContent = `Could not regenerate: ${e.message || 'try again'}`; }
       }
+      regenBtn.removeAttribute('aria-busy');
     });
   }
 
@@ -1720,7 +1731,7 @@ function renderResume(resume, out) {
         const mic = document.createElement('button');
         mic.className = 'qa-mic';
         mic.textContent = '🎤';
-        mic.title = 'Record your answer';
+        mic.title = 'Dictate an answer (optional)';
 
         const st = document.createElement('span');
         st.style.cssText = 'font-size:9px;color:#777;display:block;margin-top:3px;min-height:12px';

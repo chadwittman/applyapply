@@ -2585,6 +2585,19 @@ function tidyResume(r) {
   return r;
 }
 
+// Keep tailored resumes in the same reverse-chronological role order as the
+// source document even when the model emphasizes an older role first.
+function orderExperience(experience) {
+  if (!Array.isArray(experience) || experience.length < 2) return experience;
+  const dated = experience.map((entry, index) => {
+    const match = String(entry?.dates || '').match(/(?:19|20)\d{2}/);
+    return { entry, index, year: match ? Number(match[0]) : null };
+  });
+  if (dated.filter(item => item.year != null).length < 2) return experience;
+  return dated.sort((a, b) => (b.year ?? -Infinity) - (a.year ?? -Infinity) || a.index - b.index)
+    .map(item => item.entry);
+}
+
 async function buildTailoredResume(profile, appData, userEmail, previous = null) {
   const t = appData.tailored || {};
   const evidenceRows = userEmail
@@ -2602,7 +2615,7 @@ ${t.why_role || t.headline || 'No additional context — use judgment based on t
 
 Rules:
 - Every company, title, and date range in your output must match the original resume exactly.
-- You may reorder bullets within a role and reword them for clarity and to mirror relevant language from "WHY THIS ROLE" — but every fact must trace back to the original resume or to the additional evidence.
+- Preserve the original role order exactly, most recent role first. You may reorder bullets within a role and reword them for clarity and to mirror relevant language from "WHY THIS ROLE" — but every fact must trace back to the original resume or to the additional evidence.
 - Work described in the additional evidence belongs to the role the candidate held at that time. Turn it into bullets under that role. This is the point of it: it is real work their resume left out, and for a candidate crossing a role boundary it is often the most relevant material they have.
 - Cut bullets irrelevant to this role if the original has many; keep the strongest 3-5 per role.
 - Do not add a role, company, or credential that appears in neither the resume nor the evidence.
@@ -2630,6 +2643,7 @@ Return ONLY valid JSON, no markdown:
   const match = raw.match(/\{[\s\S]*\}/);
   if (!match) throw new Error('No JSON in response');
   const tailored = tidyResume(resumeOutput(cleanEmDashes(JSON.parse(match[0]))));
+  tailored.experience = orderExperience(tailored.experience);
   return {
     name: resumeName, company: appData.company, role: appData.role, ...tailored,
     version: (previous?.version || 0) + 1,
