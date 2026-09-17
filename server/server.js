@@ -354,11 +354,25 @@ async function sendMagicLinkEmail(email, link) {
   await sendEmail(email, 'Sign in to applyapply',
     `<div style="font-family:-apple-system,sans-serif;max-width:480px;margin:40px auto;padding:32px;background:#fff;border:1px solid #e5e5e5;border-radius:8px">
       <h2 style="font-size:18px;font-weight:700;margin-bottom:8px">Sign in to applyapply</h2>
-      <p style="color:#555;font-size:14px;margin-bottom:24px">Click the button below to sign in. This link expires in 15 minutes and can only be used once.</p>
+      <p style="color:#555;font-size:14px;line-height:1.6;margin-bottom:12px">Your account is where applyapply keeps your resume, saved answers, job pipeline, credits, and tailored applications.</p>
+      <p style="color:#555;font-size:14px;line-height:1.6;margin-bottom:24px">This link expires in 15 minutes and can only be used once. Signing in does not spend credits.</p>
       <a href="${link}" style="display:inline-block;background:#0a0a0a;color:#fff;text-decoration:none;padding:11px 22px;border-radius:6px;font-size:14px;font-weight:600">Sign in</a>
       <p style="color:#aaa;font-size:12px;margin-top:24px">If you didn't request this, you can ignore it.</p>
     </div>`,
-    `Sign in to applyapply: ${link}`
+    `Sign in to applyapply\n\nYour account keeps your resume, saved answers, job pipeline, credits, and tailored applications together. Signing in does not spend credits.\n\nThis link expires in 15 minutes and can only be used once:\n${link}`
+  );
+}
+
+async function sendPurchaseEmail(email, link) {
+  await sendEmail(email, 'Your applyapply credits are ready',
+    `<div style="font-family:-apple-system,sans-serif;max-width:520px;margin:40px auto;padding:32px;background:#fff;border:1px solid #e5e5e5;border-radius:8px">
+      <h2 style="font-size:18px;font-weight:700;margin-bottom:8px">Your credits are ready</h2>
+      <p style="color:#555;font-size:14px;line-height:1.6;margin-bottom:14px">Your purchase added <b>1,000 applyapply credits</b> to this account. They never expire and are used only when applyapply does work for you.</p>
+      <p style="color:#555;font-size:14px;line-height:1.6;margin-bottom:14px"><b>What that unlocks:</b> automated job sourcing while you sleep, a tailored application for each role, custom answers, cover notes, and a Chrome extension that fills the form after you review it.</p>
+      <p style="color:#555;font-size:14px;line-height:1.6;margin-bottom:24px">Start by signing in, uploading your resume, and choosing the roles you want to target.</p>
+      <a href="${link}" style="display:inline-block;background:#0a0a0a;color:#fff;text-decoration:none;padding:11px 22px;border-radius:6px;font-size:14px;font-weight:600">Sign in and set up</a>
+    </div>`,
+    `Your applyapply credits are ready\n\nYour purchase added 1,000 applyapply credits to this account. They never expire.\n\nUse them for automated job sourcing, tailored resumes and applications, custom answers, cover notes, and the Chrome extension that fills forms after you review them.\n\nStart here: sign in, upload your resume, and choose your target roles:\n${link}`
   );
 }
 
@@ -511,8 +525,8 @@ footer{padding:24px 32px;border-top:1px solid #111;display:flex;justify-content:
 </nav>
 
 <div class="hero">
-  <h1>Stop writing<br>cover letters.</h1>
-  <p>Job searching is already a full-time job. Writing the same application forty different ways should not be part of it. applyapply finds the roles and gets a tailored application ready in seconds. You read it, edit anything, send.</p>
+  <h1>Your job search,<br>running overnight.</h1>
+  <p>applyapply finds matching roles while you sleep, then builds a tailored resume, cover note, and thoughtful answers for each one. You wake up to a shortlist of real opportunities, review the work, and apply with the Chrome extension.</p>
   <div class="ctas">
     <a href="/buy" class="btn-w">Get started — $10</a>
     <a href="/pipeline" class="btn-g">See the pipeline</a>
@@ -1206,7 +1220,7 @@ app.post('/webhook/stripe', async (req, res) => {
       const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(); // 24hr after purchase
       await createMagicLink(email, token, expiresAt);
       const link = `${origin}/auth/verify?token=${token}`;
-      sendMagicLinkEmail(email, link).catch(e => console.error('[stripe magic link email]', e.message));
+      sendPurchaseEmail(email, link).catch(e => console.error('[stripe purchase email]', e.message));
     }
   }
 
@@ -5198,10 +5212,13 @@ if (require.main === module) {
           startCron();
           const worker = require('./source-worker')(db, undefined, async op => {
             const complete = op.status === 'succeeded';
-            const message = complete ? 'Sourcing finished. ' + (op.result?.added || 0) + ' new leads added.' : 'Sourcing did not finish. Your credits have been returned.';
+            const added = op.result?.added || 0;
+            const message = complete
+              ? `Your overnight job search finished. ${added} new role${added === 1 ? '' : 's'} were added to your pipeline. Review the matches, open a role, and generate a tailored application when one looks right.`
+              : 'Your sourcing run did not finish, so its credits were returned automatically. You can review the run details and try again.';
             const link = APP_ORIGIN + '/sourcing';
             await sendEmail(op.user_email, 'applyapply: ' + (complete ? 'sourcing complete' : 'sourcing failed'),
-              '<p>' + escapeHtml(message) + '</p><p><a href="' + escapeHtml(link) + '">View sourcing</a></p>', message + ' ' + link);
+              '<div style="font-family:-apple-system,sans-serif;max-width:520px;margin:40px auto;padding:32px;background:#fff;border:1px solid #e5e5e5;border-radius:8px"><h2 style="font-size:18px;font-weight:700;margin-bottom:12px">' + (complete ? 'Your job search finished' : 'Your sourcing run was returned') + '</h2><p style="color:#555;font-size:14px;line-height:1.6;margin-bottom:20px">' + escapeHtml(message) + '</p><a href="' + escapeHtml(link) + '" style="display:inline-block;background:#0a0a0a;color:#fff;text-decoration:none;padding:11px 22px;border-radius:6px;font-size:14px;font-weight:600">Review your pipeline</a></div>', message + '\n\nReview your pipeline: ' + link);
           });
           worker.start();
         }
