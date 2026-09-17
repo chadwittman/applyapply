@@ -1,4 +1,5 @@
-const CLOUD_URL = 'https://applyapply-production.up.railway.app';
+const CLOUD_URL = 'https://applyapply.xyz';
+const LEGACY_CLOUD_URL = 'https://applyapply-production.up.railway.app';
 const LOCAL_URL = 'http://localhost:5000';
 let SERVER = LOCAL_URL;
 let API_KEY = '';
@@ -7,7 +8,7 @@ const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;',
 const safeLink = value => { try { const u=new URL(value); return /^https?:$/.test(u.protocol) ? esc(u.href) : '#'; } catch { return '#'; } };
 
 const sessionReady = new Promise(resolve => chrome.storage.sync.get(['mode', 'serverUrl', 'apiKey'], (s) => {
-  if (s.serverUrl) SERVER = s.serverUrl; // legacy key
+  if (s.serverUrl && s.serverUrl !== LEGACY_CLOUD_URL) SERVER = s.serverUrl; // custom server override
   // Cloud is the normal extension mode. Only use localhost when it was
   // explicitly selected; a fresh install has no `mode` value yet.
   else SERVER = s.mode === 'local' ? LOCAL_URL : CLOUD_URL;
@@ -607,7 +608,9 @@ chrome.storage.onChanged.addListener(async (changes, area) => {
   const state=await chrome.storage.sync.get(['apiKey','mode','serverUrl']);
   if (epoch!==sessionEpoch) return;
   API_KEY=state.apiKey || '';
-  SERVER=state.serverUrl || (state.mode==='local' ? LOCAL_URL : CLOUD_URL);
+  SERVER=state.serverUrl === LEGACY_CLOUD_URL
+    ? CLOUD_URL
+    : (state.serverUrl || (state.mode==='local' ? LOCAL_URL : CLOUD_URL));
   currentApp=null;
   evidenceCount=null;
   window.__jaaApplied=false;

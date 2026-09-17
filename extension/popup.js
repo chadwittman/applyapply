@@ -1,4 +1,4 @@
-const CLOUD_URL = 'https://applyapply-production.up.railway.app';
+const CLOUD_URL = 'https://applyapply.xyz';
 const LOCAL_URL = 'http://localhost:5000';
 let SERVER = CLOUD_URL;
 let API_KEY = '';

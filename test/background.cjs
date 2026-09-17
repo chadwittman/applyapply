@@ -14,7 +14,7 @@ const chrome={
 vm.runInNewContext(fs.readFileSync(require('node:path').join(__dirname,'../extension/background.js'),'utf8'),{
   chrome,URL,crypto,console,fetch:async(url,options)=>{calls.push({url,options});return {ok:true,status:200,text:async()=>JSON.stringify({email:'synthetic@test.local'}),json:async()=>({email:'synthetic@test.local'})};},
 });
-const origin='https://applyapply-production.up.railway.app';
+const origin='https://applyapply.xyz';
 const send=msg=>new Promise(resolve=>onMessage(msg,{},resolve));
 const request=(key,url=origin+'/profile')=>send({type:'SERVER_FETCH',url,options:{headers:{'x-api-key':key}}});
 (async()=>{

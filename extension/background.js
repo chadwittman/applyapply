@@ -1,13 +1,18 @@
 // ── Offscreen voice recording ─────────────────────────────────────────────────
 
-const CLOUD_URL = 'https://applyapply-production.up.railway.app';
+const CLOUD_URL = 'https://applyapply.xyz';
+const LEGACY_CLOUD_URL = 'https://applyapply-production.up.railway.app';
 const LOCAL_URL = 'http://localhost:5000';
 let SERVER = LOCAL_URL;
 let API_KEY = '';
 let sessionEpoch = 0;
 async function readSession() {
   const state = await chrome.storage.sync.get(['mode', 'serverUrl', 'apiKey']);
-  SERVER = state.serverUrl || (state.mode === 'local' ? LOCAL_URL : CLOUD_URL);
+  // Migrate installs that remembered the old Railway hostname before the
+  // custom domain became canonical.
+  SERVER = state.serverUrl === LEGACY_CLOUD_URL
+    ? CLOUD_URL
+    : (state.serverUrl || (state.mode === 'local' ? LOCAL_URL : CLOUD_URL));
   API_KEY = state.apiKey || '';
 }
 let sessionReady = readSession();
