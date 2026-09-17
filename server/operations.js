@@ -37,7 +37,7 @@ module.exports = function operations(pool) {
     });
   }
 
-  async function finishOperation(id, userEmail, { result = null, refund = false, message = null } = {}) {
+  async function finishOperation(id, userEmail, { result = null, refund = false, message = null, providerUsage = null } = {}) {
     return transaction(async c => {
       const op = (await c.query('SELECT * FROM operations WHERE id=$1 AND user_email=$2 FOR UPDATE', [id,requireOwner(userEmail)])).rows[0];
       if (!op) throw error(404, 'Operation not found');
@@ -47,8 +47,8 @@ module.exports = function operations(pool) {
         await c.query('UPDATE users SET credits=credits+$1 WHERE email=$2', [op.cost,userEmail]);
         await c.query("INSERT INTO credit_ledger(user_email,operation_id,kind,amount) VALUES($1,$2,'refund',$3)", [userEmail,id,op.cost]);
       }
-      return (await c.query('UPDATE operations SET status=$1,result=$2,error=$3,updated_at=NOW() WHERE id=$4 RETURNING *',
-        [refund ? 'refunded' : 'succeeded',JSON.stringify(result),message,id])).rows[0];
+      return (await c.query('UPDATE operations SET status=$1,result=$2,error=$3,provider_usage=$4,updated_at=NOW() WHERE id=$5 RETURNING *',
+        [refund ? 'refunded' : 'succeeded',JSON.stringify(result),message,providerUsage ? JSON.stringify(providerUsage) : null,id])).rows[0];
     });
   }
 

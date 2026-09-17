@@ -14,7 +14,7 @@ These claims are backed by the 19 adversarial groups in `test/hardening.cjs`, in
 
 ## Economic risks still open
 
-1. **Provider cost is modeled, not measured.** `HB_CENTS_PER_RUN = 50` and the Claude token assumptions are estimates. If Hyperbrowser sessions or model output cost more than assumed, a sourcing run can be underpriced. The current 20% markup is not a guarantee of margin.
+1. **Provider cost is now recorded, but pricing is still fixed.** Anthropic/OpenRouter token usage is stored per billable operation, and Hyperbrowser `creditsUsed` is stored per sourcing run. The catalog still reserves from a fixed price (`HB_CENTS_PER_RUN = 50`) and does not yet auto-adjust when actual cost exceeds that estimate. The current 20% markup is not a guarantee of margin.
 2. **Admin adjustments are not ledgered.** `/admin/credits/add-by-email` updates `users.credits` directly. The adjustment is intentional and authenticated, but it is absent from `credit_ledger`, so a balance cannot be fully reconstructed from the ledger alone.
 3. **Legacy Stripe sessions need reconciliation.** New checkout sessions carry `metadata.purchase_id`; older paid sessions do not and are deliberately rejected by fulfillment. Reconcile or drain those before relying on the new webhook path.
 4. **Crash settlement is conservative.** If the process dies after an AI result is persisted but before operation settlement, lease recovery can refund the operation. This protects the customer but can give away completed work.

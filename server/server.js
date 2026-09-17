@@ -15,11 +15,19 @@ const { canonicalUrl } = require('./posting');
 const { publicFetch } = require('./public-fetch');
 const { SYSTEM, applicationOutput, mappingsOutput, resumeOutput } = require('./ai-output');
 const scriptJSON = value => JSON.stringify(value).replace(/</g, '\\u003c');
+const usage = require('./usage');
 async function providerFetch(url, options) {
   const body = JSON.parse(options.body);
   if (url.includes('anthropic.com')) body.system = SYSTEM;
   else body.messages.unshift({ role: 'system', content: SYSTEM });
-  return fetch(url, { ...options, body: JSON.stringify(body), signal: AbortSignal.timeout(90000) });
+  const response = await fetch(url, { ...options, body: JSON.stringify(body), signal: AbortSignal.timeout(90000) });
+  const json = response.json.bind(response);
+  response.json = async () => {
+    const data = await json();
+    if (data?.usage) usage.record(url.includes('openrouter') ? 'openrouter' : 'anthropic', data.usage);
+    return data;
+  };
+  return response;
 }
 
 process.on('unhandledRejection', (reason, promise) => {

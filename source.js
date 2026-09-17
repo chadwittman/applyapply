@@ -45,9 +45,17 @@ async function createHBSession(hbKey) {
 }
 
 async function closeHBSession(hbKey, id) {
+  let details = null;
+  try {
+    const r = await fetch(`https://app.hyperbrowser.ai/api/session/${id}`, {
+      headers: { 'x-api-key': hbKey }, signal: AbortSignal.timeout(10000),
+    });
+    if (r.ok) details = await r.json();
+  } catch {}
   await fetch(`https://app.hyperbrowser.ai/api/session/${id}`, {
     method: 'DELETE', headers: { 'x-api-key': hbKey }, signal: AbortSignal.timeout(10000),
   }).catch(() => {});
+  return { creditsUsed: Number.isFinite(Number(details?.creditsUsed)) ? Number(details.creditsUsed) : null };
 }
 
 function loadJSON(file) {
@@ -379,6 +387,7 @@ async function runBrowserSources(claudeKey, hbKey) {
   const serverRequire = createRequire(path.join(__dirname, 'server', 'package.json'));
   const { chromium } = serverRequire('playwright-core');
   let browser;
+  let hbUsage = null;
 
   try {
     browser = await chromium.connectOverCDP(sess.wsEndpoint);
@@ -614,7 +623,7 @@ Rules:
     }
   } finally {
     if (browser) await browser.close().catch(() => {});
-    await closeHBSession(hbKey, sess.id);
+    hbUsage = await closeHBSession(hbKey, sess.id);
   }
 
   // Share whatever was actually fetched so the next user this window doesn't
@@ -632,6 +641,7 @@ Rules:
     } catch (e) { log(`   cache write failed for ${r.source}: ${e.message}`); }
   }
 
+  results.providerUsage = { hyperbrowser: hbUsage || { creditsUsed: 0 } };
   return results;
 }
 
@@ -697,6 +707,7 @@ async function main() {
   }
   step('Phase 3 - Saving results');
   const detail={date:today,run_at:new Date().toISOString(),total_excluded:excluded,
+    provider_usage:results.providerUsage || { hyperbrowser: { creditsUsed: 0 } },
     sources:results.map(r=>({name:r.source,searched:r.searched,rawCount:r.rawCount,
       jobs:r.jobs.map(j=>outcomes.get(j.url) || j)}))};
   const added=await saveSourceRun({id:runId,date:today,sources:results.length,found:candidates.size,excluded,

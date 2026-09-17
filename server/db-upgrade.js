@@ -20,6 +20,7 @@ module.exports = async function upgrade(pool) {
         payload JSONB NOT NULL DEFAULT '{}',result JSONB,error TEXT,
         created_at TIMESTAMPTZ DEFAULT NOW(),updated_at TIMESTAMPTZ DEFAULT NOW(),expires_at TIMESTAMPTZ,
         UNIQUE(user_email,request_key));
+      ALTER TABLE operations ADD COLUMN IF NOT EXISTS provider_usage JSONB;
       CREATE UNIQUE INDEX IF NOT EXISTS operations_active_resource ON operations(user_email,action,resource_key) WHERE status IN ('queued','running');
       CREATE INDEX IF NOT EXISTS operations_pending ON operations(status,created_at);
       CREATE TABLE IF NOT EXISTS credit_ledger (id BIGSERIAL PRIMARY KEY,user_email TEXT NOT NULL,operation_id TEXT NOT NULL,kind TEXT NOT NULL,amount INTEGER NOT NULL,created_at TIMESTAMPTZ DEFAULT NOW(),UNIQUE(operation_id,kind));

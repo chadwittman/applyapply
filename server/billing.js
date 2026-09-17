@@ -1,5 +1,6 @@
 const crypto = require('crypto');
 const { canonicalUrl } = require('./posting');
+const usage = require('./usage');
 
 module.exports = function billing(db, costs, authenticate) {
   return action => async (req, res, next) => {
@@ -33,7 +34,7 @@ module.exports = function billing(db, costs, authenticate) {
         if (completing) return res;
         completing = true;
         const refund = res.statusCode >= 400 || !!res.locals.noCharge;
-        db.finishOperation(op.id,auth.email,{ result:body,refund,message:refund ? body?.error || 'No billable work' : null })
+        db.finishOperation(op.id,auth.email,{ result:body,refund,message:refund ? body?.error || 'No billable work' : null,providerUsage:requestUsage.snapshot() })
           .then(finished => {
             if (finished.status === 'refunded' && !refund) { res.statusCode=409; body={error:finished.error || 'Operation expired; credits returned'}; }
             if (!res.destroyed) json(body);
@@ -45,7 +46,8 @@ module.exports = function billing(db, costs, authenticate) {
           .finally(()=>clearInterval(heartbeat));
         return res;
       };
-      next();
+      const requestUsage = usage.begin();
+      requestUsage.run(() => next());
     } catch (error) { next(error); }
   };
 };
