@@ -970,7 +970,10 @@ function bindEvents() {
 
   const genResumeBtn = shadow.getElementById('jaa-gen-resume');
   const resumeOut = shadow.getElementById('jaa-resume-out');
-  if (resumeOut && currentApp?.tailored_resume) renderResume(currentApp.tailored_resume, resumeOut);
+  if (resumeOut && currentApp?.tailored_resume) {
+    renderResume(currentApp.tailored_resume, resumeOut);
+    loadResumeHistory(currentApp.tailored_resume, resumeOut);
+  }
   if (genResumeBtn && resumeOut) {
     genResumeBtn.addEventListener('click', async () => {
       setBtn('jaa-gen-resume', 'Tailoring…', false);
@@ -1641,9 +1644,11 @@ function resumeToText(r) {
   return lines.join('\n');
 }
 
-function renderResume(resume, out) {
+function renderResume(resume, out, versionContext = null) {
   out.innerHTML = '';
   const text = resumeToText(resume);
+  const history = versionContext?.history || (Array.isArray(resume.resume_history) ? resume.resume_history : []);
+  const currentVersion = versionContext?.current || resume;
 
   const hd = document.createElement('div');
   hd.className = 'sec-hd';
@@ -1674,6 +1679,35 @@ function renderResume(resume, out) {
   chev.textContent = '▸';
   const actionsHd = document.createElement('div');
   actionsHd.className = 'sec-actions';
+  if (history.length) {
+    const versions = [currentVersion, ...history];
+    const selectedIndex = versions.findIndex(version => version === resume || (
+      version.version && resume.version && Number(version.version) === Number(resume.version)
+      && version.generated_at === resume.generated_at
+    ));
+    const picker = document.createElement('select');
+    picker.title = 'Choose a tailored resume version';
+    picker.style.cssText = 'font-size:9px;max-width:132px;padding:2px 3px;background:#fff;border:1px solid #d8d8d8;color:#444;font-family:inherit;cursor:pointer';
+    versions.forEach((version, index) => {
+      const option = document.createElement('option');
+      const when = version.generated_at ? new Date(version.generated_at) : null;
+      const stamp = when && !Number.isNaN(when.getTime())
+        ? when.toLocaleDateString([], { month: 'short', day: 'numeric' })
+        : '';
+      option.value = String(index);
+      option.textContent = index === 0
+        ? `Current · Version ${version.version || 'new'}`
+        : `Previous · Version ${version.version || '?'}${stamp ? ` · ${stamp}` : ''}`;
+      picker.appendChild(option);
+    });
+    picker.value = String(selectedIndex >= 0 ? selectedIndex : 0);
+    picker.addEventListener('click', e => e.stopPropagation());
+    picker.addEventListener('change', e => {
+      const selected = versions[Number(e.target.value)] || resume;
+      renderResume(selected, out, { current: currentVersion, history });
+    });
+    actionsHd.appendChild(picker);
+  }
   actionsHd.appendChild(attachBtn);
   actionsHd.appendChild(pdfBtn);
   actionsHd.appendChild(chev);
@@ -1694,6 +1728,17 @@ function renderResume(resume, out) {
     head.style.cssText = `color:${tone};font-weight:700;letter-spacing:.04em;margin-bottom:4px`;
     head.textContent = String(cov.confidence || '').toUpperCase() + ' match on your real experience';
     box.appendChild(head);
+
+    if (resume.jev_match?.score) {
+      const labels = ['', 'Weak', 'Limited', 'Solid', 'Strong', 'Exceptional'];
+      const jev = document.createElement('div');
+      jev.style.cssText = 'color:#333;margin-bottom:5px';
+      const confidence = Number.isFinite(Number(resume.jev_match.confidence))
+        ? ` · ${Math.round(Number(resume.jev_match.confidence) * 100)}% confidence`
+        : '';
+      jev.textContent = `Jev match for this resume: ${labels[resume.jev_match.score] || 'Reviewed'} (${resume.jev_match.score}/5${confidence})`;
+      box.appendChild(jev);
+    }
 
     // Which version this is, and how much of the user's own evidence went into
     // it — otherwise a regenerated resume looks identical to the old one.
@@ -1852,6 +1897,19 @@ function renderResume(resume, out) {
   sec.appendChild(hd);
   sec.appendChild(body);
   out.appendChild(sec);
+}
+
+async function loadResumeHistory(resume, out) {
+  if (!resume || resume.resume_history || !currentApp?.id) return;
+  try {
+    const res = await serverFetch(`/application/${encodeURIComponent(currentApp.id)}/versions`);
+    if (!res.ok) return;
+    const history = (Array.isArray(res.data) ? res.data : [])
+      .map(version => version?.data?.tailored_resume)
+      .filter(Boolean)
+      .sort((a, b) => Number(b.version || 0) - Number(a.version || 0));
+    if (history.length && out.isConnected) renderResume({ ...resume, resume_history: history }, out);
+  } catch { /* history is a convenience; keep the current resume usable offline */ }
 }
 
 // Web Speech dictation for any button/target pair. Transcript goes through

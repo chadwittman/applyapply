@@ -15,6 +15,7 @@ const db = require('./db');
 const { canonicalUrl } = require('./posting');
 const { publicFetch } = require('./public-fetch');
 const { SYSTEM, applicationOutput, mappingsOutput, resumeOutput } = require('./ai-output');
+const { evaluateResumeMatch } = require('./typesafe');
 const scriptJSON = value => JSON.stringify(value).replace(/</g, '\\u003c');
 const usage = require('./usage');
 async function providerFetch(url, options) {
@@ -2723,9 +2724,20 @@ app.post('/resume-tailor', requireCredits('resume'), async (req, res) => {
 
   try {
     const out = await buildTailoredResume(profile, resumeKit, userEmail, resumeKit.tailored_resume);
+    let match = null;
+    if (process.env.TYPESAFE_API_KEY) {
+      try { match = await evaluateResumeMatch(process.env.TYPESAFE_API_KEY, resumeKit, out); }
+      catch (e) { console.warn('[typesafe resume match]', e.message); }
+    }
+    if (match) out.jev_match = match;
     resumeKit.tailored_resume = out;
     await db.saveKit(resumeKit);
-    res.json(out);
+    const versions = await db.getKitVersions(id, userEmail);
+    const history = versions
+      .map(version => version.data?.tailored_resume)
+      .filter(Boolean)
+      .sort((a, b) => Number(b.version || 0) - Number(a.version || 0));
+    res.json({ ...out, resume_history: history });
   } catch (e) {
     console.error('Resume tailor error:', e.message);
     res.status(500).json({ error: e.message });

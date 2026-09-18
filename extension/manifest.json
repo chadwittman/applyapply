@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "applyapply",
-  "version": "1.12.0",
+  "version": "1.13.0",
   "description": "Auto-fill job applications with AI-generated apply kits",
   "icons": {
     "16": "icons/icon-16.png",
