@@ -211,12 +211,12 @@ a{color:#fff}.topbar{padding:22px 32px;border-bottom:1px solid #171717;display:f
 <h2>What we do not do</h2>
 <p>We do not sell personal information, use it for targeted advertising, or allow people to read user application data except when you explicitly provide it for support or when needed for security, legal compliance, or abuse investigation. We do not use job-page data to build unrelated advertising profiles.</p>
 <h2>Retention and deletion</h2>
-<p>Your profile, resume, generated kits, pipeline, and saved answers remain in your account until you delete them or ask us to delete your account. Operational and payment records may be retained longer where required for security, accounting, fraud prevention, or legal obligations. To request access, correction, export, or deletion, email <a href="mailto:privacy@applyapply.xyz">privacy@applyapply.xyz</a> from the account email address.</p>
+<p>Your profile, resume, generated kits, pipeline, and saved answers remain in your account until you delete them or ask us to delete your account. Operational and payment records may be retained longer where required for security, accounting, fraud prevention, or legal obligations. To request access, correction, export, or deletion, email <a href="mailto:wittman.c@gmail.com">wittman.c@gmail.com</a> from the account email address.</p>
 <h2>Security</h2>
 <p>Data is transmitted over HTTPS, sessions are authenticated with expiring tokens, and production access is restricted. No internet service can guarantee absolute security, so please do not upload information you are not comfortable processing through the service providers described above.</p>
 <h2>Changes and contact</h2>
-<p>We may update this policy as the product changes. We will update the date above and, when appropriate, notify account holders. Questions or privacy requests can be sent to <a href="mailto:privacy@applyapply.xyz">privacy@applyapply.xyz</a>.</p>
-<div class="foot"><a href="/">applyapply.xyz</a> · <a href="/extension">Extension</a> · <a href="/login">Sign in</a></div></main></body></html>`);
+<p>We may update this policy as the product changes. We will update the date above and, when appropriate, notify account holders. Questions or privacy requests can be sent to <a href="mailto:wittman.c@gmail.com">wittman.c@gmail.com</a>.</p>
+<div class="foot"><a href="/">applyapply.xyz</a> · <a href="/extension">Extension</a> · <a href="/login">Sign in</a> · <a href="mailto:wittman.c@gmail.com">Support</a></div></main></body></html>`);
 });
 
 app.get('/robots.txt', (req, res) => {
