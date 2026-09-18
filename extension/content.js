@@ -2,18 +2,20 @@ const CLOUD_URL = 'https://applyapply.xyz';
 const LEGACY_CLOUD_URL = 'https://applyapply-production.up.railway.app';
 const LOCAL_URL = 'http://localhost:5000';
 const FILL_SHORTCUT_HINT = 'Fill this field and move to the next: Alt+Enter (Option+Return on Mac)';
-let SERVER = LOCAL_URL;
+let SERVER = CLOUD_URL;
 let API_KEY = '';
+let ALWAYS_REGENERATE = false;
 let sessionEpoch = 0;
 const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const safeLink = value => { try { const u=new URL(value); return /^https?:$/.test(u.protocol) ? esc(u.href) : '#'; } catch { return '#'; } };
 
-const sessionReady = new Promise(resolve => chrome.storage.sync.get(['mode', 'serverUrl', 'apiKey'], (s) => {
+const sessionReady = new Promise(resolve => chrome.storage.sync.get(['mode', 'serverUrl', 'apiKey', 'alwaysRegenerate'], (s) => {
   if (s.serverUrl && s.serverUrl !== LEGACY_CLOUD_URL) SERVER = s.serverUrl; // custom server override
   // Cloud is the normal extension mode. Only use localhost when it was
   // explicitly selected; a fresh install has no `mode` value yet.
   else SERVER = s.mode === 'local' ? LOCAL_URL : CLOUD_URL;
   API_KEY = s.apiKey || '';
+  ALWAYS_REGENERATE = s.alwaysRegenerate === true;
   // If API key set, also fetch full profile from server (bio + any server-set fields)
   if (API_KEY) {
     serverFetch('/profile').then(res => {
@@ -604,11 +606,12 @@ function reloadAfterSignIn() {
 }
 
 chrome.storage.onChanged.addListener(async (changes, area) => {
-  if (area !== 'sync' || !changes.apiKey && !changes.profile && !changes.mode && !changes.serverUrl) return;
+  if (area !== 'sync' || !changes.apiKey && !changes.profile && !changes.mode && !changes.serverUrl && !changes.alwaysRegenerate) return;
   const epoch=++sessionEpoch;
-  const state=await chrome.storage.sync.get(['apiKey','mode','serverUrl']);
+  const state=await chrome.storage.sync.get(['apiKey','mode','serverUrl','alwaysRegenerate']);
   if (epoch!==sessionEpoch) return;
   API_KEY=state.apiKey || '';
+  ALWAYS_REGENERATE=state.alwaysRegenerate === true;
   SERVER=state.serverUrl === LEGACY_CLOUD_URL
     ? CLOUD_URL
     : (state.serverUrl || (state.mode==='local' ? LOCAL_URL : CLOUD_URL));
@@ -1570,7 +1573,7 @@ async function generateApp(btn) {
     const res = await serverFetch('/generate', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(details),
+      body: JSON.stringify({ ...details, force: ALWAYS_REGENERATE }),
     });
     if (!res.ok) {
       // Say what to do, not what the server returned — a raw JSON blob in the

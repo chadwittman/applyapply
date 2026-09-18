@@ -41,9 +41,14 @@ function setAuthState(signedIn, email) {
 
 // ── Boot ──────────────────────────────────────────────────────────────────────
 
-chrome.storage.sync.get(['apiKey', 'profile', 'userEmail'], ({ apiKey, profile, userEmail }) => {
+chrome.storage.sync.get(['apiKey', 'profile', 'userEmail', 'alwaysRegenerate'], ({ apiKey, profile, userEmail, alwaysRegenerate }) => {
   API_KEY = apiKey || '';
   setMode();
+  const regenerate = document.getElementById('always-regenerate');
+  if (regenerate) {
+    regenerate.checked = alwaysRegenerate === true;
+    regenerate.addEventListener('change', () => chrome.storage.sync.set({ alwaysRegenerate: regenerate.checked }));
+  }
 
   if (API_KEY) {
     if (isJwt(API_KEY)) {
