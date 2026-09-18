@@ -17,9 +17,7 @@
     "offscreen"
   ],
   "host_permissions": [
-    "https://applyapply-production.up.railway.app/*",
     "https://applyapply.xyz/*",
-    "http://localhost:5000/*",
     "https://jobs.ashbyhq.com/*",
     "https://job-boards.greenhouse.io/*",
     "https://jobs.greenhouse.io/*",
@@ -81,8 +79,6 @@
   },
   "externally_connectable": {
     "matches": [
-      "http://localhost:5000/*",
-      "https://applyapply-production.up.railway.app/*",
       "https://applyapply.xyz/*"
     ]
   },

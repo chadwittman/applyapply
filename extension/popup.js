@@ -1,18 +1,13 @@
 const CLOUD_URL = 'https://applyapply.xyz';
-const LOCAL_URL = 'http://localhost:5000';
 let SERVER = CLOUD_URL;
 let API_KEY = '';
-let MODE = 'cloud';
 
 chrome.storage.onChanged.addListener((changes, area) => {
   if (area === 'sync' && (changes.apiKey || changes.serverUrl)) window.location.reload();
 });
 
-function setMode(mode) {
-  MODE = mode;
-  SERVER = mode === 'local' ? LOCAL_URL : CLOUD_URL;
-  document.getElementById('mode-cloud').className = 'mode-btn' + (mode === 'cloud' ? ' active' : '');
-  document.getElementById('mode-local').className = 'mode-btn' + (mode === 'local' ? ' active' : '');
+function setMode() {
+  SERVER = CLOUD_URL;
   document.getElementById('btn-audit').href = `${SERVER}/sourcing`;
   checkHealth();
 }
@@ -46,9 +41,9 @@ function setAuthState(signedIn, email) {
 
 // ── Boot ──────────────────────────────────────────────────────────────────────
 
-chrome.storage.sync.get(['mode', 'apiKey', 'profile', 'userEmail'], ({ mode, apiKey, profile, userEmail }) => {
+chrome.storage.sync.get(['apiKey', 'profile', 'userEmail'], ({ apiKey, profile, userEmail }) => {
   API_KEY = apiKey || '';
-  setMode(mode || 'cloud');
+  setMode();
 
   if (API_KEY) {
     if (isJwt(API_KEY)) {
@@ -228,7 +223,7 @@ document.getElementById('saveSettings').addEventListener('click', async () => {
     const el = document.querySelector(`[data-field="${field}"]`);
     if (el) profile[field] = el.value.trim();
   }
-  chrome.storage.sync.set({ mode: MODE, profile }, () => {});
+  chrome.storage.sync.set({ profile }, () => {});
   const s = document.getElementById('save-status');
   if (API_KEY) {
     try {
