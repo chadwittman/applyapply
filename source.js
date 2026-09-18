@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 // Daily job sourcing agent — browser-first with visual validation
+require('./server/env');
 // Run: node source.js
 
 const fs = require('fs');
