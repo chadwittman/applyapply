@@ -985,6 +985,7 @@ function bindEvents() {
           body: JSON.stringify({ appId: currentApp.id }),
         });
         if (!res.ok) throw new Error(res.data?.error || 'failed');
+        currentApp.tailored_resume = res.data;
         renderResume(res.data, resumeOut);
         setBtn('jaa-gen-resume', 'Regenerate');
       } catch (e) {
@@ -1908,7 +1909,11 @@ async function loadResumeHistory(resume, out) {
       .map(version => version?.data?.tailored_resume)
       .filter(Boolean)
       .sort((a, b) => Number(b.version || 0) - Number(a.version || 0));
-    if (history.length && out.isConnected) renderResume({ ...resume, resume_history: history }, out);
+    const stillCurrent = currentApp?.tailored_resume === resume
+      || currentApp?.tailored_resume?.generated_at === resume.generated_at;
+    if (history.length && out.isConnected && stillCurrent) {
+      renderResume({ ...resume, resume_history: history }, out);
+    }
   } catch { /* history is a convenience; keep the current resume usable offline */ }
 }
 
