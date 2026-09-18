@@ -58,6 +58,11 @@ Google's current listing guidance calls for:
 - Small promo tile: `440x280` PNG/JPEG
 - Optional marquee tile: `1400x560` PNG/JPEG
 
+Prepared assets:
+
+- `store-assets/applyapply-small-promo.png`
+- `store-assets/applyapply-marquee.png`
+
 Recommended screenshot sequence:
 
 1. A supported job page with the applyapply sidebar open and the tailored kit visible.
