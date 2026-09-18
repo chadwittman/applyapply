@@ -190,6 +190,35 @@ code{background:#111;border:1px solid #1e1e1e;padding:2px 7px;font-size:13px;fon
 </body></html>`);
 });
 
+app.get('/privacy', (req, res) => {
+  res.setHeader('Cache-Control', 'public, max-age=3600');
+  res.send(`<!DOCTYPE html><html><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+${metaHead({title:'Privacy policy — applyapply', desc:'How applyapply collects, uses and protects profile, resume and job-application data.', path:'/privacy'})}
+<style>
+*{box-sizing:border-box}body{margin:0;background:#000;color:#f5f5f5;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;line-height:1.65}
+a{color:#fff}.topbar{padding:22px 32px;border-bottom:1px solid #171717;display:flex;justify-content:space-between}.logo{font-weight:800;text-decoration:none}.nav{display:flex;gap:18px;font-size:13px}.nav a{text-decoration:none;color:#aaa}.wrap{max-width:760px;margin:0 auto;padding:64px 24px 110px}h1{font-size:34px;line-height:1.1;margin:0 0 12px}h2{font-size:18px;margin:38px 0 8px}p,li{font-size:14px;color:#c8c8c8}ul{padding-left:22px}.updated{font-size:12px;color:#888;margin-bottom:38px}.limited{border:1px solid #2b2b2b;padding:16px 18px;margin:24px 0;color:#ddd;font-size:14px}.foot{border-top:1px solid #171717;padding-top:24px;margin-top:52px;font-size:13px;color:#888}
+</style></head><body><div class="topbar"><a class="logo" href="/">applyapply</a><div class="nav"><a href="/extension">Extension</a><a href="/buy">Credits</a></div></div>
+<main class="wrap"><h1>Privacy policy</h1><div class="updated">Last updated September 18, 2026</div>
+<p>applyapply helps people find jobs and prepare applications. This policy explains what the applyapply website, server, and browser extension collect and how that information is used.</p>
+<div class="limited"><b>Chrome Web Store Limited Use disclosure:</b> applyapply uses data received from the extension only to provide and improve its single purpose: helping a user review and complete job applications. We do not sell user data, use it for advertising, or transfer it for unrelated purposes.</div>
+<h2>Information we handle</h2>
+<ul><li>Account information, including your email address and magic-link sign-in token.</li><li>Profile and resume information that you choose to provide, such as name, contact details, work history, education, work authorization, target roles, and uploaded resume files.</li><li>Job information you ask us to process, including job URLs, descriptions, application questions, screenshots, and answers entered through the extension.</li><li>Generated application materials, saved answers, pipeline status, credit balance, and basic operational logs needed to run the service.</li><li>Payment and purchase records. Stripe processes card details; applyapply does not receive or store full card numbers.</li></ul>
+<h2>How we use information</h2>
+<p>We use this information to authenticate you, find and organize roles, generate tailored resumes and application materials, fill forms at your direction, save your work, charge credits, prevent abuse, troubleshoot failures, and improve reliability. We do not submit an application without an action from you.</p>
+<h2>Service providers</h2>
+<p>We share only the data needed to provide the requested feature with service providers: Railway and Postgres for hosting and storage; Anthropic or OpenRouter for language-model generation; Hyperbrowser for browser-based sourcing; Stripe for payments; and Resend for transactional email. These providers process data on our behalf under their own terms and security practices.</p>
+<h2>What we do not do</h2>
+<p>We do not sell personal information, use it for targeted advertising, or allow people to read user application data except when you explicitly provide it for support or when needed for security, legal compliance, or abuse investigation. We do not use job-page data to build unrelated advertising profiles.</p>
+<h2>Retention and deletion</h2>
+<p>Your profile, resume, generated kits, pipeline, and saved answers remain in your account until you delete them or ask us to delete your account. Operational and payment records may be retained longer where required for security, accounting, fraud prevention, or legal obligations. To request access, correction, export, or deletion, email <a href="mailto:privacy@applyapply.xyz">privacy@applyapply.xyz</a> from the account email address.</p>
+<h2>Security</h2>
+<p>Data is transmitted over HTTPS, sessions are authenticated with expiring tokens, and production access is restricted. No internet service can guarantee absolute security, so please do not upload information you are not comfortable processing through the service providers described above.</p>
+<h2>Changes and contact</h2>
+<p>We may update this policy as the product changes. We will update the date above and, when appropriate, notify account holders. Questions or privacy requests can be sent to <a href="mailto:privacy@applyapply.xyz">privacy@applyapply.xyz</a>.</p>
+<div class="foot"><a href="/">applyapply.xyz</a> · <a href="/extension">Extension</a> · <a href="/login">Sign in</a></div></main></body></html>`);
+});
+
 app.get('/robots.txt', (req, res) => {
   const origin = APP_ORIGIN.replace(/\/$/, '');
   res.type('text/plain').send([
@@ -820,6 +849,7 @@ setTimeout(function() { var b = document.querySelector('.drole'); startDemo('pro
     <a href="/login">Sign in</a>
     <a href="/setup">Setup</a>
     <a href="/pipeline">Pipeline</a>
+    <a href="/privacy">Privacy</a>
   </div>
 </footer>
 
