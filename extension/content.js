@@ -1150,12 +1150,14 @@ function deterministicFill(app) {
     if (note) note.textContent = `${note.textContent} · ${n} dropdown${n > 1 ? 's' : ''}`.replace(/^ · /, '');
   }).catch(() => {});
 
-  // QA pass — match any unfilled textarea to app QA answers by word overlap
+  // QA pass — match any unfilled open-ended field to app QA answers by word
+  // overlap. Ashby uses both textareas and single-line inputs for long prompts.
   if (t.qa?.length) {
-    for (const ta of document.querySelectorAll('textarea')) {
-      if (ta.value?.trim()) continue;
-      const label = getLabelForTextarea(ta);
+    for (const ta of document.querySelectorAll('textarea,input[type="text"],input[type="url"]')) {
+      if (ta.value?.trim() || ta.disabled || ta.readOnly) continue;
+      const label = getFieldLabel(ta);
       if (!label) continue;
+      if (/^(first|last) name|^email$|phone|linkedin|github|website|portfolio|resume|cover letter|location|city|salary|url$/i.test(label.trim())) continue;
       const words = label.toLowerCase().split(/\W+/).filter(w => w.length > 3);
       const best = t.qa
         .map(item => {
@@ -1470,6 +1472,14 @@ function scanPageFields() {
     ta.dataset.jaaSeen = '1';
     const lbl = getLabelForTextarea(ta);
     if (lbl) push(lbl, ta);
+  }
+
+  // Ashby sometimes renders long screening prompts beside a plain text input
+  // without aria-labelledby or a conventional <label for>. Use the same
+  // ancestor resolver as the copy buttons so these questions reach /analyze.
+  for (const input of document.querySelectorAll('input:not([type=hidden]):not([type=file]):not([type=checkbox]):not([type=radio])')) {
+    const lbl = getFieldLabel(input);
+    if (lbl) push(lbl, input);
   }
 
   for (const input of document.querySelectorAll('input[placeholder]:not([type=hidden]):not([type=file])')) {
