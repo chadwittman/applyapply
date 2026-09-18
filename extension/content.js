@@ -1489,23 +1489,36 @@ function scanPageFields() {
   return fields;
 }
 
+function normalizeFieldLabel(text) {
+  return String(text || '').toLowerCase()
+    .replace(/[\s_*:/()\-]+/g, ' ')
+    .replace(/\b(url|link|profile|site|address)\b/g, '')
+    .replace(/\s+/g, ' ').trim();
+}
+
+function fieldLabelsMatch(actual, wanted) {
+  const a = normalizeFieldLabel(actual);
+  const w = normalizeFieldLabel(wanted);
+  return a === w || (a.length > 3 && w.length > 3 && (a.includes(w) || w.includes(a)));
+}
+
 function findByLabel(text) {
   const t = text.toLowerCase();
   for (const label of document.querySelectorAll('label')) {
-    if (label.textContent.replace(/\*/g, '').trim().toLowerCase() === t) {
+    if (fieldLabelsMatch(label.textContent.replace(/\*/g, '').trim(), t)) {
       const forId = label.getAttribute('for');
       return (forId && document.getElementById(forId)) || label.querySelector('input,textarea');
     }
   }
   for (const el of document.querySelectorAll('[aria-labelledby]')) {
     const labelEl = document.getElementById(el.getAttribute('aria-labelledby'));
-    if (labelEl?.textContent?.replace(/\*/g, '').trim().toLowerCase() === t) return el;
+    if (fieldLabelsMatch(labelEl?.textContent?.replace(/\*/g, '').trim(), t)) return el;
   }
   for (const el of document.querySelectorAll('[aria-label]')) {
-    if (el.getAttribute('aria-label')?.replace(/\*/g, '').trim().toLowerCase() === t) return el;
+    if (fieldLabelsMatch(el.getAttribute('aria-label')?.replace(/\*/g, '').trim(), t)) return el;
   }
   for (const ta of document.querySelectorAll('textarea')) {
-    if (getLabelForTextarea(ta)?.toLowerCase() === t) return ta;
+    if (fieldLabelsMatch(getLabelForTextarea(ta), t)) return ta;
   }
   return null;
 }

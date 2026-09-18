@@ -1920,7 +1920,14 @@ async function loadKit(id, userEmail) {
 // question_<id> names, so anything worth skipping there must match on label.
 const GH_SKIP_FIELDS = new Set(['first_name','last_name','preferred_name','email','phone','resume','cover_letter','location','linkedin_profile','website']);
 const GH_SKIP_LABELS = new Set(['linkedin profile','linkedin','website','portfolio','resume/cv','resume','cover letter','github']);
-const ASHBY_SKIP_LABELS = new Set(['First Name','Last Name','Email','Phone','Resume','LinkedIn Profile','Website','Cover Letter','Location','City','Country']);
+const ASHBY_SKIP_LABELS = new Set(['first name','last name','email','phone','resume','linkedin profile','linkedin','website','cover letter','location','city','country','github','portfolio']);
+function isAshbyBasicLabel(label) {
+  const normalized = String(label || '').toLowerCase().replace(/[\s_*:/()\-]+/g, ' ').trim();
+  if (ASHBY_SKIP_LABELS.has(normalized)) return true;
+  return /^(first|last) name$/.test(normalized)
+    || /^(website|portfolio|github|linkedin)(\s+(url|link|profile|site|address))?$/.test(normalized)
+    || /^(resume|cv|cover letter|location|city|country)$/.test(normalized);
+}
 const ATS_UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36';
 
 async function greenhouseQuestions(board, jobId) {
@@ -1956,7 +1963,7 @@ const r = await publicFetch(applicationUrl);
   let m, re = /<label[^>]*>([^<]{8,300})<\/label>/gi;
   while ((m = re.exec(html)) !== null) {
     const label = m[1].replace(/\s+/g, ' ').replace(/<[^>]+>/g, '').trim().replace(/\s*\*\s*$/, '');
-    if (label && !ASHBY_SKIP_LABELS.has(label) && found.length < 12) found.push(label);
+    if (label && !isAshbyBasicLabel(label) && found.length < 12) found.push(label);
   }
   return found;
 }
