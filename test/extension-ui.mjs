@@ -44,7 +44,7 @@ await page.evaluate(({origin,key})=>{
     await Promise.all(window.__listeners.map(fn=>fn({apiKey:{oldValue,newValue:apiKey}},'sync')));
   };
   window.chrome={storage:{sync:{get(_keys,callback){const result={...window.__storage};if(callback){setTimeout(()=>callback(result),0);return;}return Promise.resolve(result);}},onChanged:{addListener(fn){window.__listeners.push(fn);}}},
-    runtime:{onMessage:{addListener(){}},sendMessage(msg,callback){
+    runtime:{onMessage:{addListener(fn){window.__onMessage=fn;}},sendMessage(msg,callback){
       if(msg.type==='GET_IFRAME_QUESTIONS'){callback?.({questions:[]});return;}
       if(msg.type!=='SERVER_FETCH'){callback?.({ok:false});return;}
       window.transport(msg).then(callback).catch(e=>callback?.({ok:false,error:e.message}));
@@ -55,6 +55,14 @@ try {
   await page.waitForSelector('#jaa-root'); await page.waitForTimeout(800);
   assert.deepEqual(errors,[], 'Content script boot errors');
   assert.ok(await page.locator('#jaa-root .sh-company').count(), 'Sidebar rendered');
+  assert.equal(await page.locator('#jaa-tab').count(),0,'No collapsed edge tab');
+  assert.ok(await page.locator('#jaa-sidebar').evaluate(el=>el.classList.contains('open')));
+  await page.screenshot({path:'/tmp/applyapply-sidebar-desktop.png'});
+  await page.setViewportSize({width:375,height:812});
+  const bounds=await page.locator('#jaa-sidebar').boundingBox();
+  assert.ok(bounds.x>=0 && bounds.x+bounds.width<=375,'Sidebar fits narrow viewport');
+  await page.screenshot({path:'/tmp/applyapply-sidebar-mobile.png'});
+  await page.setViewportSize({width:1280,height:720});
   assert.equal(await page.locator('#name').inputValue(),'User typed this');
   assert.equal(await page.locator('#email').inputValue(),'');
   assert.equal(await page.locator('input[type=radio]:checked').count(),0);
@@ -107,4 +115,9 @@ try {
   assert.equal(await page.locator('[data-jaa-copy]').count(),0);
   assert.equal(await page.evaluate(()=>document.body.style.marginRight),'');
   console.log('PASS: distinct questions stay distinct; dismissal removes sidebar and page artifacts');
+  await page.evaluate(()=>window.__onMessage({type:'FORCE_INIT'},{},()=>{}));
+  await page.waitForSelector('#jaa-root');
+  assert.ok(await page.locator('#jaa-sidebar').evaluate(el=>el.classList.contains('open')));
+  assert.equal(await page.locator('a[href$="/setup"]').textContent(),'My account ↗');
+  console.log('PASS: toolbar restores dismissed sidebar without generation');
 } finally { await browser.close();await db.pool.end(); }

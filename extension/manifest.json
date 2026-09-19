@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "applyapply",
-  "version": "1.18.0",
+  "version": "1.19.0",
   "description": "Auto-fill job applications with AI-generated apply kits",
   "icons": {
     "16": "icons/icon-16.png",
@@ -47,29 +47,8 @@
   "background": {
     "service_worker": "background.js"
   },
-  "content_scripts": [
-    {
-      "matches": [
-        "https://jobs.ashbyhq.com/*",
-        "https://job-boards.greenhouse.io/*",
-        "https://jobs.greenhouse.io/*",
-        "https://boards.greenhouse.io/*",
-        "https://jobs.lever.co/*",
-        "https://instacart.careers/*",
-        "https://jobs.a16z.com/*",
-        "https://stripe.com/jobs/*"
-      ],
-      "js": [
-        "vendor/jspdf.umd.min.js",
-        "content.js"
-      ],
-      "run_at": "document_idle",
-      "all_frames": true
-    }
-  ],
   "action": {
-    "default_popup": "popup.html",
-    "default_title": "applyapply",
+    "default_title": "ApplyApply: open application or job pipeline",
     "default_icon": {
       "16": "icons/icon-16.png",
       "32": "icons/icon-32.png",

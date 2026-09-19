@@ -247,6 +247,7 @@ async function updateBadge() {
     const r = await fetch(`${SERVER}/status`, { headers: API_KEY ? { 'x-api-key': API_KEY } : {} });
     if (!r.ok) { chrome.action.setBadgeText({ text: '' }); return; }
     const { new: n } = await r.json();
+    chrome.action.setTitle({ title: n > 0 ? `ApplyApply: ${n} new matches` : 'ApplyApply: open application or job pipeline' });
     if (n > 0) {
       chrome.action.setBadgeText({ text: String(n) });
       chrome.action.setBadgeBackgroundColor({ color: '#0a0a0a' });
@@ -271,8 +272,8 @@ function isEmbeddedJobPage(url) {
     const path = u.pathname.toLowerCase();
     const host = u.hostname;
 
-    // Already handled by content_scripts manifest — skip known ATS domains
-    if (/jobs\.ashbyhq\.com|greenhouse\.io|jobs\.lever\.co|instacart\.careers|jobs\.a16z\.com|stripe\.com/.test(host)) return false;
+    if (/(^|\.)(jobs\.ashbyhq\.com|greenhouse\.io|jobs\.lever\.co|instacart\.careers|jobs\.a16z\.com)$/.test(host)) return true;
+    if (host === 'stripe.com' && path.startsWith('/jobs/')) return true;
 
     // Hosted ATS platforms. jobs.gem.com carries "jobs" in the hostname, not
     // the path, so the careers-path patterns below never matched it and the
@@ -309,13 +310,25 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
     for (const key of injected) if (key.startsWith(tabId + ':')) injected.delete(key);
     iframeQuestionsMap.delete(tabId);
   }
-  if (changeInfo.status !== 'complete') return;
+  // Opening a page never opens the sidebar. Only the toolbar action does.
+});
+
+chrome.action.onClicked.addListener(async tab => {
   // Without host access to a site Chrome omits tab.url entirely. That is the
   // intended state now: the extension asks for named ATS domains only, and
   // automatic detection everywhere else is opt-in. On a site we cannot see,
   // clicking the toolbar icon still injects through activeTab.
   const url = tab.url;
-  if (!url || !isEmbeddedJobPage(url)) return;
+  if (!url || !isEmbeddedJobPage(url)) {
+    await chrome.tabs.create({ url: `${SERVER}/pipeline` });
+    return;
+  }
+  const tabId = tab.id;
+
+  try {
+    const reply = await chrome.tabs.sendMessage(tabId, { type: 'FORCE_INIT' }, { frameId: 0 });
+    if (reply?.ok) return;
+  } catch { /* First activation on this page. */ }
 
   const key = `${tabId}:${url}`;
   if (injected.has(key)) return;
@@ -326,18 +339,20 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
   const doInject = () =>
     chrome.scripting.executeScript({ target: { tabId, allFrames: true }, files: ['vendor/jspdf.umd.min.js', 'content.js'] })
       .then(() => console.log('[applyapply] injected into', url))
-      .catch(err => console.warn('[applyapply] inject failed:', err.message, url));
+      .catch(async err => {
+        injected.delete(key);
+        console.warn('[applyapply] inject failed:', err.message, url);
+        await chrome.tabs.create({ url: `${SERVER}/pipeline` });
+      });
 
-  if (ats) {
+  {
     // Stamp the ATS type on the window BEFORE content.js runs, so detectATS()
     // returns the right value even if the page already stripped the URL params.
     chrome.scripting.executeScript({
       target: { tabId },
-      func: (type) => { window.__JAA_ATS = type; },
+      func: (type) => { window.__JAA_ATS = type; window.__JAA_FORCE = true; },
       args: [ats],
     }).then(doInject).catch(doInject);
-  } else {
-    doInject();
   }
 });
 

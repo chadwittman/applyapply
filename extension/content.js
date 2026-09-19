@@ -38,10 +38,10 @@ const sessionReady = new Promise(resolve => chrome.storage.sync.get(['mode', 'se
 // Credit prices live on the server; duplicating them here would drift.
 let COSTS = null;
 const COST_BUTTONS = {
-  'jaa-generate':   { base: 'Generate application', key: 'generate' },
+  'jaa-generate':   { base: 'Prepare application', key: 'generate' },
   'jaa-fill':       { base: 'Fill form',       key: 'analyze' },
   'jaa-gen-cl':     { base: 'Cover letter',    key: 'cover_letter' },
-  'jaa-gen-resume': { base: 'Tailored resume', key: 'resume' },
+  'jaa-gen-resume': { base: 'Rewrite resume', key: 'resume' },
 };
 
 // Price goes on its own line in small type — crammed onto one line these
@@ -153,7 +153,7 @@ function mergeProfile(profile) {
 
 let currentApp = null;
 let shadow = null;
-let isOpen = false;
+let isOpen = true;
 let suppressReinject = false;
 
 function detectATS() {
@@ -295,7 +295,7 @@ function setBodyPush(open) {
     return;
   }
   document.body.style.transition = 'margin-right .28s cubic-bezier(.4,0,.2,1)';
-  document.body.style.marginRight = open ? `${SIDEBAR_W}px` : '28px';
+  document.body.style.marginRight = open ? `${SIDEBAR_W}px` : originalBodyMargin;
   // The push reflows every field over 280ms, but the copy buttons are
   // position:fixed and only repositioned on scroll or resize — neither of
   // which fires here — so they were left pointing at where the fields used to
@@ -330,7 +330,7 @@ function buildHTML(serverDown) {
 *{box-sizing:border-box;margin:0;padding:0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;}
 
 .sidebar{
-  position:absolute;top:0;right:0;bottom:0;width:360px;
+  position:absolute;top:0;right:0;bottom:0;width:360px;max-width:100vw;
   transform:translateX(332px);
   transition:transform .28s cubic-bezier(.4,0,.2,1);
   background:#fff;border-left:1px solid #ddd;
@@ -363,14 +363,14 @@ function buildHTML(serverDown) {
 .sh-company{font-size:17px;font-weight:700;color:#fff;letter-spacing:-.02em;line-height:1.1;margin-bottom:3px;}
 .sh-role{font-size:11px;color:#777;line-height:1.4;}
 .sh-meta{font-size:10px;color:#555;margin-top:5px;}
-.x-btn{background:none;border:none;color:#444;cursor:pointer;font-size:20px;line-height:1;padding:0;flex-shrink:0;margin-top:-2px;}
+.x-btn{background:none;border:none;color:#ccc;cursor:pointer;font-size:20px;line-height:1;padding:0;flex-shrink:0;margin-top:-2px;}
 .x-btn:hover{color:#aaa;}
 
 .act{padding:11px 14px;border-bottom:1px solid #ebebeb;flex-shrink:0;}
 .act-row{display:flex;gap:6px;flex-wrap:wrap;}
 .sh-actions{display:flex;align-items:flex-start;gap:4px;flex-shrink:0;}
 .hdr-btn{background:none;border:none;color:#bbb;font-size:15px;line-height:1;cursor:pointer;padding:2px 4px;font-family:inherit;transition:color .15s;}
-.hdr-btn:hover{color:#0a0a0a;}
+.hdr-btn:hover{color:#fff;}
 .fill-btn{
   flex:1 1 96px;padding:7px 9px;background:#0a0a0a;color:#fff;border:none;
   font-size:11px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;
@@ -449,26 +449,29 @@ function buildHTML(serverDown) {
 .signin-link{color:#000;font-weight:600;text-decoration:underline;cursor:pointer;}
 </style>
 
-<div class="sidebar" id="jaa-sidebar">
-  <button class="tab" id="jaa-tab"><span class="tab-lbl">APPLYAPPLY</span></button>
+<div class="sidebar open" id="jaa-sidebar">
   <div class="sh">
     <div class="sh-info">
       <div class="sh-eyebrow">applyapply</div>
       <div class="sh-company">${a ? esc(a.company) : (serverDown ? 'Server offline' : (API_KEY ? 'Ready' : 'Not signed in'))}</div>
-      <div class="sh-role">${a ? esc(a.role) : (serverDown ? 'npm start in ~/job-search/server' : (API_KEY ? 'Generate application below' : 'Sign in to start applying'))}</div>
-      ${a ? `<div class="sh-meta">Tier ${a.tier} &nbsp;·&nbsp; ${a.fit_score}/10</div>` : ''}
+      <div class="sh-role">${a ? esc(a.role) : (serverDown ? 'Connection unavailable. Try again shortly.' : (API_KEY ? 'Your application' : 'Sign in to start applying'))}</div>
+      ${a && Number.isFinite(a.fit_score) ? `<div class="sh-meta">Match ${a.fit_score}/10</div>` : ''}
       ${locBadge}
     </div>
     <div class="sh-actions">
       ${a ? '<button class="hdr-btn" id="jaa-regen" title="Regenerate this application using your latest saved answers">↺</button>' : ''}
-      <button class="x-btn" id="jaa-close">×</button>
+      <button class="x-btn" id="jaa-close" title="Close ApplyApply" aria-label="Close ApplyApply">×</button>
     </div>
   </div>
+  <nav style="display:flex;justify-content:space-between;border-bottom:1px solid #ebebeb">
+    <a class="job-link" id="jaa-matches" href="${SERVER}/pipeline" target="_blank" rel="noopener">Job pipeline</a>
+    <a class="job-link" href="${SERVER}/setup" target="_blank" rel="noopener">My account ↗</a>
+  </nav>
   ${a ? `<div class="act">
     <div class="act-row">
       <button class="fill-btn" id="jaa-fill">Fill form</button>
       <button class="cl-btn" id="jaa-gen-cl">Cover letter</button>
-      <button class="cl-btn" id="jaa-gen-resume">Tailored resume</button>
+      <button class="cl-btn" id="jaa-gen-resume">Rewrite resume</button>
     </div>
     <div class="fill-note" id="jaa-note"></div>
   </div>` : ''}
@@ -583,7 +586,7 @@ function noAppBody() {
   <div class="sec-body">${rows.map(([l, v]) => `<div class="field" data-copy="${esc(v)}"><span class="field-lbl">${l}</span><span class="field-val">${esc(v)}</span><span class="field-copy">copy</span></div>`).join('')}</div>
 </div>
 <div class="gen-wrap">
-  ${locBadgeHTML}<button id="jaa-generate" class="gen-btn">Generate application</button>
+  ${locBadgeHTML}<button id="jaa-generate" class="gen-btn">Prepare application</button>
   <div id="jaa-gen-status" class="gen-status"></div>
 </div>
 ${quickAnswerSection()}
@@ -700,10 +703,12 @@ function quickCopySection(a) {
 
 function bindEvents() {
   const sidebar = shadow.getElementById('jaa-sidebar');
-  const tab = shadow.getElementById('jaa-tab');
   const closeBtn = shadow.getElementById('jaa-close');
 
-  tab.addEventListener('click', () => { isOpen = !isOpen; sidebar.classList.toggle('open', isOpen); setBodyPush(isOpen); });
+  if (API_KEY) serverFetch('/status').then(res => {
+    const link = shadow?.getElementById('jaa-matches');
+    if (link && res.ok && res.data?.new > 0) link.textContent = `${res.data.new} new matches`;
+  }).catch(() => {});
   closeBtn?.addEventListener('click', dismissSidebar);
   document.addEventListener('keydown', e => {
     if (e.key === 'Escape' && document.getElementById('jaa-root')) dismissSidebar();
@@ -2470,7 +2475,12 @@ let voiceQaSR = null;
 // Listen for messages from background
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (msg.type === 'FORCE_INIT') {
+    if (IN_FRAME) return;
     suppressReinject = false;
+    window.__JAA_FORCE = true;
+    isOpen = true;
+    shadow?.getElementById('jaa-sidebar')?.classList.add('open');
+    if (document.getElementById('jaa-root')) setBodyPush(true);
     if (!IN_FRAME && !document.getElementById('jaa-root')) init();
     sendResponse({ ok: true });
     return true;
@@ -2569,7 +2579,7 @@ new MutationObserver(() => {
   checkForSubmission();
   sessionEpoch++;
   currentApp = null;
-  isOpen = false;
+  isOpen = true;
   document.getElementById('jaa-root')?.remove();
   document.body.style.marginRight = '';
   shadow = null;
@@ -2601,22 +2611,3 @@ if (!IN_FRAME) {
     }
   }).observe(document.body, { childList: true });
 }
-
-// ── Auto-generate when opened from pipeline ───────────────────────────────────
-
-(function checkPendingGenerate() {
-  if (IN_FRAME) return;
-  serverFetch('/sourced/pending-generate').then(res => {
-    if (!res.ok || !res.data?.url) return;
-    const pending = res.data.url.split('?')[0].split('#')[0];
-    const current = location.href.split('?')[0].split('#')[0];
-    if (pending !== current) return;
-    if (!document.getElementById('jaa-root')) init();
-    const tryGenerate = () => {
-      const btn = shadow?.getElementById('jaa-generate');
-      if (btn) { generateApp(btn); }
-      else setTimeout(tryGenerate, 400);
-    };
-    setTimeout(tryGenerate, 800);
-  }).catch(() => {});
-})();

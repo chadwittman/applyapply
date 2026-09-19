@@ -184,7 +184,7 @@ code{background:#111;border:1px solid #1e1e1e;padding:2px 7px;font-size:13px;fon
     <li>Open <code>chrome://extensions</code> in a new tab.</li>
     <li>Turn on <b>Developer mode</b> using the switch in the top right.</li>
     <li>Click <b>Load unpacked</b> and pick that folder &mdash; the one with <code>manifest.json</code> directly inside it.</li>
-    <li>Click the applyapply icon in your toolbar and <b>Sign in</b>. The same account and credits you already have.</li>
+    <li>Open a job page, click the applyapply toolbar icon, and <b>Sign in</b>. Your existing account and credits carry over.</li>
   </ol>
 
   <div class="note">Developer mode is only needed because applyapply is not in the Chrome Web Store yet. Once it is listed, installing is one click and Chrome keeps it updated and synced across your machines on its own.</div>
@@ -1033,10 +1033,10 @@ if(EXT_ID&&SESSION){
   st.textContent='Connecting extension…';
   try{
     chrome.runtime.sendMessage(EXT_ID,{type:'SET_SESSION',token:SESSION},res=>{
-      if(chrome.runtime.lastError||!res?.ok){st.textContent='Could not connect — reload the extension popup.';}
+      if(chrome.runtime.lastError||!res?.ok){st.textContent='Could not connect — reload the extension and try again.';}
       else{st.textContent='Extension connected.';st.className='ok';}
     });
-  }catch(e){st.textContent='Open the extension popup to finish connecting.';}
+  }catch(e){st.textContent='Return to the job page and open ApplyApply to finish connecting.';}
 }
 </script>
 </body>
@@ -4513,7 +4513,7 @@ function renderDetail(j) {
   if (j.kit_generated_at) {
     html += '<button class="pr-open-btn" onclick="viewKit(listItems[' + selIdx + '])">View kit</button>';
   }
-  html += '<button class="pr-open-btn" onclick="openAndGenerate(listItems[' + selIdx + '])"><span class="pr-open-key">&crarr;</span> ' + (j.kit_generated_at ? 'Open job page' : 'Open &amp; generate kit') + '</button>';
+  html += '<button class="pr-open-btn" onclick="openAndGenerate(listItems[' + selIdx + '])"><span class="pr-open-key">&crarr;</span> Open job page</button>';
   if (j.status === 'applied' || j.status === 'skipped') {
     html += '<button class="pr-skip-btn" onclick="doAction(&apos;new&apos;)"><span class="pr-open-key">U</span> Back to new</button>';
   } else {
@@ -4534,10 +4534,6 @@ function viewKit(j) {
 }
 
 async function openAndGenerate(j) {
-  await fetch('/sourced/pending-generate', {
-    method:'POST', headers:Object.assign({'Content-Type':'application/json'}, plAuth()),
-    body: JSON.stringify({url: j.url})
-  }).catch(()=>{});
   window.open(j.url, '_blank');
   if (j.status === 'new') doAction('applying');
 }
