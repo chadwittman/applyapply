@@ -154,6 +154,7 @@ function mergeProfile(profile) {
 let currentApp = null;
 let shadow = null;
 let isOpen = false;
+let suppressReinject = false;
 
 function detectATS() {
   if (window.__JAA_ATS) return window.__JAA_ATS;
@@ -300,6 +301,7 @@ function setBodyPush(open) {
 
 function injectWidget(serverDown = false) {
   if (document.getElementById('jaa-root')) return;
+  suppressReinject = false;
   const host = document.createElement('div');
   host.id = 'jaa-root';
   host.style.cssText = 'all:initial;position:fixed;top:0;right:0;bottom:0;z-index:2147483647;width:400px;pointer-events:none;overflow:visible;';
@@ -693,7 +695,10 @@ function bindEvents() {
   const closeBtn = shadow.getElementById('jaa-close');
 
   tab.addEventListener('click', () => { isOpen = !isOpen; sidebar.classList.toggle('open', isOpen); setBodyPush(isOpen); });
-  closeBtn?.addEventListener('click', () => { isOpen = false; sidebar.classList.remove('open'); setBodyPush(false); });
+  closeBtn?.addEventListener('click', dismissSidebar);
+  document.addEventListener('keydown', e => {
+    if (e.key === 'Escape' && document.getElementById('jaa-root')) dismissSidebar();
+  }, { once: false });
 
   const signinBtn = shadow.getElementById('jaa-signin');
   signinBtn?.addEventListener('click', () => {
@@ -1025,6 +1030,14 @@ function bindEvents() {
   }
 
   applyCostLabels();
+}
+
+function dismissSidebar() {
+  isOpen = false;
+  suppressReinject = true;
+  setBodyPush(false);
+  document.getElementById('jaa-root')?.remove();
+  shadow = null;
 }
 
 // ── AI fill ─────────────────────────────────────────────────────────────────
@@ -2440,6 +2453,7 @@ let voiceQaSR = null;
 // Listen for messages from background
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (msg.type === 'FORCE_INIT') {
+    suppressReinject = false;
     if (!IN_FRAME && !document.getElementById('jaa-root')) init();
     sendResponse({ ok: true });
     return true;
@@ -2555,7 +2569,7 @@ if (!IN_FRAME) {
   new MutationObserver(mutations => {
     for (const m of mutations) {
       for (const node of m.removedNodes) {
-        if (node.id === 'jaa-root' && guardReinjects < 5) {
+        if (node.id === 'jaa-root' && !suppressReinject && guardReinjects < 5) {
           guardReinjects++;
           setTimeout(() => {
             if (document.getElementById('jaa-root')) return;

@@ -3311,7 +3311,7 @@ app.get('/sourcing', async (req, res) => {
   const sched = (await db.getSchedule(reqUserEmail(req)).catch(() => null)) || SCHEDULE_DEFAULT;
   const schedText = sched.enabled
     ? `auto ${String(sched.hour).padStart(2,'0')}:${String(sched.minute).padStart(2,'0')} CT · ${sched.frequency === 'weekdays' ? 'weekdays' : 'daily'}`
-    : 'no schedule';
+    : 'turn on automatic sourcing';
 
   if (req.query.fragment === '1') {
     if (!userEmail) return res.status(401).json({ error: 'Sign in required' });
@@ -3485,11 +3485,11 @@ ${alertBanners.join('\n')}
 </div>
 
 <div id="sched-panel" style="display:none;border-bottom:1px solid #181818;padding:16px 24px;background:#060606">
-  <div class="panel-section-label">Nightly sourcing</div>
+  <div class="panel-section-label">Automatic job hunting</div>
   <div style="font-size:11px;color:#c4c4c4;line-height:1.7;margin-bottom:12px;max-width:560px">
     Runs on our servers at the time you pick, so your machine doesn't need to be on.
-    New matches are waiting in your pipeline in the morning, and you get an email when it finishes.
-    Each run costs the same credits as running those sources by hand.
+    New matches are waiting in your pipeline after each run, and you get an email when it finishes.
+    Pick a cadence below to control how often credits are used.
   </div>
   <div style="display:flex;gap:14px;align-items:center;flex-wrap:wrap;margin-bottom:12px">
     <label style="font-size:11px;color:#aaa;display:flex;align-items:center;gap:6px">
@@ -3815,7 +3815,7 @@ function saveSchedule(){
     var lbl=document.getElementById('sched-label');
     if(d&&d.schedule&&d.schedule.enabled){
       lbl.textContent='auto '+String(d.schedule.hour).padStart(2,'0')+':'+String(d.schedule.minute).padStart(2,'0')+' CT · '+(d.schedule.frequency==='weekdays'?'weekdays':'daily');
-    } else if(lbl){ lbl.textContent='no schedule'; }
+    } else if(lbl){ lbl.textContent='turn on automatic sourcing'; }
     document.getElementById('sched-panel').style.display='none';
   }).catch(function(){});
 }
