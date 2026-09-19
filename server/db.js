@@ -155,12 +155,14 @@ async function initSchema() {
       user_email TEXT PRIMARY KEY,
       hour INTEGER NOT NULL DEFAULT 6,
       minute INTEGER NOT NULL DEFAULT 0,
+      frequency TEXT NOT NULL DEFAULT 'daily',
       enabled BOOLEAN NOT NULL DEFAULT false,
       sources JSONB,
       last_run_at TIMESTAMPTZ,
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )
   `);
+  await q(`ALTER TABLE schedules ADD COLUMN IF NOT EXISTS frequency TEXT NOT NULL DEFAULT 'daily'`);
 
   // Shared source results. Board scrapes return the same jobs for everyone, and
   // the Google sources vary only by role titles — so the key is source + role
@@ -597,17 +599,19 @@ async function getSchedule(userEmail) {
 // alreadyPassedToday stamps last_run_at so that saving a schedule for a time
 // that has already gone by does not read as a missed run and fire immediately,
 // charging credits the user never asked to spend today.
-async function setSchedule(userEmail, { hour, minute, enabled, sources }, alreadyPassedToday = false) {
+async function setSchedule(userEmail, { hour, minute, frequency = 'daily', enabled, sources }, alreadyPassedToday = false) {
+  const cadence = frequency === 'weekdays' ? 'weekdays' : 'daily';
   return q1(`
-    INSERT INTO schedules (user_email, hour, minute, enabled, sources, last_run_at, updated_at)
-    VALUES ($1,$2,$3,$4,$5,$6,NOW())
+    INSERT INTO schedules (user_email, hour, minute, frequency, enabled, sources, last_run_at, updated_at)
+    VALUES ($1,$2,$3,$4,$5,$6,$7,NOW())
     ON CONFLICT (user_email) DO UPDATE SET
       hour = EXCLUDED.hour, minute = EXCLUDED.minute,
+      frequency = EXCLUDED.frequency,
       enabled = EXCLUDED.enabled, sources = EXCLUDED.sources,
       last_run_at = COALESCE(EXCLUDED.last_run_at, schedules.last_run_at),
       updated_at = NOW()
     RETURNING *
-  `, [userEmail, hour, minute, enabled, sources ? JSON.stringify(sources) : null,
+  `, [userEmail, hour, minute, cadence, enabled, sources ? JSON.stringify(sources) : null,
       alreadyPassedToday ? new Date() : null]);
 }
 
@@ -625,6 +629,7 @@ async function getDueSchedules(_hour, _minute, now = new Date()) {
       FROM today
     )
     SELECT * FROM due WHERE due_at <= $1 AND due_at > $1::timestamptz - INTERVAL '3 hours'
+      AND (frequency = 'daily' OR EXTRACT(ISODOW FROM due_at AT TIME ZONE $2) BETWEEN 1 AND 5)
       AND (last_run_at IS NULL OR last_run_at < due_at)
   `, [now,process.env.SCHEDULE_TZ || 'America/Chicago']);
 }

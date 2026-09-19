@@ -2975,7 +2975,7 @@ app.post('/clear', async (req, res) => {
 // Cron already pins this timezone; naming it once keeps the schedule, the
 // startup log and the UI label from drifting apart.
 const SCHEDULE_TZ = process.env.SCHEDULE_TZ || 'America/Chicago';
-const SCHEDULE_DEFAULT = { hour: 8, minute: 0, enabled: false };
+const SCHEDULE_DEFAULT = { hour: 8, minute: 0, frequency: 'daily', enabled: false };
 
 let cronTask = null;
 let prefetchTask = null;
@@ -3065,6 +3065,7 @@ app.get('/schedule', async (req, res) => {
   res.json({
     hour: row?.hour ?? SCHEDULE_DEFAULT.hour,
     minute: row?.minute ?? SCHEDULE_DEFAULT.minute,
+    frequency: row?.frequency === 'weekdays' ? 'weekdays' : 'daily',
     enabled: row?.enabled ?? false,
     sources: row?.sources || null,
     last_run_at: row?.last_run_at || null,
@@ -3076,7 +3077,7 @@ app.get('/schedule', async (req, res) => {
 app.post('/schedule', async (req, res) => {
   const userEmail = reqUserEmail(req);
   if (!userEmail) return res.status(401).json({ error: 'Sign in required' });
-  const { hour, minute, enabled, sources } = req.body || {};
+  const { hour, minute, frequency, enabled, sources } = req.body || {};
   const h = Math.min(23, Math.max(0, Number(hour ?? SCHEDULE_DEFAULT.hour)));
   const m = Math.min(59, Math.max(0, Number(minute ?? SCHEDULE_DEFAULT.minute)));
   const names = Array.isArray(sources) && sources.length
@@ -3089,12 +3090,13 @@ app.post('/schedule', async (req, res) => {
   }).format(new Date()).split(':').map(Number);
   const passedToday = (h * 60 + m) <= (nowH * 60 + nowM);
   const row = await db.setSchedule(userEmail,
-    { hour: h, minute: m, enabled: !!enabled, sources: names }, passedToday);
+    { hour: h, minute: m, frequency, enabled: !!enabled, sources: names }, passedToday);
   const selected = names?.length ? SOURCE_CATALOG.filter(s => names.includes(s.name)) : SOURCE_CATALOG.filter(s => s.on);
   res.json({
     ok: true,
-    schedule: { hour: row.hour, minute: row.minute, enabled: row.enabled, sources: row.sources },
+    schedule: { hour: row.hour, minute: row.minute, frequency: row.frequency, enabled: row.enabled, sources: row.sources },
     nightly_cost: selected.reduce((n, s) => n + s.credits, 0),
+    weekly_cost: selected.reduce((n, s) => n + s.credits, 0) * (row.frequency === 'weekdays' ? 5 : 7),
     timezone: SCHEDULE_TZ,
   });
 });
@@ -3308,7 +3310,7 @@ app.get('/sourcing', async (req, res) => {
 
   const sched = (await db.getSchedule(reqUserEmail(req)).catch(() => null)) || SCHEDULE_DEFAULT;
   const schedText = sched.enabled
-    ? `auto ${String(sched.hour).padStart(2,'0')}:${String(sched.minute).padStart(2,'0')} CT`
+    ? `auto ${String(sched.hour).padStart(2,'0')}:${String(sched.minute).padStart(2,'0')} CT · ${sched.frequency === 'weekdays' ? 'weekdays' : 'daily'}`
     : 'no schedule';
 
   if (req.query.fragment === '1') {
@@ -3497,11 +3499,17 @@ ${alertBanners.join('\n')}
       at <input type="time" id="sched-time" value="06:00" style="background:#111;border:1px solid #1e1e1e;color:#fff;font-size:11px;padding:4px 6px;font-family:inherit">
       <span id="sched-tz" style="color:#b9b9b9"></span>
     </label>
+    <label style="font-size:11px;color:#aaa;display:flex;align-items:center;gap:6px">
+      frequency <select id="sched-frequency" onchange="schedCost()" style="background:#111;border:1px solid #1e1e1e;color:#fff;font-size:11px;padding:4px 6px;font-family:inherit">
+        <option value="daily">Every day</option>
+        <option value="weekdays">Weekdays only</option>
+      </select>
+    </label>
   </div>
   <div class="panel-section-label">Sources to run</div>
   <div class="src-sel-grid" id="sched-sources"></div>
   <div class="src-footer">
-    <span class="src-total">Each night: <strong id="sched-cost">—</strong> &nbsp;<span id="sched-last" style="color:#b9b9b9;font-size:10px"></span></span>
+    <span class="src-total"><strong id="sched-cost">—</strong> per run · <strong id="sched-weekly">—</strong> per week &nbsp;<span id="sched-last" style="color:#b9b9b9;font-size:10px"></span></span>
     <button class="run-confirm-btn" onclick="saveSchedule()">Save schedule</button>
   </div>
 </div>
@@ -3775,6 +3783,7 @@ function loadSchedule(){
     SCHED=d;
     document.getElementById('sched-enabled').checked=!!d.enabled;
     document.getElementById('sched-time').value=String(d.hour).padStart(2,'0')+':'+String(d.minute).padStart(2,'0');
+    document.getElementById('sched-frequency').value=d.frequency==='weekdays'?'weekdays':'daily';
     document.getElementById('sched-tz').textContent=(d.timezone||'').split('/').pop().replace('_',' ');
     if(d.last_run_at)document.getElementById('sched-last').textContent='last run '+new Date(d.last_run_at).toLocaleString();
     var on=d.sources&&d.sources.length?d.sources:(d.catalog||[]).map(function(c){return c.name;});
@@ -3793,17 +3802,19 @@ function schedCost(){
   var picked=[].slice.call(document.querySelectorAll('[data-sched-src]:checked')).map(function(i){return i.getAttribute('data-sched-src');});
   var total=(SCHED.catalog||[]).filter(function(c){return picked.indexOf(c.name)>=0;}).reduce(function(n,c){return n+c.credits;},0);
   document.getElementById('sched-cost').textContent=total+' credits';
+  var days=document.getElementById('sched-frequency').value==='weekdays'?5:7;
+  document.getElementById('sched-weekly').textContent=(total*days)+' credits';
 }
 
 function saveSchedule(){
   var t=(document.getElementById('sched-time').value||'06:00').split(':');
   var picked=[].slice.call(document.querySelectorAll('[data-sched-src]:checked')).map(function(i){return i.getAttribute('data-sched-src');});
   fetch('/schedule',{method:'POST',headers:Object.assign({'content-type':'application/json'},authHeaders()),
-    body:JSON.stringify({hour:Number(t[0]),minute:Number(t[1]),enabled:document.getElementById('sched-enabled').checked,sources:picked})})
+    body:JSON.stringify({hour:Number(t[0]),minute:Number(t[1]),frequency:document.getElementById('sched-frequency').value,enabled:document.getElementById('sched-enabled').checked,sources:picked})})
   .then(function(r){return r.json();}).then(function(d){
     var lbl=document.getElementById('sched-label');
     if(d&&d.schedule&&d.schedule.enabled){
-      lbl.textContent='auto '+String(d.schedule.hour).padStart(2,'0')+':'+String(d.schedule.minute).padStart(2,'0')+' · '+d.nightly_cost+' cr/night';
+      lbl.textContent='auto '+String(d.schedule.hour).padStart(2,'0')+':'+String(d.schedule.minute).padStart(2,'0')+' CT · '+(d.schedule.frequency==='weekdays'?'weekdays':'daily');
     } else if(lbl){ lbl.textContent='no schedule'; }
     document.getElementById('sched-panel').style.display='none';
   }).catch(function(){});
