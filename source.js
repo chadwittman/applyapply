@@ -741,14 +741,17 @@ async function main() {
   }
   const jobs=[];
   let excluded=0;
+  const jevMaxReviews = Math.max(0, Number(process.env.JAA_JEV_MAX_REVIEWS || 30));
+  let jevReviews = 0;
   step('Phase 2 - Checking postings and locations');
   for (const job of candidates.values()) {
     const response=await publicFetch(job.url);
     if ([404,410].includes(response.status)) { outcomes.get(job.url).outcome='url_dead'; excluded++; continue; }
     if (!response.ok) throw new Error('Job page unavailable: HTTP ' + response.status);
     const text=(await response.text()).replace(/<script[\s\S]*?<\/script>/gi,'').replace(/<style[\s\S]*?<\/style>/gi,'').replace(/<[^>]+>/g,' ').replace(/\s+/g,' ').slice(0,6000);
-    if (process.env.JAA_JEV === '1' && typeSafeKey) {
+    if (process.env.JAA_JEV === '1' && typeSafeKey && jevReviews < jevMaxReviews) {
       try {
+        jevReviews++;
         const jev = await jevReviewJob(typeSafeKey, {
           target_roles: ROLE_TITLES,
           location: SOURCE_LOCATION,
@@ -775,6 +778,7 @@ async function main() {
   }
   step('Phase 3 - Saving results');
   const detail={date:today,run_at:new Date().toISOString(),total_excluded:excluded,
+    jev_reviews: jevReviews, jev_review_limit: jevMaxReviews,
     provider_usage:results.providerUsage || { hyperbrowser: { creditsUsed: 0 } },
     sources:results.map(r=>({name:r.source,searched:r.searched,rawCount:r.rawCount,
       jobs:r.jobs.map(j=>outcomes.get(j.url) || j)}))};
