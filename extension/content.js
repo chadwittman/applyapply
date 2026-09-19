@@ -228,6 +228,7 @@ function finishBar(bar) {
 const IN_FRAME = window.self !== window.top;
 
 async function init() {
+  if (suppressReinject) return;
   // Clicking the toolbar icon is an explicit request for the sidebar on this
   // page — honour it even where detection comes up empty, rather than doing
   // nothing and looking broken.
@@ -284,8 +285,15 @@ function buildLocBadge(locType) {
 // ── Widget ──────────────────────────────────────────────────────────────────
 
 const SIDEBAR_W = 360;
+const originalBodyMargin = document.body.style.marginRight;
+const originalBodyTransition = document.body.style.transition;
 
 function setBodyPush(open) {
+  if (suppressReinject) {
+    document.body.style.marginRight = originalBodyMargin;
+    document.body.style.transition = originalBodyTransition;
+    return;
+  }
   document.body.style.transition = 'margin-right .28s cubic-bezier(.4,0,.2,1)';
   document.body.style.marginRight = open ? `${SIDEBAR_W}px` : '28px';
   // The push reflows every field over 280ms, but the copy buttons are
@@ -300,6 +308,7 @@ function setBodyPush(open) {
 }
 
 function injectWidget(serverDown = false) {
+  if (suppressReinject) return;
   if (document.getElementById('jaa-root')) return;
   suppressReinject = false;
   const host = document.createElement('div');
@@ -1035,7 +1044,11 @@ function bindEvents() {
 function dismissSidebar() {
   isOpen = false;
   suppressReinject = true;
-  setBodyPush(false);
+  document.body.style.marginRight = originalBodyMargin;
+  document.body.style.transition = originalBodyTransition;
+  document.querySelectorAll('[data-jaa-copy]').forEach(button => button.remove());
+  document.querySelectorAll('[data-jaa-copy-done]').forEach(el => delete el.dataset.jaaCopyDone);
+  JAA_COPY_MAP.clear();
   document.getElementById('jaa-root')?.remove();
   shadow = null;
 }
@@ -1481,8 +1494,6 @@ function scanPageFields() {
   }
 
   for (const ta of document.querySelectorAll('textarea')) {
-    if (ta.dataset.jaaSeen) continue;
-    ta.dataset.jaaSeen = '1';
     const lbl = getLabelForTextarea(ta);
     if (lbl) push(lbl, ta);
   }
@@ -1515,14 +1526,16 @@ function scanPageFields() {
 function normalizeFieldLabel(text) {
   return String(text || '').toLowerCase()
     .replace(/[\s_*:/()\-]+/g, ' ')
-    .replace(/\b(url|link|profile|site|address)\b/g, '')
     .replace(/\s+/g, ' ').trim();
 }
 
 function fieldLabelsMatch(actual, wanted) {
   const a = normalizeFieldLabel(actual);
   const w = normalizeFieldLabel(wanted);
-  return a === w || (a.length > 3 && w.length > 3 && (a.includes(w) || w.includes(a)));
+  if (!a || !w) return false;
+  if (a === w) return true;
+  const contact = value => value.match(/^(github|linkedin|website|portfolio)(?: (?:url|link|profile|site|address))?$/)?.[1];
+  return !!contact(a) && contact(a) === contact(w);
 }
 
 function findByLabel(text) {
@@ -1682,6 +1695,8 @@ function resumeToText(r) {
 }
 
 function renderResume(resume, out, versionContext = null) {
+  const previousBody = out.querySelector('.sec-body');
+  const wasOpen = !!previousBody && previousBody.style.display !== 'none';
   out.innerHTML = '';
   const text = resumeToText(resume);
   const history = versionContext?.history || (Array.isArray(resume.resume_history) ? resume.resume_history : []);
@@ -1753,7 +1768,8 @@ function renderResume(resume, out, versionContext = null) {
 
   const body = document.createElement('div');
   body.className = 'sec-body';
-  body.style.display = 'none';
+  body.style.display = wasOpen ? '' : 'none';
+  chev.textContent = wasOpen ? '▾' : '▸';
 
   // Say plainly whether this is worth sending as-is.
   const cov = resume.coverage;
@@ -1773,7 +1789,7 @@ function renderResume(resume, out, versionContext = null) {
       const confidence = Number.isFinite(Number(resume.jev_match.confidence))
         ? ` · ${Math.round(Number(resume.jev_match.confidence) * 100)}% confidence`
         : '';
-      jev.textContent = `Jev match for this resume: ${labels[resume.jev_match.score] || 'Reviewed'} (${resume.jev_match.score}/5${confidence})`;
+      jev.textContent = `Match for this resume: ${labels[Math.round(resume.jev_match.score)] || 'Reviewed'} (${Number(resume.jev_match.score).toFixed(1)}/5${confidence})`;
       box.appendChild(jev);
     }
 
@@ -2376,6 +2392,7 @@ function tryInjectCopyBtn(el) {
 }
 
 function injectCopyButtons() {
+  if (suppressReinject) return;
   document.querySelectorAll(
     'input:not([type=hidden]):not([type=file]):not([type=submit]):not([type=button]):not([type=checkbox]):not([type=radio]),textarea'
   ).forEach(tryInjectCopyBtn);

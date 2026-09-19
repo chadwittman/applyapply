@@ -13,6 +13,7 @@ async function evaluate(apiKey, state, questions) {
   try { data = JSON.parse(body); } catch { data = null; }
   if (!response.ok) throw new Error(`TypeSafe API error ${response.status}: ${body.slice(0, 240)}`);
   if (!data?.answers || typeof data.answers !== 'object') throw new Error('TypeSafe returned no typed answers');
+  require('./usage').record('typesafe', data.usage);
   return data;
 }
 
@@ -21,7 +22,7 @@ async function evaluateResumeMatch(apiKey, appData, resume) {
     job: {
       company: String(appData?.company || '').slice(0, 250),
       role: String(appData?.role || '').slice(0, 250),
-      why_role: String(appData?.tailored?.why_role || '').slice(0, 3500),
+      description: String(appData?.job_description || '').slice(0, 16000),
     },
     tailored_resume: {
       summary: String(resume?.summary || '').slice(0, 2000),
@@ -47,6 +48,9 @@ async function evaluateResumeMatch(apiKey, appData, resume) {
     },
   });
   const answer = data.answers.match;
+  if (answer?.type !== 'score' || typeof answer.score !== 'number' || !Number.isFinite(answer.score) || answer.score < 0 || answer.score > 4) {
+    throw new Error('TypeSafe returned an invalid resume score');
+  }
   return {
     score: answer?.type === 'score' && Number.isFinite(Number(answer.score)) ? Number(answer.score) + 1 : null,
     confidence: Number.isFinite(Number(answer?.confidence)) ? Number(answer.confidence) : null,

@@ -13,7 +13,7 @@ const database = `aa_security_${process.pid}_${Date.now()}`;
 const connection = `postgresql://${encodeURIComponent(process.env.PGUSER || os.userInfo().username)}@127.0.0.1:5432/`;
 const admin = new Pool({ connectionString: connection + 'postgres', ssl: false });
 const originalFetch = global.fetch;
-let db, server, origin, worker, modelResult, modelFailure = false, modelCalls = 0, passed = 0;
+let db, server, origin, worker, modelResult, modelFailure = false, resumeFailure = false, modelCalls = 0, passed = 0;
 const token = email => jwt.sign({ email }, 'audit-secret-local-only');
 async function check(name, fn) { await fn(); console.log(`PASS: ${name}`); passed++; }
 async function call(method, route, email, body, key) {
@@ -47,7 +47,8 @@ async function main() {
     if(new URL(url).hostname==='api.anthropic.com') {
       modelCalls++; assert.match(JSON.parse(options.body).system,/untrusted/);
       await new Promise(r=>setTimeout(r,30));
-      return modelFailure ? new Response('{}',{status:503}) : Response.json({content:[{type:'text',text:JSON.stringify(modelResult)}]});
+      const resume = JSON.stringify(JSON.parse(options.body).messages).includes('ORIGINAL RESUME');
+      return modelFailure || resume && resumeFailure ? new Response('{}',{status:503}) : Response.json({content:[{type:'text',text:JSON.stringify(resume ? {summary:'Test resume',experience:[],skills:[],coverage:{confidence:'thin'}} : modelResult)}]});
     }
     throw new Error('Test blocked external fetch: '+url);
   };
@@ -60,6 +61,21 @@ async function main() {
   modelResult=base;
   for(const email of [alice,bob]) await db.upsertJob({...base,user_email:email,found_at:new Date().toISOString()});
   let kitA,kitB;
+  await check('Empty enabled schedules are rejected without saving; malformed time rejected',async()=>{
+    const result=await call('POST','/schedule',alice,{hour:8,minute:0,enabled:true,sources:[]});
+    assert.equal(result.status,400);
+    assert.equal(await db.getSchedule(alice),null);
+    assert.equal((await call('POST','/schedule',alice,{hour:'NaN',minute:0,enabled:true})).status,400);
+  });
+  await check('Selective matches require role fit and confirmed target pay',async()=>{
+    const {selectiveMatch}=requireServer('./search-preferences');
+    assert.equal(selectiveMatch(9,'Competitive compensation','200000'),false);
+    assert.equal(selectiveMatch(9,'Annual base salary: $100,000 - $150,000 USD','200000'),false);
+    assert.equal(selectiveMatch(9,'Annual base salary: $180k - $220k USD','200000'),true);
+    assert.equal(selectiveMatch(4,'Annual base salary: $180k - $220k USD','200000'),false);
+    assert.equal(selectiveMatch(9,'Annual base salary: $180k - $220k CAD','200000'),false);
+    assert.equal(selectiveMatch(9,'Annual base salary: $180k - $220k USD',''),false);
+  });
   await check('Generation isolates kit ownership, identity and job status',async()=>{
     kitA=await call('POST','/generate',alice,{url,description:'Synthetic posting'});
     assert.equal(kitA.status,200,JSON.stringify(kitA.data));
@@ -91,6 +107,21 @@ async function main() {
     assert.equal(r.status,200); assert.equal(r.data.user_email,alice); assert.equal(r.data.url,url+'-hostile');
     assert.equal(r.data.profile.first_name,''); assert.deepEqual(r.data.tailored.qa,[]); assert.equal(r.data.review_required,true);
     modelResult=base;
+  });
+  await check('Kit includes resume; failed resume regeneration preserves kit and refunds',async()=>{
+    const owner='resume@audit.invalid'; await balance(owner,100);
+    await db.setProfile(owner,{resume_text:'Synthetic resume',first_name:'Test'},true);
+    const first=await call('POST','/generate',owner,{url,description:'Actual job requirements'});
+    assert.equal(first.status,200,JSON.stringify(first.data));
+    assert.equal(first.data.tailored_resume.version,1);
+    assert.equal(first.data.job_description,'Actual job requirements');
+    const before=(await db.getUser(owner)).credits;
+    resumeFailure=true;
+    const failed=await call('POST','/generate',owner,{url,description:'Actual job requirements',force:true});
+    resumeFailure=false;
+    assert.equal(failed.status,500);
+    assert.equal((await db.getUser(owner)).credits,before);
+    assert.equal((await db.getKit(first.data.id,owner)).tailored_resume.version,1);
   });
   await check('Private addresses, mapped IPv6, URL credentials and local ports are blocked',async()=>{
     const {publicFetch,isPublicAddress}=requireServer('./public-fetch');

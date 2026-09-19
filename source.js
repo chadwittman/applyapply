@@ -11,6 +11,7 @@ const { publicFetch } = require('./server/public-fetch');
 const { SYSTEM } = require('./server/ai-output');
 const { evaluate: evaluateTypeSafe } = require('./server/typesafe');
 const crypto = require('crypto');
+const { selectiveMatch } = require('./server/search-preferences');
 
 // Board results are identical for everyone; Google results vary only by role
 // titles. Sharing them means one fetch serves every user who wants that
@@ -70,7 +71,7 @@ async function jevReviewJob(key, profile, job, description) {
   const fit = data.answers.fit;
   const injection = data.answers.prompt_injection;
   return {
-    fit_score: fit?.type === 'score' && Number.isFinite(Number(fit.score)) ? [4, 7, 9][Math.max(0, Math.min(2, Number(fit.score)))] : null,
+    fit_score: fit?.type === 'score' && typeof fit.score === 'number' && Number.isFinite(fit.score) ? Math.round(4 + 2.5 * Math.max(0, Math.min(2, fit.score))) : null,
     fit_confidence: Number.isFinite(Number(fit?.confidence)) ? Number(fit.confidence) : null,
     prompt_injection: injection?.type === 'noul' ? Number(injection.noul) >= 0.75 : false,
     prompt_injection_probability: injection?.type === 'noul' && Number.isFinite(Number(injection.noul)) ? Number(injection.noul) : null,
@@ -738,7 +739,7 @@ async function main() {
   for (const result of results) {
     result.jobs=normalizedJobs(result.jobs);
     for (const job of result.jobs) {
-      const minimumFit = SOURCE_SEARCH_MODE === 'selective' ? 8 : 4;
+      const minimumFit = 4;
       const outcome=seen.has(job.url) ? 'dupe' : job.fit_score<minimumFit ? 'low_fit' : 'candidate';
       if (!outcomes.has(job.url)) outcomes.set(job.url,{...job,source:result.source,outcome});
       if (outcome==='candidate' && !candidates.has(job.url)) candidates.set(job.url,{...job,source:result.source});
@@ -746,7 +747,8 @@ async function main() {
   }
   const jobs=[];
   let excluded=0;
-  const jevMaxReviews = Math.max(0, Number(process.env.JAA_JEV_MAX_REVIEWS || 30));
+  const configuredReviews = Number(process.env.JAA_JEV_MAX_REVIEWS ?? 30);
+  const jevMaxReviews = Number.isInteger(configuredReviews) && configuredReviews >= 0 ? Math.min(configuredReviews, 30) : 30;
   let jevReviews = 0;
   step('Phase 2 - Checking postings and locations');
   for (const job of candidates.values()) {
@@ -773,9 +775,9 @@ async function main() {
         if (jev.fit_score != null && jev.fit_confidence >= 0.6) job.fit_score = jev.fit_score;
       } catch (e) { log('   Jev review unavailable: ' + e.message); }
     }
-    if (SOURCE_SEARCH_MODE === 'selective' && SOURCE_SALARY && !/\$\s?\d|€\s?\d|£\s?\d|\b(?:salary|compensation|base pay|base salary|on[- ]target earnings|ote|pay range)\b/i.test(text)) {
+    if (SOURCE_SEARCH_MODE === 'selective' && !selectiveMatch(job.fit_score, text, SOURCE_SALARY)) {
       outcomes.get(job.url).outcome='selective_filter';
-      outcomes.get(job.url).reason='Selective mode requires compensation details';
+      outcomes.get(job.url).reason='Requires strong role fit and a confirmed annual USD base-pay range reaching your target';
       excluded++;
       continue;
     }

@@ -76,6 +76,16 @@ try {
   await page.waitForTimeout(1500);
   assert.ok((await db.getEvidence(alice,{answeredOnly:true})).some(x=>x.answer.includes('team of four')));
   console.log('PASS: sidebar autosave persists through real HTTP to Postgres');
+  const versionState = await page.evaluate(()=>{
+    const out=document.createElement('div'); document.body.appendChild(out);
+    const previous={version:1,summary:'Old resume',experience:[],skills:[]};
+    renderResume({version:2,summary:'New resume',experience:[],skills:[],resume_history:[previous]},out);
+    out.querySelector('.sec-hd').click();
+    const picker=out.querySelector('select');picker.value='1';picker.dispatchEvent(new Event('change'));
+    const result={open:out.querySelector('.sec-body').style.display!=='none',text:out.querySelector('.prose').textContent};
+    out.remove();return result;
+  });
+  assert.equal(versionState.open,true);assert.match(versionState.text,/Old resume/);
   const before=evidenceWrites;
   await answer.fill('DO_NOT_SAVE_TO_BOB');
   await page.evaluate(key=>window.__changeSession(key),token(bob));
@@ -89,4 +99,12 @@ try {
   assert.equal((await page.evaluate(()=>mergeProfile(null))).email,'');
   assert.deepEqual(errors,[]);
   console.log('PASS: account switch cancels pending autosave and clears cached identity');
+  assert.equal(await page.evaluate(()=>fieldLabelsMatch('Describe a problem you solved using AI','Describe a problem you solved')),false);
+  assert.equal(await page.evaluate(()=>fieldLabelsMatch('GitHub URL','GitHub')),true);
+  await page.evaluate(()=>dismissSidebar());
+  await page.waitForTimeout(900);
+  assert.equal(await page.locator('#jaa-root').count(),0);
+  assert.equal(await page.locator('[data-jaa-copy]').count(),0);
+  assert.equal(await page.evaluate(()=>document.body.style.marginRight),'');
+  console.log('PASS: distinct questions stay distinct; dismissal removes sidebar and page artifacts');
 } finally { await browser.close();await db.pool.end(); }
