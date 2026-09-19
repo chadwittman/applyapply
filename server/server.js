@@ -3143,6 +3143,7 @@ app.get('/source/catalog', (req, res) => {
 app.post('/source/run', apiLimiter, async (req,res) => {
   const userEmail=reqUserEmail(req);
   if (!userEmail) return res.status(401).json({error:'Sign in required'});
+  if (Array.isArray(req.body.sources) && !req.body.sources.length) return res.status(400).json({error:'Select at least one source'});
   const names=Array.isArray(req.body.sources) && req.body.sources.length ? req.body.sources : SOURCE_CATALOG.filter(s=>s.on).map(s=>s.name);
   const selected=SOURCE_CATALOG.filter(s=>names.includes(s.name));
   if (!selected.length) return res.status(400).json({error:'No valid sources selected'});
@@ -3253,14 +3254,8 @@ app.get('/sourcing', async (req, res) => {
   const alertBanners = [];
   const sourcesHtml = !data?.sources?.length
     ? `<div class="onboard">
-        <div class="onboard-title">This page finds jobs for you automatically.</div>
-        <p class="onboard-body">Sourcing searches the job boards below for titles matching your profile
-          (right now: ${savedRoles.length ? savedRoles.map(esc).join(', ') : 'set your target roles in <a href="/setup">profile</a> first'}),
-          scores each result against your background, and drops the good ones here — ranked, deduped, ready to open.
-          Each source costs a few credits per run; you'll see the total before confirming.</p>
-        <button class="btn onboard-cta" onclick="toggleSourcePanel()">Choose roles &amp; sources → run sourcing</button>
-        <p class="onboard-alt">Already have a specific posting? Skip sourcing — use the Chrome extension on the job page,
-          or put this site's domain in front of the job URL in your address bar to generate a kit directly.</p>
+        <div class="onboard-title">No searches yet</div>
+        <p class="onboard-body">Your search results will appear here.</p>
       </div>`
     : data.sources.map(src => {
         const jobs = src.jobs || [];
@@ -3487,19 +3482,44 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;backgrou
 .rf-actions{display:flex;gap:8px;align-items:center}
 .rf-btn{padding:7px 14px;background:#fff;color:#0a0a0a;border:none;font-size:12px;font-weight:700;cursor:pointer;font-family:inherit}
 .rf-btn.secondary{background:transparent;color:#c9c9c9;border:1px solid #2a2a2a}
+.hunt-home{max-width:880px;margin:auto;padding:28px 24px;border-bottom:1px solid #282828}
+.hunt-home h1{font-size:24px;color:#fff;margin-bottom:14px;letter-spacing:0}
+.hunt-actions{display:flex;gap:12px;align-items:center;flex-wrap:wrap}
+.hunt-secondary,.source-only{background:none;border:0;color:#9dc5ff;cursor:pointer;font:inherit;padding:8px}
+.source-only{margin-left:auto;font-size:12px;flex-shrink:0}
+.wizard-progress{font-size:12px;color:#aaa;margin-bottom:20px}
+.wizard-title{font-size:20px;color:#fff;letter-spacing:0;margin-bottom:18px}
+.wizard-actions{display:flex;justify-content:space-between;gap:12px;margin-top:22px;align-items:center}
+.wizard-review{line-height:1.8;font-size:14px;white-space:pre-line;color:#eee}
+.run-confirm-btn,.bulk-btn{font-size:12px;min-height:36px;padding:8px 14px}
+#sched-panel,#source-panel{max-width:880px;margin:auto;padding:24px!important;background:transparent!important}
+[hidden]{display:none!important}
+.src-sel-row{min-height:44px;flex-wrap:wrap}
+.src-sel-name{min-width:0;overflow-wrap:anywhere}
+.only-btn{opacity:1!important;visibility:visible!important}
+.body{max-width:928px;width:100%;margin:auto}
+body[data-hunt="editing"] .body,body[data-hunt="editing"] .hunt-actions,body[data-hunt="editing"] #run-failed{display:none!important}
+button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible{outline:2px solid #9dc5ff;outline-offset:3px}
 </style>
 </head>
 <body>
 <div class="topbar">
   <span class="sdot" id="sdot"></span>
-  <span class="topbar-title">sourcing</span><span style="font-size:10px;color:#8f8f8f;margin-left:4px">v${VERSION}</span>
+  <span class="topbar-title">applyapply</span>
   <span style="margin-left:14px">${navHTML('/sourcing')}</span>
   <span class="topbar-meta" id="topbar-meta">${runMeta}</span>
-  <span class="topbar-sched" id="sched-label" onclick="toggleSchedPanel()" style="cursor:pointer;text-decoration:underline;text-underline-offset:3px" title="Set up nightly sourcing">${schedText}</span>
   <span id="balance-display" style="font-size:10px;color:#8f8f8f"></span>
   <button class="run-btn" id="runs-btn" onclick="toggleRunsPanel()" style="background:none;border:1px solid #2a2a2a;color:#b9b9b9">history</button>
-  <button class="run-btn" id="run-btn" onclick="toggleSourcePanel()">run sourcing</button>
 </div>
+<section class="hunt-home">
+  <h1>Find your next job</h1>
+  <div id="sched-label" style="margin-bottom:16px;color:#bbb" role="status">${schedText}</div>
+  <div class="hunt-actions">
+    <button class="run-btn" onclick="toggleSchedPanel()">Automatic job hunting</button>
+    <button class="hunt-secondary" id="run-btn" onclick="toggleSourcePanel()">Search once</button>
+    <a class="hunt-secondary" href="/pipeline">View matches</a>
+  </div>
+</section>
 ${alertBanners.join('\n')}
 <div id="runs-panel" style="display:none;border-bottom:1px solid #181818;padding:16px 24px;background:#060606">
   <div class="panel-section-label">Previous runs</div>
@@ -3507,15 +3527,21 @@ ${alertBanners.join('\n')}
 </div>
 
 <div id="sched-panel" style="display:none;border-bottom:1px solid #181818;padding:16px 24px;background:#060606">
-  <div class="panel-section-label">Automatic job hunting</div>
-  <div style="font-size:11px;color:#c4c4c4;line-height:1.7;margin-bottom:12px;max-width:560px">
-    Runs on our servers at the time you pick, so your machine doesn't need to be on.
-    New matches are waiting in your pipeline after each run, and you get an email when it finishes.
-    Pick a cadence below to control how often credits are used.
-  </div>
+  <div class="wizard-progress" id="sched-progress"></div>
+  <section data-sched-step="0">
+    <h2 class="wizard-title">Where should we look?</h2>
+    <div class="bulk-row">
+      <button class="bulk-btn" onclick="selectScheduleSources(true)">Select all</button>
+      <button class="bulk-btn" onclick="selectScheduleSources(false)">None</button>
+      <span id="sched-count" aria-live="polite"></span>
+    </div>
+    <div class="src-sel-grid" id="sched-sources"></div>
+  </section>
+  <section data-sched-step="1" hidden>
+  <h2 class="wizard-title">When should we search?</h2>
   <div style="display:flex;gap:14px;align-items:center;flex-wrap:wrap;margin-bottom:12px">
     <label style="font-size:11px;color:#aaa;display:flex;align-items:center;gap:6px">
-      <input type="checkbox" id="sched-enabled" style="accent-color:#3b82f6"> Run nightly
+      <input type="checkbox" id="sched-enabled" onchange="schedCost()" style="accent-color:#3b82f6"> Automatic hunting enabled
     </label>
     <label style="font-size:11px;color:#aaa;display:flex;align-items:center;gap:6px">
       at <input type="time" id="sched-time" value="06:00" style="background:#111;border:1px solid #1e1e1e;color:#fff;font-size:11px;padding:4px 6px;font-family:inherit">
@@ -3528,17 +3554,26 @@ ${alertBanners.join('\n')}
       </select>
     </label>
   </div>
-  <div class="panel-section-label">Sources to run</div>
-  <div class="src-sel-grid" id="sched-sources"></div>
+  </section>
+  <section data-sched-step="2" hidden>
+    <h2 class="wizard-title">Review your search</h2>
+    <div id="sched-review" class="wizard-review"></div>
+    <a href="/setup" class="hunt-secondary">Edit target roles and preferences</a>
+  </section>
   <div class="src-footer">
     <span class="src-total"><strong id="sched-cost">—</strong> per run · <strong id="sched-weekly">—</strong> per week &nbsp;<span id="sched-last" style="color:#b9b9b9;font-size:10px"></span></span>
-    <button class="run-confirm-btn" onclick="saveSchedule()">Save schedule</button>
+  </div>
+  <div class="wizard-actions">
+    <button class="hunt-secondary" id="sched-back" onclick="scheduleStep(schedStep-1)">Back</button>
+    <button class="run-confirm-btn" id="sched-next" onclick="advanceSchedule()">Continue</button>
   </div>
   <div id="sched-status" role="status" style="margin-top:8px;color:#fbbf24"></div>
 </div>
 
 <div id="source-panel">
-  <div class="panel-section-label">Roles</div>
+  <div class="wizard-progress" id="search-progress"></div>
+  <section data-search-step="0">
+  <h2 class="wizard-title">Which roles?</h2>
   <div class="bulk-row">
     <button type="button" class="bulk-btn" onclick="setAllRoles(true)">all</button>
     <button type="button" class="bulk-btn" onclick="setAllRoles(false)">none</button>
@@ -3556,18 +3591,28 @@ ${alertBanners.join('\n')}
   <div class="role-chip-custom">
     <input type="text" id="role-custom" placeholder="custom title…">
   </div>
-  <div class="panel-section-label" style="margin-top:16px">Sources</div>
+  </section>
+  <section data-search-step="1" hidden>
+  <h2 class="wizard-title">Where should we look?</h2>
   <div class="bulk-row">
-    <button type="button" class="bulk-btn" onclick="setAllSources(true)">all</button>
-    <button type="button" class="bulk-btn" onclick="setAllSources(false)">none</button>
+    <button type="button" class="bulk-btn" onclick="setAllSources(true)">Select all</button>
+    <button type="button" class="bulk-btn" onclick="setAllSources(false)">None</button>
     <span class="bulk-hint" id="src-count"></span>
   </div>
-  <div class="src-sel-grid" id="src-sel-grid">
-    <!-- populated by JS -->
-  </div>
+  <div class="src-sel-grid" id="src-sel-grid"></div>
+  </section>
+  <section data-search-step="2" hidden>
+    <h2 class="wizard-title">Review your search</h2>
+    <div id="search-review" class="wizard-review"></div>
+  </section>
   <div class="src-footer">
     <span class="src-total">Total: <strong id="src-total-val">— credits</strong> &nbsp;<span id="src-balance" style="color:#a8a8a8;font-size:10px"></span></span>
-    <button class="run-confirm-btn" id="run-confirm-btn" onclick="confirmRun()">Run sourcing</button>
+    <button class="run-confirm-btn" id="run-confirm-btn" onclick="confirmRun()" hidden>Search now</button>
+  </div>
+  <div id="search-status" role="status"></div>
+  <div class="wizard-actions">
+    <button class="hunt-secondary" onclick="searchStep(searchStepIndex-1)">Back</button>
+    <button class="run-confirm-btn" id="search-next" onclick="advanceSearch()">Continue</button>
   </div>
 </div>
 <div id="no-roles-banner" style="display:none;border:1px solid #3a2a00;background:#0d0800;padding:12px 18px;margin:0 24px 14px">
@@ -3600,6 +3645,7 @@ ${alertBanners.join('\n')}
       <div class="live-found"><span id="live-found-n">0</span> found</div>
     </div>
   </div>
+  <details><summary>Search details</summary>
   <div class="live-phases" id="live-phases">
     <div class="live-phase" id="ph1">1 · scraping</div>
     <div class="live-phase" id="ph2">2 · validating</div>
@@ -3608,17 +3654,18 @@ ${alertBanners.join('\n')}
   </div>
   <div class="live-sources" id="live-sources"></div>
   <div class="live-feed" id="live-feed"></div>
+  </details>
 </div>
 <div class="body">
 <div id="source-results">${sourcesHtml}</div>
-<div class="missed-section">
+<details class="missed-section"><summary>Add a job manually</summary>
   <div class="missed-label">paste a URL you found manually that was missed:</div>
   <div class="missed-row">
     <input id="missed-url" class="missed-input" type="url" placeholder="https://jobs.ashbyhq.com/…" />
     <button class="missed-btn" onclick="submitMissed()">add</button>
   </div>
   <div id="missed-status" style="font-size:11px;color:#a8a8a8;margin-top:6px"></div>
-</div>
+</details>
 </div>
 <script>
 const BASE=location.origin;
@@ -3751,7 +3798,8 @@ async function loadCatalog(){
     row.innerHTML=\`<input type="checkbox" id="\${id}" checked data-credits="\${s.credits}" onchange="updateTotal()">
 <label class="src-sel-name" for="\${id}">\${s.name}</label>
 <span class="src-sel-type">\${s.type}</span>
-<span class="src-sel-cost" id="cost-\${id}">\${s.credits} cr</span>\`;
+<span class="src-sel-cost" id="cost-\${id}">\${s.credits} cr</span>
+<button type="button" class="source-only" onclick="onlySource(this)">Only</button>\`;
     grid.appendChild(row);
   }
   updateTotal();
@@ -3765,9 +3813,60 @@ function updateTotal(){
   if(el)el.textContent=total+' credit'+(total===1?'':'s');
   const btn=document.getElementById('run-confirm-btn');
   if(btn)btn.textContent='Run sourcing ('+total+' credits)';
+  if(btn)btn.disabled=!Array.from(cbs).some(cb=>cb.checked);
+  updateCounts();
 }
 
 var SCHED = null;
+var schedStep=0,searchStepIndex=0,huntRoles='';
+function closeHuntPanels(){
+  delete document.body.dataset.hunt;
+  ['sched-panel','source-panel','runs-panel'].forEach(function(id){document.getElementById(id).style.display='none';});
+}
+function scheduleStep(n){
+  if(n<0){closeHuntPanels();return;}
+  schedStep=n;
+  document.querySelectorAll('[data-sched-step]').forEach(function(el){el.hidden=Number(el.dataset.schedStep)!==n;});
+  document.getElementById('sched-progress').textContent='Step '+(n+1)+' of 3 · Sources / Schedule / Review';
+  document.getElementById('sched-back').textContent=n?'Back':'Cancel';
+  document.getElementById('sched-next').textContent=n===2?'Save schedule':'Continue';
+  schedCost();
+}
+function advanceSchedule(){
+  if(!SCHED)return;
+  if(schedStep===2){saveSchedule();return;}
+  scheduleStep(schedStep+1);
+}
+function selectScheduleSources(on,only){
+  document.querySelectorAll('[data-sched-src]').forEach(function(cb){cb.checked=only?cb===only:on;});
+  schedCost();
+}
+function onlySource(button){
+  var picked=button.parentElement.querySelector('input');
+  document.querySelectorAll('#src-sel-grid input').forEach(function(cb){cb.checked=cb===picked;});
+  updateTotal();
+}
+function selectedRoles(){
+  return Array.from(document.querySelectorAll('#role-grid input:checked')).map(function(cb){return cb.value;})
+    .concat(document.getElementById('role-custom').value.split(',').map(function(s){return s.trim();}).filter(Boolean));
+}
+function searchStep(n){
+  if(n<0){closeHuntPanels();return;}
+  searchStepIndex=n;
+  document.querySelectorAll('[data-search-step]').forEach(function(el){el.hidden=Number(el.dataset.searchStep)!==n;});
+  document.getElementById('search-progress').textContent='Step '+(n+1)+' of 3 · Roles / Sources / Review';
+  document.getElementById('search-next').hidden=n===2;
+  document.getElementById('run-confirm-btn').hidden=n!==2;
+  document.getElementById('search-status').textContent='';
+  var names=Array.from(document.querySelectorAll('#src-sel-grid input:checked')).map(function(cb){return cb.parentElement.querySelector('label').textContent;});
+  document.getElementById('search-review').textContent=selectedRoles().join(', ')+' — '+names.join(', ');
+}
+function advanceSearch(){
+  var error=searchStepIndex===0&&!selectedRoles().length?'Select at least one role.':
+    searchStepIndex===1&&!document.querySelector('#src-sel-grid input:checked')?'Select at least one source.':'';
+  document.getElementById('search-status').textContent=error;
+  if(!error)searchStep(searchStepIndex+1);
+}
 
 // This page sent no credentials at all, so anything user-scoped (balance,
 // schedule) came back 401. Same session the setup page reads.
@@ -3783,8 +3882,9 @@ function sessionToken(){
 function toggleSchedPanel(){
   var el=document.getElementById('sched-panel');
   var open=el.style.display!=='none';
+  closeHuntPanels();
   el.style.display=open?'none':'block';
-  if(!open&&!SCHED)loadSchedule();
+  if(!open){document.body.dataset.hunt='editing';scheduleStep(0);if(!SCHED)loadSchedule();}
 }
 
 // The page is a plain navigation carrying no session, so the server cannot
@@ -3796,64 +3896,90 @@ function checkTargetRoles(){
     var banner=document.getElementById('no-roles-banner');
     if(!banner)return;
     var has=p&&p.target_roles&&String(p.target_roles).trim();
+    huntRoles=has||'';
     banner.style.display=has?'none':'block';
+    if(has){
+      var roles=String(p.target_roles).split(',').map(function(s){return s.trim().toLowerCase();});
+      var presets=[];
+      document.querySelectorAll('#role-grid .role-chip').forEach(function(chip){
+        var cb=chip.querySelector('input');presets.push(cb.value.toLowerCase());
+        cb.checked=roles.includes(cb.value.toLowerCase());chip.classList.toggle('checked',cb.checked);
+      });
+      document.getElementById('role-custom').value=roles.filter(function(r){return !presets.includes(r);}).join(', ');
+      updateCounts();
+    }
   }).catch(function(){});
 }
 
 function loadSchedule(){
   fetch('/schedule',{headers:authHeaders()}).then(function(r){return r.ok?r.json():null;}).then(function(d){
-    if(!d)return;
+    if(!d){document.getElementById('sched-status').textContent='Sign in to load your schedule.';return;}
     SCHED=d;
+    document.getElementById('sched-label').textContent=d.enabled
+      ? 'Automatic hunting: '+(d.frequency==='weekdays'?'weekdays':'daily')+' at '+String(d.hour).padStart(2,'0')+':'+String(d.minute).padStart(2,'0')+' CT'
+      : 'Automatic hunting is off';
     document.getElementById('sched-enabled').checked=!!d.enabled;
     document.getElementById('sched-time').value=String(d.hour).padStart(2,'0')+':'+String(d.minute).padStart(2,'0');
     document.getElementById('sched-frequency').value=d.frequency==='weekdays'?'weekdays':'daily';
     document.getElementById('sched-tz').textContent=(d.timezone||'').split('/').pop().replace('_',' ');
     if(d.last_run_at)document.getElementById('sched-last').textContent='last run '+new Date(d.last_run_at).toLocaleString();
     var on=d.sources&&d.sources.length?d.sources:(d.catalog||[]).map(function(c){return c.name;});
-    document.getElementById('sched-sources').innerHTML=(d.catalog||[]).map(function(c){
+    document.getElementById('sched-sources').innerHTML=(d.catalog||[]).map(function(c,i){
       return '<div class="src-sel-row">'
-        +'<input type="checkbox" data-sched-src="'+c.name.replace(/"/g,'&quot;')+'"'+(on.indexOf(c.name)>=0?' checked':'')+' onchange="schedCost()">'
-        +'<span class="src-sel-name">'+c.name+'</span>'
-        +'<span class="src-sel-cost">'+c.credits+' cr</span></div>';
+        +'<input type="checkbox" id="sched-source-'+i+'" data-sched-src="'+c.name.replace(/"/g,'&quot;')+'"'+(on.indexOf(c.name)>=0?' checked':'')+' onchange="schedCost()">'
+        +'<label class="src-sel-name" for="sched-source-'+i+'">'+c.name+'</label>'
+        +'<span class="src-sel-cost">'+c.credits+' cr</span>'
+        +'<button class="source-only" onclick="selectScheduleSources(false,this.parentElement.querySelector(&apos;input&apos;))">Only</button></div>';
     }).join('');
     schedCost();
-  }).catch(function(){});
+  }).catch(function(){document.getElementById('sched-status').textContent='Could not load schedule. Close and retry.';});
 }
 
 function schedCost(){
+  document.getElementById('sched-next').disabled=!SCHED;
   if(!SCHED)return;
   var picked=[].slice.call(document.querySelectorAll('[data-sched-src]:checked')).map(function(i){return i.getAttribute('data-sched-src');});
   var total=(SCHED.catalog||[]).filter(function(c){return picked.indexOf(c.name)>=0;}).reduce(function(n,c){return n+c.credits;},0);
   document.getElementById('sched-cost').textContent=total+' credits';
   var days=document.getElementById('sched-frequency').value==='weekdays'?5:7;
-  document.getElementById('sched-weekly').textContent=(total*days)+' credits';
+  var enabled=document.getElementById('sched-enabled').checked;
+  document.getElementById('sched-weekly').textContent=(enabled?total*days:0)+' credits';
+  document.getElementById('sched-count').textContent=picked.length+' of '+(SCHED.catalog||[]).length+' selected';
+  document.getElementById('sched-next').disabled=!picked.length&&(schedStep===0||enabled);
+  document.getElementById('sched-review').textContent=enabled
+    ? (huntRoles||'No target roles set')+' — '+picked.join(', ')+' · '+(days===5?'Weekdays':'Every day')+' at '+document.getElementById('sched-time').value+' '+(SCHED.timezone||'America/Chicago')
+    : 'Automatic hunting will be paused. No scheduled credits will be used.';
 }
 
 function saveSchedule(){
   var status=document.getElementById('sched-status');
   status.textContent='Saving...';
+  document.getElementById('sched-next').disabled=true;
   var t=(document.getElementById('sched-time').value||'06:00').split(':');
   var picked=[].slice.call(document.querySelectorAll('[data-sched-src]:checked')).map(function(i){return i.getAttribute('data-sched-src');});
   fetch('/schedule',{method:'POST',headers:Object.assign({'content-type':'application/json'},authHeaders()),
     body:JSON.stringify({hour:Number(t[0]),minute:Number(t[1]),frequency:document.getElementById('sched-frequency').value,enabled:document.getElementById('sched-enabled').checked,sources:picked})})
   .then(function(r){return r.json();}).then(function(d){
     var lbl=document.getElementById('sched-label');
-    if(!d || !d.ok || !d.schedule){status.textContent=d&&d.error||'Could not save schedule';return;}
+    if(!d || !d.ok || !d.schedule){status.textContent=d&&d.error||'Could not save schedule';schedCost();return;}
     SCHED=null;
     status.textContent='Saved';
     if(d.schedule.enabled){
       lbl.textContent='auto '+String(d.schedule.hour).padStart(2,'0')+':'+String(d.schedule.minute).padStart(2,'0')+' CT · '+(d.schedule.frequency==='weekdays'?'weekdays':'daily');
     } else if(lbl){ lbl.textContent='turn on automatic sourcing'; }
     document.getElementById('sched-panel').style.display='none';
-  }).catch(function(){status.textContent='Could not save schedule. Please retry.';});
+    delete document.body.dataset.hunt;
+  }).catch(function(){status.textContent='Could not save schedule. Please retry.';schedCost();});
 }
 
 function toggleChip(e,el){
   if(e.target&&e.target.classList.contains('only-btn'))return;
+  e.preventDefault();
   var cb=el.querySelector('input');cb.checked=!cb.checked;
   el.classList.toggle('checked',cb.checked);updateCounts();
 }
 function onlyRole(e,el){
+  e.preventDefault();
   e.stopPropagation();
   var chip=el.closest('.role-chip');
   document.querySelectorAll('#role-grid .role-chip').forEach(function(c){
@@ -3894,6 +4020,7 @@ function viewRunJobs(id){
 function toggleRunsPanel(){
   var el=document.getElementById('runs-panel');
   var open=el.style.display!=='none';
+  closeHuntPanels();
   el.style.display=open?'none':'block';
   if(!open)loadRuns();
 }
@@ -3921,9 +4048,11 @@ function toggleSourcePanel(){
     var rp=document.getElementById('runs-panel');if(rp)rp.style.display='none';
     var sc=document.getElementById('sched-panel');if(sc)sc.style.display='none';
     loadCatalog();loadBalance();panel.style.display='block';
+    document.body.dataset.hunt='editing';
+    searchStep(0);
     setTimeout(updateCounts,300);
   }
-  else panel.style.display='none';
+  else {panel.style.display='none';delete document.body.dataset.hunt;}
 }
 
 async function confirmRun(){
@@ -3951,6 +4080,7 @@ async function confirmRun(){
     return;
   }
   document.getElementById('source-panel').style.display='none';
+  delete document.body.dataset.hunt;
   const btn=document.getElementById('run-btn');
   btn.disabled=true;btn.textContent='starting…';
   try{
@@ -3972,6 +4102,7 @@ async function confirmRun(){
 }
 
 function startLive(userInitiated){
+  delete document.body.dataset.hunt;
   // Hand the screen over to the run: the config panel staying open on top was
   // why a started run read as nothing happening.
   var sp=document.getElementById('source-panel');if(sp)sp.style.display='none';
@@ -4110,6 +4241,7 @@ fetch(BASE+'/source/status',{cache:'no-store',headers:authHeaders()}).then(r=>r.
 }).catch(()=>{});
 
 checkTargetRoles();
+loadSchedule();
 
 function trackOpen(url){
   fetch(BASE+'/track/open',{method:'POST',headers:Object.assign({'Content-Type':'application/json'},authHeaders()),body:JSON.stringify({url})}).catch(()=>{});
