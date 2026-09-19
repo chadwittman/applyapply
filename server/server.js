@@ -1326,6 +1326,7 @@ app.post('/profile', async (req, res) => {
     if (req.body[f] === undefined) continue;
     if (typeof req.body[f] !== 'string' || req.body[f].length > (['bio','resume_text','evidence'].includes(f) ? 100000 : 4000)) return res.status(400).json({ error: 'Invalid profile field: ' + f });
     if (['work_authorization','sponsorship'].includes(f) && !['','yes','no'].includes(req.body[f])) return res.status(400).json({ error: 'Choose yes, no, or unknown for ' + f });
+    if (f === 'search_mode' && !['active','selective'].includes(req.body[f])) return res.status(400).json({ error: 'Choose active or selective for search mode' });
     data[f] = req.body[f];
   }
   await setProfile(auth.email, data, true);
@@ -1585,6 +1586,14 @@ textarea{min-height:200px;resize:vertical;line-height:1.65}
     </select>
     <div class="hint">Hybrid uses your Location field above.</div>
   </div>
+  <div class="field">
+    <label>Job search mode</label>
+    <select id="search_mode">
+      <option value="active">Actively looking</option>
+      <option value="selective">Selective: only standout opportunities</option>
+    </select>
+    <div class="hint">Actively looking surfaces close matches. Selective only nudges you about stronger role matches, and favors jobs with compensation details.</div>
+  </div>
 </div>
 
 <div class="sec">
@@ -1621,7 +1630,7 @@ Numbers beat adjectives. Name the companies."></textarea>
 </div>
 
 <script>
-const FIELDS=['first_name','last_name','email','phone','location','work_authorization','sponsorship','linkedin','github','twitter','website','current_employer','school','salary','bio','career_type','target_roles','location_pref','resume_text'];
+const FIELDS=['first_name','last_name','email','phone','location','work_authorization','sponsorship','linkedin','github','twitter','website','current_employer','school','salary','bio','career_type','target_roles','location_pref','search_mode','resume_text'];
 
 function getKey(){
   const params=new URLSearchParams(location.search);

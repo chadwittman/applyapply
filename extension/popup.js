@@ -15,6 +15,7 @@ function setMode() {
 const PROFILE_FIELDS = [
   'first_name', 'last_name', 'email', 'phone',
   'linkedin', 'location', 'work_authorization', 'sponsorship', 'salary',
+  'search_mode',
 ];
 
 function apiFetch(path, opts = {}) {

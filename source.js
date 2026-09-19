@@ -323,6 +323,8 @@ if (process.env.JAA_TARGET_ROLES) {
 let SOURCE_USER_EMAIL = process.env.JAA_USER_EMAIL || null;
 let SOURCE_LOCATION = ''; // user's city for hybrid-office check
 let SOURCE_LOCATION_PREF = 'remote'; // 'remote' | 'hybrid' | 'any'
+let SOURCE_SEARCH_MODE = 'active'; // 'active' | 'selective'
+let SOURCE_SALARY = '';
 
 function buildHBSources() {
   const roleParts = ROLE_TITLES.split(', ').map(t => `"${t.toLowerCase()}"`).join(' OR ');
@@ -718,6 +720,8 @@ async function main() {
     }
     SOURCE_LOCATION=profile?.location || '';
     SOURCE_LOCATION_PREF=profile?.location_pref || 'remote';
+    SOURCE_SEARCH_MODE=profile?.search_mode === 'selective' ? 'selective' : 'active';
+    SOURCE_SALARY=String(profile?.salary || '');
   }
   const today=new Date().toISOString().slice(0,10);
   const runId=process.env.JAA_OPERATION_ID || crypto.randomUUID();
@@ -734,7 +738,8 @@ async function main() {
   for (const result of results) {
     result.jobs=normalizedJobs(result.jobs);
     for (const job of result.jobs) {
-      const outcome=seen.has(job.url) ? 'dupe' : job.fit_score<6 ? 'low_fit' : 'candidate';
+      const minimumFit = SOURCE_SEARCH_MODE === 'selective' ? 8 : 4;
+      const outcome=seen.has(job.url) ? 'dupe' : job.fit_score<minimumFit ? 'low_fit' : 'candidate';
       if (!outcomes.has(job.url)) outcomes.set(job.url,{...job,source:result.source,outcome});
       if (outcome==='candidate' && !candidates.has(job.url)) candidates.set(job.url,{...job,source:result.source});
     }
@@ -767,6 +772,12 @@ async function main() {
         }
         if (jev.fit_score != null && jev.fit_confidence >= 0.6) job.fit_score = jev.fit_score;
       } catch (e) { log('   Jev review unavailable: ' + e.message); }
+    }
+    if (SOURCE_SEARCH_MODE === 'selective' && SOURCE_SALARY && !/\$\s?\d|€\s?\d|£\s?\d|\b(?:salary|compensation|base pay|base salary|on[- ]target earnings|ote|pay range)\b/i.test(text)) {
+      outcomes.get(job.url).outcome='selective_filter';
+      outcomes.get(job.url).reason='Selective mode requires compensation details';
+      excluded++;
+      continue;
     }
     const audit=await auditLocation(key,job,text);
     const eligible=audit.verdict==='remote' || SOURCE_LOCATION_PREF!=='remote' && audit.verdict==='hybrid' || SOURCE_LOCATION_PREF==='any' && audit.verdict==='onsite';
