@@ -294,6 +294,18 @@ async function main() {
     assert.equal((await db.getRuns(1,owner))[0].added,0);
     delete process.env.JAA_OPERATION_ID;
   });
+  await check('New accounts get the starter grant once, recorded in the ledger',async()=>{
+    const fresh='starter@audit.invalid',prior=process.env.STARTER_CREDITS;process.env.STARTER_CREDITS='30';
+    try{
+      await Promise.all([db.getOrCreateUser(fresh),db.getOrCreateUser(fresh)]);await db.getOrCreateUser(fresh);
+      assert.equal((await db.getUser(fresh)).credits,30);
+      const {rows}=await db.pool.query("SELECT amount FROM credit_ledger WHERE user_email=$1 AND kind='starter'",[fresh]);
+      assert.deepEqual(rows.map(r=>r.amount),[30]);
+      await db.deleteAccount(fresh);assert.equal(await db.getUser(fresh),null,'Account deletion removes the user');
+      await db.getOrCreateUser(fresh);
+      assert.equal((await db.getUser(fresh)).credits,0,'Re-created account gets no second grant');
+    }finally{process.env.STARTER_CREDITS=prior;}
+  });
   await check('Search window is part of the cache key and honors date-only board stamps',async()=>{
     assert.notEqual(db.cacheKeyFor('Sequoia job board','',true,'remote',24),db.cacheKeyFor('Sequoia job board','',true,'remote',0));
     assert.notEqual(db.cacheKeyFor('Lever jobs (Google)','PM',false,'remote',24),db.cacheKeyFor('Lever jobs (Google)','PM',false,'remote',0));

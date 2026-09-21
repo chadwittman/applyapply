@@ -407,9 +407,32 @@ async function getUser(email) {
   return q1(`SELECT * FROM users WHERE email = $1`, [email]);
 }
 
+// New accounts get enough credits to try a couple of kits (and so store
+// reviewers can test generation). Granted once per address, via the ledger.
+function starterCredits() {
+  const n = Number(process.env.STARTER_CREDITS ?? 30);
+  return Number.isInteger(n) && n > 0 ? n : 0;
+}
+
 async function getOrCreateUser(email) {
-  await q(`INSERT INTO users (email, credits, created_at) VALUES ($1, 0, $2) ON CONFLICT DO NOTHING`,
-    [email, new Date().toISOString()]);
+  const grant = starterCredits();
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const created = await client.query(`INSERT INTO users (email, credits, created_at) VALUES ($1, 0, $2) ON CONFLICT DO NOTHING RETURNING email`,
+      [email, new Date().toISOString()]);
+    // The ledger survives account deletion, so deleting and re-creating an
+    // account does not earn a second grant.
+    if (created.rowCount && grant) {
+      const granted = await client.query(`INSERT INTO credit_ledger (user_email, operation_id, kind, amount) VALUES ($1, $2, 'starter', $3) ON CONFLICT DO NOTHING RETURNING id`,
+        [email, 'starter:' + email, grant]);
+      if (granted.rowCount) await client.query(`UPDATE users SET credits = $1 WHERE email = $2`, [grant, email]);
+    }
+    await client.query('COMMIT');
+  } catch (e) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw e;
+  } finally { client.release(); }
   return q1(`SELECT * FROM users WHERE email = $1`, [email]);
 }
 
@@ -641,9 +664,11 @@ async function deleteAccount(userEmail) {
   try {
     await client.query('BEGIN');
     await client.query('DELETE FROM operation_events WHERE operation_id IN (SELECT id FROM operations WHERE user_email=$1)', [owner]);
-    for (const table of ['user_activity','decisions','evidence','resume_files','magic_links','schedules','runs','jobs','kits','profiles','purchases']) {
+    for (const table of ['user_activity','decisions','evidence','resume_files','schedules','runs','jobs','kits','profiles','purchases']) {
       await client.query(`DELETE FROM ${table} WHERE user_email=$1`, [owner]);
     }
+    // magic_links keys on `email`; listing it above made every deletion fail.
+    await client.query('DELETE FROM magic_links WHERE email=$1', [owner]);
     await client.query('DELETE FROM stripe_events WHERE email=$1', [owner]);
     await client.query('DELETE FROM operations WHERE user_email=$1', [owner]);
     await client.query(`DELETE FROM job_merge_archive WHERE data->>'user_email'=$1`, [owner]);
@@ -722,7 +747,7 @@ module.exports = {
   insertJob, upsertJob, ensureJob, setJobStatus, setKitGenerated, getJobByUrl, getJobs, getJobsForRun, getSeenUrls, getStatusCounts,
   recordDecision, getDecisionSummary, getCoverage,
   getProfile, getProfileByUserEmail, setProfile, getProfiledUsers,
-  saveKit, getKit, findKit, getKitVersions, getKits, deleteKit, deleteKitsForUser, countKits,
+  starterCredits, saveKit, getKit, findKit, getKitVersions, getKits, deleteKit, deleteKitsForUser, countKits,
   saveResumeFile, getResumeFile, getResumeFileMeta,
   getEvidence, addEvidenceQuestions, addAnsweredEvidence, setEvidenceAnswer, deleteEvidence,
   getSetting, setSetting,

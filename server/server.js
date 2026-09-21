@@ -48,7 +48,7 @@ for (const method of ['get','post','put','patch','delete']) {
     (req, res, next) => { try { Promise.resolve(handler(req,res,next)).catch(next); } catch (e) { next(e); } }));
 }
 const PORT = process.env.PORT || 5000;
-const VERSION = '0.28.1';
+const VERSION = '0.28.2';
 const IS_PRODUCTION = process.env.NODE_ENV === 'production';
 const APP_ORIGIN = process.env.APP_ORIGIN || 'http://localhost:5000';
 const ALLOWED_WEB_ORIGINS = new Set(
@@ -981,7 +981,7 @@ if (!await useMagicLink(token)) return res.status(400).send('Invalid or already 
           <li><a href="${origin}/sourcing" style="color:#2563eb">Run sourcing</a> — pick your sources and let the agent find matching roles.</li>
           <li><a href="${origin}/extension" style="color:#2563eb">Install the Chrome extension</a> — open it on any job page and hit Generate. The kit writes itself.</li>
         </ol>
-        <p style="color:#aaa;font-size:12px;margin-top:24px">You have 0 credits to start. <a href="${origin}/buy" style="color:#2563eb">Buy credits</a> to run sourcing and generate apply kits.</p>
+        <p style="color:#333;font-size:13px;margin-top:24px">${db.starterCredits() ? `Your account starts with ${db.starterCredits()} free credits, enough to generate your first apply kits.` : 'You have 0 credits to start.'} <a href="${origin}/buy" style="color:#2563eb">Buy credits</a> when you need more.</p>
       </div>`,
       `Welcome to applyapply. Set up your profile: ${origin}/setup`
     ).catch(() => {});

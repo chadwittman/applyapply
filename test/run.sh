@@ -17,6 +17,8 @@ export STRIPE_SECRET_KEY="sk_test_fake"
 export PORT="${AA_TEST_PORT:-$(node -e 'const s=require("net").createServer();s.listen(0,"127.0.0.1",()=>{console.log(s.address().port);s.close()})')}"
 export APP_ORIGIN="http://localhost:$PORT"
 export NODE_ENV=test
+# Suites assume new accounts start empty; the starter grant has its own check.
+export STARTER_CREDITS="${STARTER_CREDITS:-0}"
 if [[ -z "${AA_CHROME:-}" && -x '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' ]]; then
   export AA_CHROME='/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
 fi
