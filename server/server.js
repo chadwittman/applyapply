@@ -48,7 +48,7 @@ for (const method of ['get','post','put','patch','delete']) {
     (req, res, next) => { try { Promise.resolve(handler(req,res,next)).catch(next); } catch (e) { next(e); } }));
 }
 const PORT = process.env.PORT || 5000;
-const VERSION = '0.29.0';
+const VERSION = '0.29.1';
 const IS_PRODUCTION = process.env.NODE_ENV === 'production';
 const APP_ORIGIN = process.env.APP_ORIGIN || 'http://localhost:5000';
 const ALLOWED_WEB_ORIGINS = new Set(
@@ -203,7 +203,7 @@ function legalPage(res, { title, desc, path: urlPath, body }) {
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 ${metaHead({ title, desc, path: urlPath })}
 ${LEGAL_STYLE}</head><body><div class="topbar"><a class="logo" href="/">applyapply</a><div class="nav"><a href="/extension">Extension</a><a href="/buy">Credits</a></div></div>
-<main class="wrap">${body}<div class="foot"><a href="/">applyapply.xyz</a> · <a href="/privacy">Privacy</a> · <a href="/terms">Terms</a> · <a href="/extension">Extension</a> · <a href="/login">Sign in</a> · <a href="mailto:wittman.c@gmail.com">Support</a></div></main></body></html>`);
+<main class="wrap">${body}<div class="foot"><a href="/">applyapply.xyz</a> · <a href="/privacy">Privacy</a> · <a href="/terms">Terms</a> · <a href="/extension">Extension</a> · <a href="/login">Sign in</a> · <a href="/support">Support</a></div></main></body></html>`);
 }
 
 app.get('/privacy', (req, res) => legalPage(res, {
@@ -229,6 +229,25 @@ app.get('/privacy', (req, res) => legalPage(res, {
 <p>Use of applyapply is also governed by our <a href="/terms">Terms of Service</a>.</p>
 <h2>Changes and contact</h2>
 <p>We may update this policy as the product changes. We will update the date above and, when appropriate, notify account holders. Questions or privacy requests can be sent to <a href="mailto:wittman.c@gmail.com">wittman.c@gmail.com</a>.</p>
+`,
+}));
+
+app.get('/support', (req, res) => legalPage(res, {
+  title: 'Support — applyapply',
+  desc: 'Get help with the applyapply extension, your account and credits.',
+  path: '/support',
+  body: `<h1>Support</h1>
+<p>Email <a href="mailto:wittman.c@gmail.com">wittman.c@gmail.com</a> from your account email address.</p>
+<h2>Installing the extension</h2>
+<p>Follow the steps on the <a href="/extension">extension page</a>. Once it is installed, pin applyapply to the toolbar so it is one click away.</p>
+<h2>Signing in</h2>
+<p>applyapply has no passwords. Enter your email on the <a href="/login">sign-in page</a> or in the extension, then open the link we send you. If it does not arrive within a few minutes, check your spam folder or request a new one.</p>
+<h2>Using it on a job application</h2>
+<p>Open the job's application page and click the applyapply toolbar button. The sidebar shows your tailored kit. Fill form fills the fields it can match from your profile and kit; review every field before you submit. applyapply never submits an application for you.</p>
+<h2>Credits</h2>
+<p>New accounts start with free credits. Buy more on the <a href="/buy">credits page</a>; purchases are one-time and never expire. If a generation fails, its credits are returned automatically. If a charge looks wrong, email us with the date and amount.</p>
+<h2>Your data</h2>
+<p>Download a copy of your data or delete your account in <a href="/setup">Profile &amp; settings</a>. See the <a href="/privacy">Privacy policy</a> and <a href="/terms">Terms</a> for details.</p>
 `,
 }));
 
@@ -893,6 +912,7 @@ setTimeout(function() { var b = document.querySelector('.drole'); startDemo('pro
     <a href="/pipeline">Pipeline</a>
     <a href="/privacy">Privacy</a>
     <a href="/terms">Terms</a>
+    <a href="/support">Support</a>
   </div>
 </footer>
 
