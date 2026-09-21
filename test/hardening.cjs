@@ -317,6 +317,30 @@ async function main() {
     const catalog=await (await originalFetch(origin+'/source/catalog')).json();
     assert.ok(catalog.length && catalog.every(s=>!s.retired),'Retired sources are not offered');
   });
+  await check('Listings ledger serves the window, honors day-only stamps, and re-ingest does not duplicate',async()=>{
+    const source=require('../source');
+    const hoursAgo=h=>new Date(Date.now()-h*3600000).toISOString();
+    const yesterday=new Date(Date.now()-86400000).toISOString().slice(0,10)+'T00:00:00Z';
+    const feed=[{url:'https://ledger.test/new-pm',company:'New',role:'Product Manager',posted_at:hoursAgo(3)},
+      {url:'https://ledger.test/old-pm',company:'Old',role:'Product Manager',posted_at:hoursAgo(72)},
+      {url:'https://ledger.test/new-eng',company:'New',role:'Backend Engineer',posted_at:hoursAgo(2)}];
+    assert.equal(await db.upsertListings('We Work Remotely',feed),3);
+    assert.equal(await db.upsertListings('We Work Remotely',feed),0,'Re-ingest adds nothing');
+    await db.upsertListings('Sequoia job board',[{url:'https://ledger.test/seq-pm',company:'Seq',role:'Product Manager',posted_at:yesterday}]);
+    for (const name of ['We Work Remotely','Sequoia job board']) await db.recordIngest(name,{ok:true,count:1,full:true});
+    const [wwr,seq]=await source.ledgerResults(['We Work Remotely','Sequoia job board']);
+    assert.deepEqual(wwr.allScanned.map(j=>j.url).sort(),['https://ledger.test/new-eng','https://ledger.test/new-pm']);
+    assert.deepEqual(wwr.jobs.map(j=>j.url),['https://ledger.test/new-pm']);
+    assert.equal(wwr.windowPrecision,'exact');assert.equal(wwr.rawCount,3);
+    assert.deepEqual(seq.jobs.map(j=>j.url),['https://ledger.test/seq-pm']);assert.equal(seq.windowPrecision,'day');
+  });
+  await check('Role matching is word-based and rejects other functions',async()=>{
+    const {roleMatcher}=require('../server/roles');
+    const m=roleMatcher('Head of Product, Director of Product, VP of Product, Senior Product Manager, Group Product Manager, Founding PM, Head of Growth');
+    for (const t of ['Director, Product Management','Sr. Product Manager, Payments','Vice President of Product','VP, Product','Senior Growth Product Manager, AI-Native','Senior SWE, AI Automation Engr, Senior PM','Founding Product Manager','Group PM, Platform']) assert.ok(m.test(t),t);
+    for (const t of ['Senior Product Marketing Manager, Instacart+','Senior Manager, Product Design - Product Platform','Head of Growth Marketing','Director, Product Partnerships','Senior Software Engineer']) assert.ok(!m.test(t),t);
+    assert.equal(roleMatcher('').test('Product Manager'),false);
+  });
   await check('Search window is part of the cache key and honors date-only board stamps',async()=>{
     assert.notEqual(db.cacheKeyFor('Sequoia job board','',true,'remote',24),db.cacheKeyFor('Sequoia job board','',true,'remote',0));
     assert.notEqual(db.cacheKeyFor('Lever jobs (Google)','PM',false,'remote',24),db.cacheKeyFor('Lever jobs (Google)','PM',false,'remote',0));

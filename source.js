@@ -5,13 +5,16 @@ require('./server/env');
 
 const fs = require('fs');
 const path = require('path');
-const { saveSourceRun, pool, getSeenUrls, getProfileByUserEmail, cacheKeyFor, roleKeyFor, getCachedSources, putCachedSource } = require('./server/db');
+const { saveSourceRun, pool, getSeenUrls, getProfileByUserEmail, cacheKeyFor, roleKeyFor, getCachedSources, putCachedSource,
+  upsertListings, getListings, countListings, getIngestState, recordIngest, withIngestLock } = require('./server/db');
+const { FEEDS, fetchFeed } = require('./server/feeds');
 const { canonicalUrl } = require('./server/posting');
 const { publicFetch } = require('./server/public-fetch');
 const { SYSTEM } = require('./server/ai-output');
 const { evaluate: evaluateTypeSafe } = require('./server/typesafe');
 const crypto = require('crypto');
 const { selectiveMatch } = require('./server/search-preferences');
+const { roleMatcher } = require('./server/roles');
 
 // Board results are identical for everyone; Google results vary only by role
 // titles. Sharing them means one fetch serves every user who wants that
@@ -312,21 +315,19 @@ const HB_SOURCES = [
   },
 ];
 
-// Resolved at runtime from profile — see buildSourceConfig()
-let ROLE_RE = /head of product|head of growth|vp of product|vp of growth|director of product|director of growth|founding pm|founding product|growth pm|gtm lead|growth lead|product manager|senior product|staff product/i;
-let ROLE_TITLES = 'Head of Product, VP of Product, Director of Product, Head of Growth, VP of Growth, Director of Growth, Founding PM, Founding Head of Product, Founding Product Lead, Growth PM, GTM Lead, Growth Lead';
+// Resolved at runtime from the profile in main(). ROLE_RE is a word-based
+// matcher (server/roles.js) with the same .test(title) shape a RegExp has.
+let ROLE_TITLES = 'Head of Product, VP of Product, Director of Product, Head of Growth, VP of Growth, Director of Growth, Founding PM, Founding Head of Product, Founding Product Lead, Growth PM, GTM Lead, Growth Lead, Senior Product Manager, Staff Product Manager';
 // JAA_TARGET_ROLES overrides profile roles (set by /source/run from the role picker UI)
-if (process.env.JAA_TARGET_ROLES) {
-  ROLE_TITLES = process.env.JAA_TARGET_ROLES;
-  const parts = ROLE_TITLES.split(',').map(t => t.trim().toLowerCase().replace(/[^a-z0-9 ]/g, '').trim()).filter(Boolean);
-  ROLE_RE = new RegExp(parts.join('|'), 'i');
-}
+if (process.env.JAA_TARGET_ROLES) ROLE_TITLES = process.env.JAA_TARGET_ROLES;
+let ROLE_RE = roleMatcher(ROLE_TITLES);
 let SOURCE_USER_EMAIL = process.env.JAA_USER_EMAIL || null;
 let SOURCE_LOCATION = ''; // user's city for hybrid-office check
 let SOURCE_LOCATION_PREF = 'remote'; // 'remote' | 'hybrid' | 'any'
 let SOURCE_SEARCH_MODE = 'active'; // 'active' | 'selective'
 let SOURCE_SALARY = '';
-const LOOKBACK_HOURS = Number(process.env.JAA_LOOKBACK_HOURS || 24) === 24 ? 24 : 0;
+// let, not const: the shared ingest sets it per source (full pull or 24-hour delta).
+let LOOKBACK_HOURS = Number(process.env.JAA_LOOKBACK_HOURS || 24) === 24 ? 24 : 0;
 
 // Sequoia stamps a posting with its date only (midnight UTC), so a strict
 // 24-hour cutoff drops most of yesterday's jobs. Date-only stamps are kept when
@@ -413,9 +414,10 @@ function buildHBSources() {
   ];
 }
 
-async function runBrowserSources(claudeKey, hbKey) {
+async function runBrowserSources(claudeKey, hbKey, only = null) {
   let HB_SOURCES = buildHBSources();
-  if (process.env.JAA_ENABLED_SOURCES) {
+  if (only) HB_SOURCES = HB_SOURCES.filter(s => only.includes(s.name));
+  else if (process.env.JAA_ENABLED_SOURCES) {
     try {
       const enabled = new Set(JSON.parse(process.env.JAA_ENABLED_SOURCES));
       HB_SOURCES = HB_SOURCES.filter(s => enabled.has(s.name));
@@ -522,8 +524,11 @@ async function runBrowserSources(claudeKey, hbKey) {
             const windowStart = LOOKBACK_HOURS ? Date.now() - LOOKBACK_HOURS * 60 * 60 * 1000 : 0;
             const t0 = Date.now();
             let last = 0;
-            for (let i = 0; i < 60; i++) {
-              if (Date.now() - t0 > 150000) break;
+            // A full refresh runs in the shared background ingest, so it can
+            // page further back than a window-bounded pass needs to.
+            const maxClicks = LOOKBACK_HOURS ? 60 : 300, maxMs = LOOKBACK_HOURS ? 150000 : 420000;
+            for (let i = 0; i < maxClicks; i++) {
+              if (Date.now() - t0 > maxMs) break;
               if (windowStart) {
                 const newestOfLast = await page.evaluate(() => {
                   const stamps = [...document.querySelectorAll('time[datetime]')].map(t => Date.parse(t.getAttribute('datetime'))).filter(Number.isFinite).slice(-10);
@@ -764,6 +769,85 @@ Rules:
   return results;
 }
 
+// ── Listings ledger ───────────────────────────────────────────────────────────
+// a16z and Sequoia are browsed; the feeds are plain HTTP. Either way the
+// shared ingest writes new jobs into `listings`, and user runs read from it.
+const BOARD_SOURCES = ['a16z job board', 'Sequoia job board'];
+const LEDGER_SOURCES = [...BOARD_SOURCES, ...Object.keys(FEEDS)];
+const INGEST_STALE_HOURS = Number(process.env.JAA_INGEST_STALE_HOURS || 8);
+const FULL_REFRESH_DAYS = 7;
+const MAX_CANDIDATES = Number(process.env.JAA_MAX_CANDIDATES || 60);
+
+async function ingestSource(name, { force = false } = {}) {
+  return withIngestLock(name, async () => {
+    // Another run may have finished this ingest while we waited for the lock.
+    const state = (await getIngestState([name]))[name];
+    const fresh = state?.last_ok_at && Date.now() - Date.parse(state.last_ok_at) < INGEST_STALE_HOURS * 3600000;
+    if (fresh && !force) return { skipped: true };
+    const full = !state?.last_full_at || Date.now() - Date.parse(state.last_full_at) > FULL_REFRESH_DAYS * 86400000;
+    try {
+      let jobs;
+      if (FEEDS[name]) jobs = await fetchFeed(name, { lookbackHours: full ? 0 : 24 });
+      else {
+        const previous = LOOKBACK_HOURS;
+        LOOKBACK_HOURS = full ? 0 : 24;
+        try {
+          const [result] = await runBrowserSources(loadKey(), loadHBKey(), [name]);
+          if (!result || result.error) throw new Error(result?.error || 'no result');
+          jobs = result.allScanned || [];
+        } finally { LOOKBACK_HOURS = previous; }
+      }
+      const added = await upsertListings(name, jobs);
+      await recordIngest(name, { ok: true, count: jobs.length, full });
+      log(`   ${name}: ${jobs.length} fetched${full ? ' (full refresh)' : ''}, ${added} new to the ledger`);
+      return { fetched: jobs.length, added };
+    } catch (e) {
+      await recordIngest(name, { ok: false, error: e.message.slice(0, 300) });
+      log(`   ${name}: ingest failed: ${e.message.slice(0, 160)}`);
+      throw e;
+    }
+  });
+}
+
+async function ledgerResults(names) {
+  const results = [];
+  for (const name of names) {
+    try { await ingestSource(name); }
+    catch (e) {
+      // A failed refresh still serves what the ledger already has, unless
+      // that is too old to be honest about.
+      const state = (await getIngestState([name]))[name];
+      if (!state?.last_ok_at || Date.now() - Date.parse(state.last_ok_at) > 48 * 3600000) {
+        results.push({ source: name, searched: 'applyapply listings ledger', rawCount: null, jobs: [], error: 'Could not refresh this source: ' + e.message.slice(0, 160) });
+      }
+    }
+  }
+  const live = names.filter(n => !results.some(r => r.source === n));
+  const [rows, totals] = await Promise.all([getListings(live, LOOKBACK_HOURS), countListings(live)]);
+  for (const name of live) {
+    const window = rows.filter(r => r.source === name).map(r => ({
+      company: r.company, role: r.role, url: r.url, location: r.location || (r.remote ? 'Remote' : ''), snippet: r.snippet,
+      posted_at: r.posted_at ? new Date(r.posted_at).toISOString() : null, posted_precision: r.posted_precision, fit_score: 7,
+    }));
+    const precision = !LOOKBACK_HOURS ? 'all'
+      : window.some(j => j.posted_precision === 'day') ? 'day'
+      : window.some(j => !j.posted_at) ? 'partial' : 'exact';
+    const found = window.filter(j => ROLE_RE.test(j.role));
+    item('·', `${name} — ${window.length} in window, ${found.length} role matches`);
+    results.push({ source: name, searched: 'applyapply listings ledger', rawCount: totals[name] ?? 0, windowCount: window.length, windowPrecision: precision, jobs: found, allScanned: window });
+  }
+  return results;
+}
+
+async function ingestAll({ force = false } = {}) {
+  step('Ingesting sources into the listings ledger');
+  let failures = 0;
+  for (const name of LEDGER_SOURCES) {
+    try { await ingestSource(name, { force }); } catch { failures++; }
+  }
+  if (failures === LEDGER_SOURCES.length) throw new Error('Every source failed to ingest');
+}
+
 function normalizedJobs(jobs) {
   return (Array.isArray(jobs) ? jobs : []).flatMap(j => {
     if (!j || typeof j.company!=='string' || typeof j.role!=='string') return [];
@@ -778,13 +862,13 @@ async function main() {
   const key=loadKey();
   const typeSafeKey=loadTypeSafeKey();
   if (!key) throw new Error('AI provider is not configured');
+  if (process.env.JAA_INGEST==='1') return ingestAll({ force: process.env.JAA_INGEST_FORCE==='1' });
   if (!SOURCE_USER_EMAIL && process.env.JAA_PREFETCH_ONLY!=='1') throw new Error('Sourcing owner is required');
   if (SOURCE_USER_EMAIL) {
     const profile=await getProfileByUserEmail(SOURCE_USER_EMAIL);
     if (profile?.target_roles && !process.env.JAA_TARGET_ROLES) {
       ROLE_TITLES=profile.target_roles;
-      const parts=ROLE_TITLES.split(',').map(t=>t.trim().toLowerCase().replace(/[^a-z0-9 ]/g,'')).filter(Boolean);
-      ROLE_RE=parts.length ? new RegExp(parts.join('|'),'i') : /(?!) /;
+      ROLE_RE=roleMatcher(ROLE_TITLES);
     }
     SOURCE_LOCATION=profile?.location || '';
     SOURCE_LOCATION_PREF=profile?.location_pref || 'remote';
@@ -795,7 +879,12 @@ async function main() {
   const runId=process.env.JAA_OPERATION_ID || crypto.randomUUID();
   log('Starting sourcing run ' + runId);
   step('Phase 1 - Searching sources');
-  const results=await runBrowserSources(key,loadHBKey());
+  let selectedSources = LEDGER_SOURCES;
+  try { if (process.env.JAA_ENABLED_SOURCES) selectedSources = JSON.parse(process.env.JAA_ENABLED_SOURCES); } catch {}
+  const ledgerNames = selectedSources.filter(n => LEDGER_SOURCES.includes(n));
+  const browserNames = selectedSources.filter(n => !LEDGER_SOURCES.includes(n));
+  const results=[...(ledgerNames.length ? await ledgerResults(ledgerNames) : []),
+    ...(browserNames.length ? await runBrowserSources(key,loadHBKey(),browserNames) : [])];
   if (!results.length) throw new Error('No sources were selected');
   // One broken source should not sink the others. The run fails (and is fully
   // refunded) only when every source failed; otherwise the failed sources are
@@ -816,6 +905,15 @@ async function main() {
       if (outcome==='candidate' && !candidates.has(job.url)) candidates.set(job.url,{...job,source:result.source});
     }
   }
+  // Each candidate costs a page fetch and a location check, so an all-listings
+  // run checks the newest MAX_CANDIDATES and reports the rest as not checked.
+  if (candidates.size > MAX_CANDIDATES) {
+    const byNewest=[...candidates.values()].sort((a,b)=>(Date.parse(b.posted_at)||0)-(Date.parse(a.posted_at)||0));
+    for (const job of byNewest.slice(MAX_CANDIDATES)) {
+      candidates.delete(job.url);
+      Object.assign(outcomes.get(job.url),{outcome:'not_checked',reason:`Only the newest ${MAX_CANDIDATES} matches are checked per run`});
+    }
+  }
   const jobs=[];
   let excluded=0;
   const configuredReviews = Number(process.env.JAA_JEV_MAX_REVIEWS ?? 30);
@@ -823,10 +921,15 @@ async function main() {
   let jevReviews = 0;
   step('Phase 2 - Checking postings and locations');
   for (const job of candidates.values()) {
-    const response=await publicFetch(job.url);
-    if ([404,410].includes(response.status)) { outcomes.get(job.url).outcome='url_dead'; excluded++; continue; }
-    if (!response.ok) throw new Error('Job page unavailable: HTTP ' + response.status);
-    const text=(await response.text()).replace(/<script[\s\S]*?<\/script>/gi,'').replace(/<style[\s\S]*?<\/style>/gi,'').replace(/<[^>]+>/g,' ').replace(/\s+/g,' ').slice(0,6000);
+    // A page that is gone excludes the job. A page that refuses us (bot
+    // protection, rate limits, timeouts) should not sink the whole run: check
+    // the job from what the listing itself says instead.
+    let response=null;
+    try { response=await publicFetch(job.url); } catch (e) { log('   ' + job.company + ' page unreachable (' + e.message.slice(0,60) + '); using the listing'); }
+    if (response && [404,410].includes(response.status)) { outcomes.get(job.url).outcome='url_dead'; excluded++; continue; }
+    if (response && !response.ok) log('   ' + job.company + ' page answered ' + response.status + '; using the listing');
+    const pageText=response?.ok ? (await response.text()).replace(/<script[\s\S]*?<\/script>/gi,'').replace(/<style[\s\S]*?<\/style>/gi,'').replace(/<[^>]+>/g,' ').replace(/\s+/g,' ') : '';
+    const text=(pageText || `${job.role} at ${job.company}. Location: ${job.location || 'not stated'}. ${job.snippet || ''}`).slice(0,6000);
     if (process.env.JAA_JEV === '1' && typeSafeKey && jevReviews < jevMaxReviews) {
       try {
         jevReviews++;
@@ -874,4 +977,4 @@ async function main() {
 if (require.main===module) {
   main().catch(e=>{log('Sourcing failed: '+e.message);process.exitCode=1;}).finally(()=>pool.end());
 }
-module.exports={main,runBrowserSources,normalizedJobs,postedInWindow,windowPrecision};
+module.exports={main,runBrowserSources,normalizedJobs,postedInWindow,windowPrecision,ingestAll,ingestSource,ledgerResults,LEDGER_SOURCES};

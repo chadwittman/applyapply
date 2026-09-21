@@ -48,7 +48,7 @@ for (const method of ['get','post','put','patch','delete']) {
     (req, res, next) => { try { Promise.resolve(handler(req,res,next)).catch(next); } catch (e) { next(e); } }));
 }
 const PORT = process.env.PORT || 5000;
-const VERSION = '0.30.0';
+const VERSION = '0.31.0';
 const IS_PRODUCTION = process.env.NODE_ENV === 'production';
 const APP_ORIGIN = process.env.APP_ORIGIN || 'http://localhost:5000';
 const ALLOWED_WEB_ORIGINS = new Set(
@@ -394,6 +394,11 @@ const SOURCE_CATALOG = [
   // Sequoia: API mode, same platform as a16z. HB ~8% of session.
   { name: 'Sequoia job board',        credits: calcSourceCredits(_h*0.08, 0),   on: true,  desc: 'Sequoia portfolio — API scrape, no Claude',              type: 'api' },
   // Google+Haiku: ~3k in/500 out = $0.005. HB ~10% each.
+  // Public feeds read from the shared listings ledger: no browser per run.
+  // Credits cover the page fetch and location check on each match.
+  { name: 'Himalayas',                credits: calcSourceCredits(0, 1),         on: true,  desc: 'Remote jobs across thousands of companies',             type: 'feed' },
+  { name: 'We Work Remotely',         credits: calcSourceCredits(0, 1),         on: true,  desc: 'Remote-only job board',                                 type: 'feed' },
+  { name: 'Hacker News: Who is hiring', credits: calcSourceCredits(0, 1),       on: true,  desc: "Startups posting in HN's monthly hiring thread",        type: 'feed' },
   { name: 'YC / Work at a Startup',   credits: calcSourceCredits(_h*0.10, 0.5), on: false, retired: true,  desc: 'YC companies — Google search + Haiku extract',          type: 'google' },
   { name: 'Wellfound',                credits: calcSourceCredits(_h*0.10, 0.5), on: false, retired: true,  desc: 'Wellfound startup jobs — Google search + Haiku extract', type: 'google' },
   { name: 'Builtin remote product',   credits: calcSourceCredits(_h*0.10, 0.5), on: false, retired: true,  desc: 'Builtin.com — Google search + Haiku extract',           type: 'google' },
@@ -3115,7 +3120,6 @@ const SCHEDULE_DEFAULT = { hour: 8, minute: 0, frequency: 'daily', enabled: fals
 
 let cronTask = null;
 let prefetchTask = null;
-const PREFETCH_HOUR = Number(process.env.PREFETCH_HOUR ?? 2);
 const PREFETCH_MINUTE = Number(process.env.PREFETCH_MINUTE ?? 0);
 
 function startCron() {
@@ -3136,48 +3140,31 @@ function startCron() {
   }, { timezone: SCHEDULE_TZ });
   console.log(`[cron] per-user scheduler armed (${SCHEDULE_TZ})`);
 
-  // Warm the shared cache before anyone's run. One session at 02:00 covers
-  // every distinct role set, so the individual runs afterwards need no browser
-  // and cost us nothing to serve.
+  // The shared ingest keeps the listings ledger current: every six hours, and
+  // once at startup so a fresh deploy never serves an empty ledger. User runs
+  // read the ledger and only fetch a source themselves if it has gone stale.
   if (prefetchTask) prefetchTask.stop();
-  prefetchTask = cron.schedule(`${PREFETCH_MINUTE} ${PREFETCH_HOUR} * * *`, runNightlyPrefetch,
-    { timezone: SCHEDULE_TZ });
-  console.log(`[cron] nightly prefetch armed for ${String(PREFETCH_HOUR).padStart(2,'0')}:${String(PREFETCH_MINUTE).padStart(2,'0')} ${SCHEDULE_TZ}`);
+  prefetchTask = cron.schedule(`${PREFETCH_MINUTE} */6 * * *`, runIngest, { timezone: SCHEDULE_TZ });
+  console.log(`[cron] listings ingest armed every 6 hours at :${String(PREFETCH_MINUTE).padStart(2,'0')} ${SCHEDULE_TZ}`);
+  setTimeout(() => void runIngest(), 15000).unref();
 }
 
-// Distinct role sets across everyone scheduled — the Google sources key on
-// role titles, so one pass per distinct set covers all of them.
-async function runNightlyPrefetch() {
-  let rows = [];
-  try { rows = await db.getAllEnabledSchedules(); }
-  catch (e) { return console.error('[prefetch] schedules:', e.message); }
-  if (!rows.length) return console.log('[prefetch] nobody scheduled, skipping');
-
-  // The search window is part of the cache key, so warm each role set once
-  // per window its users actually run.
-  const byRoles = new Map();
-  for (const row of rows) {
-    const profile = await getProfileByUserEmail(row.user_email).catch(() => null);
-    const roles = profile?.target_roles || '';
-    const lookback = (row.lookback_hours ?? 24) === 24 ? 24 : 0;
-    const key = db.roleKeyFor(roles) + '::' + lookback;
-    if (!byRoles.has(key)) byRoles.set(key, { roles, lookback });
-  }
-
-  console.log(`[prefetch] warming ${byRoles.size} distinct role set(s) for ${rows.length} scheduled user(s)`);
+let ingestRunning = false;
+async function runIngest() {
+  if (ingestRunning) return;
+  ingestRunning = true;
   const { spawn } = require('child_process');
-  for (const { roles, lookback } of byRoles.values()) {
+  try {
     await new Promise(resolve => {
-      const child = spawn('node', [path.join(__dirname, '../source.js')], {
-        cwd: path.join(__dirname, '..'),
-        stdio: ['ignore', 'pipe', 'pipe'],
-        env: { ...process.env, JAA_PREFETCH_ONLY: '1', JAA_LOOKBACK_HOURS: String(lookback), ...(roles ? { JAA_TARGET_ROLES: roles } : {}) },
+      const child = spawn(process.execPath, [path.join(__dirname, '../source.js')], {
+        cwd: path.join(__dirname, '..'), stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, JAA_INGEST: '1' },
       });
-      child.stdout.on('data', d => process.stdout.write(`[prefetch] ${d}`));
-      child.stderr.on('data', d => process.stderr.write(`[prefetch] ${d}`));
-      child.on('exit', code => { console.log(`[prefetch] role set done, exit ${code}`); resolve(); });
+      child.stdout.on('data', d => process.stdout.write(`[ingest] ${d}`));
+      child.stderr.on('data', d => process.stderr.write(`[ingest] ${d}`));
+      child.on('close', code => { console.log(`[ingest] done, exit ${code}`); resolve(); });
+      child.on('error', e => { console.error('[ingest]', e.message); resolve(); });
     });
-  }
+  } finally { ingestRunning = false; }
 }
 
 async function runScheduledSourcing(row) {
@@ -3424,7 +3411,7 @@ app.get('/sourcing', async (req, res) => {
         };
 
         const makeOtherRow = j => {
-          const label = {dupe:'dupe',cross_dupe:'dupe',role_mismatch:'mismatch',low_fit:'low fit',excluded:'excluded',url_dead:'dead'}[j.outcome]||j.outcome;
+          const label = {dupe:'dupe',cross_dupe:'dupe',role_mismatch:'mismatch',low_fit:'low fit',excluded:'excluded',url_dead:'dead',not_checked:'not checked'}[j.outcome]||j.outcome;
           return `<div class="other-row"><span class="other-lbl">${esc(label)}</span><a href="${esc(j.url)}" target="_blank" class="other-link" rel="noopener noreferrer" onclick="trackOpen(this.href)">${esc(j.company||'')} — ${esc(j.role||'')}</a></div>`;
         };
 

@@ -180,6 +180,37 @@ async function initSchema() {
   `);
   await q(`CREATE INDEX IF NOT EXISTS idx_source_cache_fetched ON source_cache (fetched_at)`);
 
+  // Our own ledger of public listings. A shared ingest adds each source's new
+  // jobs every few hours, so user runs read from here instead of re-browsing
+  // the boards. Nothing in it belongs to a user.
+  await q(`
+    CREATE TABLE IF NOT EXISTS listings (
+      url TEXT PRIMARY KEY,
+      source TEXT NOT NULL,
+      company TEXT NOT NULL DEFAULT '',
+      role TEXT NOT NULL,
+      location TEXT NOT NULL DEFAULT '',
+      remote BOOLEAN,
+      posted_at TIMESTAMPTZ,
+      posted_precision TEXT,
+      salary JSONB,
+      snippet TEXT NOT NULL DEFAULT '',
+      first_seen TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      last_seen TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
+  await q(`CREATE INDEX IF NOT EXISTS idx_listings_source_posted ON listings (source, COALESCE(posted_at, first_seen) DESC)`);
+  await q(`
+    CREATE TABLE IF NOT EXISTS ingest_state (
+      source TEXT PRIMARY KEY,
+      last_ok_at TIMESTAMPTZ,
+      last_full_at TIMESTAMPTZ,
+      last_attempt_at TIMESTAMPTZ,
+      last_count INTEGER,
+      last_error TEXT
+    )
+  `);
+
   // The uploaded PDF itself, kept out of profiles so a SELECT * on a profile
   // does not drag several megabytes along with it.
   await q(`
@@ -610,6 +641,84 @@ async function getCachedSources(keys, maxAgeHours = 20) {
   return Object.fromEntries(rows.map(r => [r.cache_key, r.payload]));
 }
 
+// ── Listings ledger ───────────────────────────────────────────────────────────
+
+// Board stamps that are exactly midnight UTC are dates, not times.
+function postedPrecision(postedAt) {
+  if (!postedAt) return null;
+  return /T00:00:00(\.0+)?(Z|\+00:?00)$/.test(postedAt) ? 'day' : 'exact';
+}
+
+async function upsertListings(source, jobs) {
+  let added = 0;
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    for (const j of jobs) {
+      let url;
+      try { url = canonicalUrl(j.url); } catch { continue; }
+      const posted = j.posted_at && Number.isFinite(Date.parse(j.posted_at)) ? new Date(j.posted_at).toISOString() : null;
+      const r = await client.query(`
+        INSERT INTO listings (url, source, company, role, location, remote, posted_at, posted_precision, salary, snippet)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+        ON CONFLICT (url) DO UPDATE SET last_seen = NOW(), role = EXCLUDED.role, company = EXCLUDED.company,
+          location = EXCLUDED.location, remote = EXCLUDED.remote, salary = COALESCE(EXCLUDED.salary, listings.salary),
+          posted_at = COALESCE(listings.posted_at, EXCLUDED.posted_at), posted_precision = COALESCE(listings.posted_precision, EXCLUDED.posted_precision)
+        RETURNING (xmax = 0) AS inserted`,
+      [url, source, String(j.company || '').slice(0, 250), String(j.role).slice(0, 250), String(j.location || '').slice(0, 250),
+        typeof j.remote === 'boolean' ? j.remote : null, posted, j.posted_precision || postedPrecision(j.posted_at),
+        j.salary ? JSON.stringify(j.salary) : null, String(j.snippet || '').slice(0, 1200)]);
+      if (r.rows[0]?.inserted) added++;
+    }
+    await client.query('COMMIT');
+  } catch (e) { await client.query('ROLLBACK').catch(() => {}); throw e; }
+  finally { client.release(); }
+  return added;
+}
+
+// lookbackHours 24: listings posted in the window (or, with no posting date,
+// first seen in it). 0: everything posted or seen in the last 45 days.
+async function getListings(sources, lookbackHours) {
+  const hours = lookbackHours === 24 ? 24 : 45 * 24;
+  // Date-only stamps count from the start of the day the window opens.
+  return q(`
+    SELECT * FROM listings
+    WHERE source = ANY($1) AND (
+      (posted_precision = 'day' AND posted_at >= date_trunc('day', (NOW() - ($2 || ' hours')::interval) AT TIME ZONE 'UTC') AT TIME ZONE 'UTC')
+      OR (posted_precision IS DISTINCT FROM 'day' AND COALESCE(posted_at, first_seen) >= NOW() - ($2 || ' hours')::interval))
+    ORDER BY COALESCE(posted_at, first_seen) DESC`, [sources, String(hours)]);
+}
+
+async function countListings(sources) {
+  const rows = await q(`SELECT source, COUNT(*)::int AS n FROM listings WHERE source = ANY($1) AND last_seen > NOW() - INTERVAL '45 days' GROUP BY source`, [sources]);
+  return Object.fromEntries(rows.map(r => [r.source, r.n]));
+}
+
+async function getIngestState(sources) {
+  const rows = await q(`SELECT * FROM ingest_state WHERE source = ANY($1)`, [sources]);
+  return Object.fromEntries(rows.map(r => [r.source, r]));
+}
+
+async function recordIngest(source, { ok, count = null, error = null, full = false }) {
+  await q(`
+    INSERT INTO ingest_state (source, last_ok_at, last_full_at, last_attempt_at, last_count, last_error)
+    VALUES ($1, CASE WHEN $2 THEN NOW() END, CASE WHEN $2 AND $5 THEN NOW() END, NOW(), $3, $4)
+    ON CONFLICT (source) DO UPDATE SET last_attempt_at = NOW(),
+      last_ok_at = CASE WHEN $2 THEN NOW() ELSE ingest_state.last_ok_at END,
+      last_full_at = CASE WHEN $2 AND $5 THEN NOW() ELSE ingest_state.last_full_at END,
+      last_count = COALESCE($3, ingest_state.last_count), last_error = $4`, [source, ok, count, error, full]);
+}
+
+// One ingest per source at a time across every server process and run.
+async function withIngestLock(source, fn) {
+  const client = await pool.connect();
+  try {
+    await client.query('SELECT pg_advisory_lock(hashtextextended($1, 0))', ['ingest:' + source]);
+    try { return await fn(); }
+    finally { await client.query('SELECT pg_advisory_unlock(hashtextextended($1, 0))', ['ingest:' + source]).catch(() => {}); }
+  } finally { client.release(); }
+}
+
 async function putCachedSource(cacheKey, source, roleKey, payload) {
   await q(`
     INSERT INTO source_cache (cache_key, source, role_key, payload, fetched_at)
@@ -754,6 +863,7 @@ module.exports = {
   getSchedule, setSchedule, getDueSchedules, markScheduleRun, getAllEnabledSchedules,
   getAccountExport, deleteAccount,
   roleKeyFor, cacheKeyFor, getCachedSources, putCachedSource,
+  upsertListings, getListings, countListings, getIngestState, recordIngest, withIngestLock,
   getUser, getOrCreateUser, addUserCredits, deductUserCredits,
   createMagicLink, getMagicLink, useMagicLink,
 };
