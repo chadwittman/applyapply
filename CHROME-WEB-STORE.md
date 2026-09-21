@@ -62,6 +62,7 @@ Prepared assets:
 
 - `store-assets/applyapply-small-promo.png`
 - `store-assets/applyapply-marquee.png`
+- `store-assets/screenshot-1-kit.png` through `screenshot-5-popup.png` (1280x800, invented candidate and company). Regenerate with `AA_TEST_SUITES=tools/store-screenshots.mjs npm test`.
 
 Recommended screenshot sequence:
 

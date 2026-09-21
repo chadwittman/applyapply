@@ -25,7 +25,7 @@ const sessionReady = new Promise(resolve => chrome.storage.sync.get(['mode', 'se
         }
         // The profile arrives after the first scan, so re-run it now that
         // there are values to offer.
-        try { injectCopyButtons(); } catch {}
+        try { injectCopyButtons(); refreshProfileRows(); } catch {}
       }
     }).catch(() => {});
     serverFetch('/credits').then(res => {
@@ -483,10 +483,7 @@ function buildHTML(serverDown) {
 </div>`;
 }
 
-function appHTML(a) {
-  const p = mergeProfile(a.profile);
-  const t = a.tailored || {};
-
+function profileRowsHTML(p) {
   const rows = [
     ['Name', `${p.first_name} ${p.last_name}`],
     ['Email', p.email],
@@ -501,11 +498,40 @@ function appHTML(a) {
     ['Work auth', p.work_authorization],
     p.salary ? ['Salary', `$${Number(p.salary).toLocaleString()}`] : null,
   ].filter(Boolean);
+  return rows.map(([l, v]) => `<div class="field" data-copy="${esc(v)}"><span class="field-lbl">${l}</span><span class="field-val">${esc(v)}</span><span class="field-copy">copy</span></div>`).join('');
+}
+
+function bindProfileFields() {
+  shadow?.querySelectorAll('.field[data-copy]').forEach(field => {
+    field.addEventListener('click', () => {
+      const text = field.dataset.copy;
+      if (!text) return;
+      navigator.clipboard.writeText(text).then(() => {
+        const hint = field.querySelector('.field-copy');
+        if (hint) { hint.textContent = '✓'; hint.style.color = '#16a34a'; hint.style.opacity = '1'; }
+        setTimeout(() => { if (hint) { hint.textContent = 'copy'; hint.style.color = ''; hint.style.opacity = ''; } }, 1500);
+      });
+    });
+  });
+}
+
+// The saved profile usually lands after the sidebar has rendered, which left
+// the Profile section showing labels with no values.
+function refreshProfileRows() {
+  const body = shadow?.querySelector('.sec-hd[data-sec="profile"]')?.nextElementSibling;
+  if (!body || !currentApp) return;
+  body.innerHTML = profileRowsHTML(mergeProfile(currentApp.profile));
+  bindProfileFields();
+}
+
+function appHTML(a) {
+  const p = mergeProfile(a.profile);
+  const t = a.tailored || {};
 
   return `
 <div class="sec">
   <div class="sec-hd" data-sec="profile"><span class="sec-label">Profile</span><span class="chev">▾</span></div>
-  <div class="sec-body">${rows.map(([l, v]) => `<div class="field" data-copy="${esc(v)}"><span class="field-lbl">${l}</span><span class="field-val">${esc(v)}</span><span class="field-copy">copy</span></div>`).join('')}</div>
+  <div class="sec-body">${profileRowsHTML(p)}</div>
 </div>
 
 <div class="sec">
@@ -975,17 +1001,7 @@ function bindEvents() {
     });
   }
 
-  shadow.querySelectorAll('.field[data-copy]').forEach(field => {
-    field.addEventListener('click', () => {
-      const text = field.dataset.copy;
-      if (!text) return;
-      navigator.clipboard.writeText(text).then(() => {
-        const hint = field.querySelector('.field-copy');
-        if (hint) { hint.textContent = '✓'; hint.style.color = '#16a34a'; hint.style.opacity = '1'; }
-        setTimeout(() => { if (hint) { hint.textContent = 'copy'; hint.style.color = ''; hint.style.opacity = ''; } }, 1500);
-      });
-    });
-  });
+  bindProfileFields();
 
   const genResumeBtn = shadow.getElementById('jaa-gen-resume');
   const resumeOut = shadow.getElementById('jaa-resume-out');
@@ -1144,6 +1160,8 @@ function deterministicFill(app) {
     { test: l => /website|personal\s*site|project\s*site|online\s*presence|portfolio\s*url|personal\s*url|additional\s*link/.test(l), value: p.website || '' },
     { test: l => /salary|compensation/.test(l), value: p.salary || '' },
     { test: l => /cover letter|additional info|tell us|message/.test(l), value: t.cover_note || '', textarea: true },
+    // The copy button already offered why_role here; Fill left the field empty.
+    { test: l => /\bwhy\b.*\b(join|company|us|role|position|apply|applying|interested|excited)\b/.test(l), value: t.why_role || '', textarea: true },
 
   ];
 
