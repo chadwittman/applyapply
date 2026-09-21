@@ -24,6 +24,7 @@ const db = require('./db');
 const { canonicalUrl } = require('./posting');
 const { publicFetch } = require('./public-fetch');
 const { SYSTEM, applicationOutput, mappingsOutput, resumeOutput } = require('./ai-output');
+const fastKit = require('./fast-kit');
 const { evaluateResumeMatch } = require('./typesafe');
 const scriptJSON = value => JSON.stringify(value).replace(/</g, '\\u003c');
 const usage = require('./usage');
@@ -57,7 +58,7 @@ for (const method of ['get','post','put','patch','delete']) {
     (req, res, next) => { try { Promise.resolve(handler(req,res,next)).catch(next); } catch (e) { next(e); } }));
 }
 const PORT = process.env.PORT || 5000;
-const VERSION = '0.34.0';
+const VERSION = '0.35.0';
 const IS_PRODUCTION = process.env.NODE_ENV === 'production';
 const APP_ORIGIN = process.env.APP_ORIGIN || 'http://localhost:5000';
 const ALLOWED_WEB_ORIGINS = new Set(
@@ -1448,6 +1449,12 @@ app.post('/profile', async (req, res) => {
   }
   await setProfile(auth.email, data, true);
   res.json({ ok: true });
+  // Parse a new resume into roles and bullets now, in the background, so the
+  // first kit can rank bullets instantly instead of waiting on the model.
+  if (data.resume_text && keys && process.env.TYPESAFE_API_KEY && process.env.NODE_ENV !== 'test') {
+    fastKit.resumeStructure(db, prompt => callClaude(prompt, 8000, WRITER_MODEL, writerOptions(WRITER_MODEL)), auth.email, data.resume_text)
+      .catch(e => console.error('[resume structure]', e.message));
+  }
 });
 
 // ── Resume parse ─────────────────────────────────────────────────────────────
@@ -2662,9 +2669,19 @@ app.post('/generate', apiLimiter, requireCredits('generate'), async (req, res) =
   const candidateName = `${profile.first_name || ''} ${profile.last_name || ''}`.trim() || 'the candidate';
   const bio = profile.bio || `${candidateName} has not set up their background bio yet. Generate placeholder apply kit and note they should complete their profile at /setup.`;
 
-  const qaInstruction = Array.isArray(form_questions) && form_questions.length > 0
+  // Questions the candidate has already answered well reuse that answer (Jev
+  // picks it in a few hundred ms); the model writes only the rest.
+  const reusedAnswers = Array.isArray(form_questions) && form_questions.length && userEmail && process.env.TYPESAFE_API_KEY
+    ? await fastKit.reuseAnswers(process.env.TYPESAFE_API_KEY, form_questions,
+        fastKit.answerPool(await db.getEvidence(userEmail, { answeredOnly: true }).catch(() => []), await db.getKits(userEmail).catch(() => [])))
+    : new Map();
+  const questionsToWrite = Array.isArray(form_questions) ? form_questions.filter(q => !reusedAnswers.has(q)) : form_questions;
+  const qaInstruction = Array.isArray(form_questions) && form_questions.length > 0 && !questionsToWrite.length
+    ? `QA INSTRUCTIONS: Every form question already has an answer. Set "qa" to an empty array [].`
+    : Array.isArray(questionsToWrite) && questionsToWrite.length > 0
     ? `QA INSTRUCTIONS — CRITICAL: The application form has these EXACT questions. Answer ONLY these questions using the candidate's real background and numbers. Do not invent others.
-${form_questions.map((q, i) => `${i + 1}. ${q}`).join('\n')}`
+${questionsToWrite.map((q, i) => `${i + 1}. ${q}`).join('\n')}
+Logistics questions (start date or availability, office or in-person days, timelines or deadlines, relocation, work address, prior interviews with this company, referrals, agreements) are facts only the candidate knows. Answer them only from what the candidate background states; otherwise set "a" to an empty string so the candidate fills it in.`
     : Array.isArray(form_questions) && form_questions.length === 0
     ? `QA INSTRUCTIONS: We could not detect the actual form questions. Set "qa" to an empty array []. Do not invent questions.`
     : `QA INSTRUCTIONS: Generate 2-3 likely screening questions specific to this exact role and company. Do not use generic questions.`;
@@ -2754,18 +2771,36 @@ Concrete over abstract: "built a pipeline that drove 4.5x revenue per title as C
     // side by side; this roughly halves the wait. A resume that fails does not
     // throw away a good kit: the user can rewrite it from the sidebar.
     const resumePromise = profile.resume_text
-      ? buildTailoredResume(profile, { company: company || existing?.company || '', role: role || existing?.role || '',
+      ? fastResume(profile, { company: company || existing?.company || '', role: role || existing?.role || '',
           job_description: jobDescription, tailored: existing?.tailored || {} }, userEmail, existing?.tailored_resume)
           .then(r => { console.log(`[generate] resume ready ${Date.now() - started}ms`); return r; })
           .catch(e => { console.error('Resume in kit failed:', e.message); return null; })
       : Promise.resolve(null);
-    const raw = await callClaude(prompt, 8000, WRITER_MODEL, writerOptions(WRITER_MODEL));
+    // The kit is written as two calls at once: the letter-style fields in one,
+    // the form answers in the other. Each writes about half, so the wait is
+    // roughly halved. If every question was answered by reuse, only the first runs.
+    const needsQa = !(Array.isArray(questionsToWrite) && questionsToWrite.length === 0);
+    const lettersCall = callClaude(prompt + '\n\nOUTPUT SCOPE FOR THIS REQUEST: fill every field except tailored.qa, which must be an empty array [].', 8000, WRITER_MODEL, writerOptions(WRITER_MODEL));
+    const answersCall = needsQa
+      ? callClaude(prompt + '\n\nOUTPUT SCOPE FOR THIS REQUEST: you are writing only the form answers. Return the same JSON structure with tailored.headline, tailored.why_role and tailored.cover_note set to empty strings, and fill tailored.qa per the QA INSTRUCTIONS.', 8000, WRITER_MODEL, writerOptions(WRITER_MODEL))
+          .then(raw => JSON.parse(raw.match(/\{[\s\S]*\}/)[0])?.tailored?.qa || [])
+          .catch(e => { console.error('Kit answers failed:', e.message); return []; })
+      : Promise.resolve([]);
+    const [raw, writtenQa] = await Promise.all([lettersCall, answersCall]);
     console.log(`[generate] kit ready ${Date.now() - started}ms`);
     const parsed = JSON.parse(raw.match(/\{[\s\S]*\}/)[0]);
+    if (parsed?.tailored && typeof parsed.tailored === 'object') parsed.tailored.qa = Array.isArray(writtenQa) ? writtenQa : [];
     const generated = applicationOutput(cleanEmDashes(parsed), {
       owner: userEmail, url, profile, company, role, questions: form_questions, existing,
     });
 
+    if (reusedAnswers.size) {
+      const written = new Map(generated.tailored.qa.map(x => [x.q, x]));
+      generated.tailored.qa = form_questions.map(q => reusedAnswers.has(q)
+        ? { q, a: reusedAnswers.get(q).a, reused_from: reusedAnswers.get(q).source_question }
+        : written.get(q)).filter(Boolean);
+      console.log(`[generate] reused ${reusedAnswers.size} of ${form_questions.length} answers`);
+    }
     generated.job_description = jobDescription;
     // If the new resume failed, keep the one they already had.
     const resume = await resumePromise || existing?.tailored_resume || null;
@@ -2928,6 +2963,34 @@ async function withAnsweredGaps(kit, userEmail) {
     if (answers.has(key)) answered.push({ question, answer: answers.get(key) }); else gaps.push(question);
   }
   return { ...kit, tailored_resume: { ...kit.tailored_resume, coverage: { ...cov, gaps, answered } } };
+}
+
+// The kit's resume. A resume the user already rewrote for this job is kept.
+// Otherwise it is the instant version: the candidate's real bullets ranked
+// against the job by Jev, no model writing; "Rewrite resume" is the model pass.
+// Without Jev or a parsable resume it falls back to the full rewrite.
+async function fastResume(profile, appData, userEmail, previous = null) {
+  if (previous) return previous;
+  const apiKey = process.env.TYPESAFE_API_KEY;
+  if (apiKey && userEmail && appData.job_description) {
+    try {
+      const structure = await fastKit.resumeStructure(db, prompt => callClaude(prompt, 8000, WRITER_MODEL, writerOptions(WRITER_MODEL)), userEmail, profile.resume_text);
+      const ranked = await fastKit.instantResume(apiKey, structure, { role: appData.role, company: appData.company, description: appData.job_description });
+      const result = {
+        name: `${profile.first_name || ''} ${profile.last_name || ''}`.trim(), company: appData.company, role: appData.role,
+        ...tidyResume(resumeOutput(cleanEmDashes(ranked))), kind: 'instant', version: 1, generated_at: new Date().toISOString(), evidence_used: 0,
+      };
+      result.experience = orderExperience(result.experience);
+      try { result.jev_match = await evaluateResumeMatch(apiKey, appData, result); } catch { result.match_status = 'unavailable'; }
+      const score = result.jev_match?.score;
+      result.coverage = {
+        confidence: score >= 3.5 ? 'strong' : score >= 2.5 ? 'moderate' : 'thin', evidenced: [], gaps: [],
+        improve: 'This is your resume reordered for this job. Rewrite resume has AI tailor the wording and list what the role asks for that your resume does not show.',
+      };
+      return result;
+    } catch (e) { console.error('[instant resume]', e.message); }
+  }
+  return buildTailoredResume(profile, appData, userEmail, previous);
 }
 
 async function buildTailoredResume(profile, appData, userEmail, previous = null) {

@@ -202,6 +202,17 @@ async function initSchema() {
     )
   `);
   await q(`CREATE INDEX IF NOT EXISTS idx_listings_source_posted ON listings (source, COALESCE(posted_at, first_seen) DESC)`);
+  // The candidate's resume split into roles and bullets, verbatim, keyed by a
+  // hash of the resume text so a new upload rebuilds it.
+  await q(`
+    CREATE TABLE IF NOT EXISTS resume_structures (
+      user_email TEXT PRIMARY KEY,
+      source_hash TEXT NOT NULL,
+      data JSONB NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
+
   // Personal API keys for agents. Only a SHA-256 of the key is stored.
   await q(`
     CREATE TABLE IF NOT EXISTS api_keys (
@@ -657,6 +668,17 @@ async function getCachedSources(keys, maxAgeHours = 20) {
   return Object.fromEntries(rows.map(r => [r.cache_key, r.payload]));
 }
 
+// ── Resume structure cache ────────────────────────────────────────────────────
+
+async function getResumeStructure(userEmail) {
+  return q1(`SELECT source_hash, data FROM resume_structures WHERE user_email=$1`, [requireOwner(userEmail)]);
+}
+async function saveResumeStructure(userEmail, sourceHash, data) {
+  await q(`INSERT INTO resume_structures (user_email, source_hash, data) VALUES ($1,$2,$3)
+    ON CONFLICT (user_email) DO UPDATE SET source_hash=EXCLUDED.source_hash, data=EXCLUDED.data, created_at=NOW()`,
+  [requireOwner(userEmail), sourceHash, JSON.stringify(data)]);
+}
+
 // ── API keys ──────────────────────────────────────────────────────────────────
 
 const hashKey = key => require('crypto').createHash('sha256').update(key).digest('hex');
@@ -823,7 +845,7 @@ async function deleteAccount(userEmail) {
   try {
     await client.query('BEGIN');
     await client.query('DELETE FROM operation_events WHERE operation_id IN (SELECT id FROM operations WHERE user_email=$1)', [owner]);
-    for (const table of ['user_activity','decisions','evidence','resume_files','schedules','runs','jobs','kits','profiles','purchases','api_keys']) {
+    for (const table of ['user_activity','decisions','evidence','resume_files','schedules','runs','jobs','kits','profiles','purchases','api_keys','resume_structures']) {
       await client.query(`DELETE FROM ${table} WHERE user_email=$1`, [owner]);
     }
     // magic_links keys on `email`; listing it above made every deletion fail.
@@ -914,7 +936,7 @@ module.exports = {
   getAccountExport, deleteAccount,
   roleKeyFor, cacheKeyFor, getCachedSources, putCachedSource,
   upsertListings, getListings, countListings, getIngestState, recordIngest, withIngestLock,
-  createApiKey, listApiKeys, revokeApiKey, emailForApiKey,
+  createApiKey, listApiKeys, revokeApiKey, emailForApiKey, getResumeStructure, saveResumeStructure,
   getUser, getOrCreateUser, addUserCredits, deductUserCredits,
   createMagicLink, getMagicLink, useMagicLink,
 };

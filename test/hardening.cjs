@@ -181,7 +181,8 @@ async function main() {
     const body={url:url+'-race',description:'Synthetic'};
     const r=await Promise.all([call('POST','/generate',owner,body,'same'),call('POST','/generate',owner,body,'same')]);
     assert.ok(r.some(x=>x.status===200)); assert.ok(r.every(x=>[200,409].includes(x.status)));
-    assert.equal(modelCalls-before,1); assert.equal((await db.getUser(owner)).credits,0);
+    // One kit is two parallel model calls (letters and form answers); the duplicate request adds none.
+    assert.equal(modelCalls-before,2); assert.equal((await db.getUser(owner)).credits,0);
     assert.equal((await call('POST','/generate',owner,body,'same')).status,200);
   });
   await check('Expired work refunds once and rejects stale commits and heartbeats',async()=>{
