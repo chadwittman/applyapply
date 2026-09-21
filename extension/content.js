@@ -1812,7 +1812,9 @@ function renderResume(resume, out, versionContext = null) {
       const confidence = Number.isFinite(Number(resume.jev_match.confidence))
         ? ` · ${Math.round(Number(resume.jev_match.confidence) * 100)}% confidence`
         : '';
-      jev.textContent = `Match for this resume: ${labels[Math.round(resume.jev_match.score)] || 'Reviewed'} (${Number(resume.jev_match.score).toFixed(1)}/5${confidence})`;
+      const was = Number(resume.previous_match_score);
+      const change = Number.isFinite(was) ? ` · was ${was.toFixed(1)}` : '';
+      jev.textContent = `Match for this resume: ${labels[Math.round(resume.jev_match.score)] || 'Reviewed'} (${Number(resume.jev_match.score).toFixed(1)}/5${change}${confidence})`;
       box.appendChild(jev);
     }
 
@@ -1829,7 +1831,13 @@ function renderResume(resume, out, versionContext = null) {
       ver.textContent = `Version ${resume.version}${stamp ? ' · ' + stamp : ''}${ev}`;
       box.appendChild(ver);
     }
-    if (cov.gaps?.length) {
+    // Answered gaps come back from the server with the saved answer, so a
+    // reopened sidebar shows the work already done instead of empty boxes.
+    const gapItems = [
+      ...(cov.answered || []).map(a => ({ question: a.question, answer: a.answer || '' })),
+      ...(cov.gaps || []).map(question => ({ question, answer: '' })),
+    ];
+    if (gapItems.length) {
       const g = document.createElement('div');
       g.style.color = '#555';
       g.textContent = 'Not evidenced — answer any of these and it saves to your profile:';
@@ -1838,7 +1846,7 @@ function renderResume(resume, out, versionContext = null) {
       // Each gap becomes a question to answer in place. The answer is stored as
       // profile evidence, so it strengthens every later application rather than
       // only patching this resume.
-      cov.gaps.forEach((gap) => {
+      gapItems.forEach(({ question: gap, answer: savedAnswer }) => {
         const wrap = document.createElement('div');
         wrap.style.cssText = 'margin-top:8px';
 
@@ -1851,6 +1859,7 @@ function renderResume(resume, out, versionContext = null) {
 
         const ta = document.createElement('textarea');
         ta.placeholder = 'Say it or type it. Specifics beat adjectives.';
+        ta.value = savedAnswer;
         ta.style.cssText = 'flex:1;min-height:44px;font-size:10px;font-family:inherit;padding:5px;border:1px solid #e0e0e0;resize:vertical;outline:none';
 
         const mic = document.createElement('button');
@@ -1860,11 +1869,12 @@ function renderResume(resume, out, versionContext = null) {
 
         const st = document.createElement('span');
         st.style.cssText = 'font-size:9px;color:#777;display:block;margin-top:3px;min-height:12px';
+        if (savedAnswer) { st.style.color = '#15803d'; st.textContent = '✓ Saved to your profile'; }
 
         // Autosave. Nobody should have to press a button to keep their own
         // answer, and a dropped connection is the save's problem, not theirs:
         // it retries with backoff and says so instead of losing the text.
-        let timer = null, lastSaved = '', attempt = 0;
+        let timer = null, lastSaved = savedAnswer, attempt = 0;
         const ownerEpoch = sessionEpoch;
         const save = () => {
           if (ownerEpoch !== sessionEpoch || !ta.isConnected) return;

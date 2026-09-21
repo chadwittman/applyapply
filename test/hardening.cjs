@@ -108,7 +108,7 @@ async function main() {
     assert.equal(r.data.profile.first_name,''); assert.deepEqual(r.data.tailored.qa,[]); assert.equal(r.data.review_required,true);
     modelResult=base;
   });
-  await check('Kit includes resume; failed resume regeneration preserves kit and refunds',async()=>{
+  await check('Kit includes resume; a failed resume during regeneration keeps the previous resume',async()=>{
     const owner='resume@audit.invalid'; await balance(owner,100);
     await db.setProfile(owner,{resume_text:'Synthetic resume',first_name:'Test'},true);
     const first=await call('POST','/generate',owner,{url,description:'Actual job requirements'});
@@ -119,8 +119,11 @@ async function main() {
     resumeFailure=true;
     const failed=await call('POST','/generate',owner,{url,description:'Actual job requirements',force:true});
     resumeFailure=false;
-    assert.equal(failed.status,500);
-    assert.equal((await db.getUser(owner)).credits,before);
+    // Kit and resume are written in parallel: the fresh kit is delivered (and
+    // charged), and the resume that failed to rewrite is the previous one, kept.
+    assert.equal(failed.status,200,JSON.stringify(failed.data));
+    assert.equal(failed.data.tailored_resume.version,1);
+    assert.equal((await db.getUser(owner)).credits,before-10);
     assert.equal((await db.getKit(first.data.id,owner)).tailored_resume.version,1);
   });
   await check('Private addresses, mapped IPv6, URL credentials and local ports are blocked',async()=>{
@@ -365,6 +368,18 @@ async function main() {
     assert.equal(await db.revokeApiKey(owner,id),true);
     assert.equal((await rpc({jsonrpc:'2.0',id:7,method:'tools/list'})).status,401,'Revoked key rejected');
     assert.equal((await rpc({jsonrpc:'2.0',id:8,method:'tools/list'},'')).status,401,'No key rejected');
+  });
+  await check('Reopening a kit shows answered resume gaps as answered, not blank',async()=>{
+    const owner='gaps@audit.invalid';await balance(owner,0);
+    const gapUrl='https://jobs.lever.co/gaps/role';
+    await db.saveKit({id:'gap-kit',user_email:owner,url:gapUrl,company:'Gap Co',role:'PM',tailored:{},
+      tailored_resume:{version:1,summary:'s',experience:[],skills:[],coverage:{confidence:'thin',gaps:['Led a pricing change','Managed a team of PMs']}}});
+    const saved=await call('POST','/interview/context',owner,{question:'Led a pricing change',answer:'Moved us to usage pricing; NRR went to 118%.'});
+    assert.equal(saved.status,200,JSON.stringify(saved.data));
+    const reopened=await call('GET','/application?url='+encodeURIComponent(gapUrl),owner);
+    const cov=reopened.data.tailored_resume.coverage;
+    assert.deepEqual(cov.gaps,['Managed a team of PMs']);
+    assert.deepEqual(cov.answered,[{question:'Led a pricing change',answer:'Moved us to usage pricing; NRR went to 118%.'}]);
   });
   await check('Search window is part of the cache key and honors date-only board stamps',async()=>{
     assert.notEqual(db.cacheKeyFor('Sequoia job board','',true,'remote',24),db.cacheKeyFor('Sequoia job board','',true,'remote',0));

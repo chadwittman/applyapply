@@ -258,6 +258,36 @@ Respond with JSON only:
   } catch (e) { throw new Error('Location verification failed: ' + e.message); }
 }
 
+// Jev answers the location question in a few hundred milliseconds where a
+// Claude call takes seconds. It decides when it is confident; otherwise the
+// Claude audit runs. If both fail, the job is excluded rather than the run.
+async function decideLocation(key, typeSafeKey, job, pageText) {
+  if (typeSafeKey) {
+    try {
+      const data = await evaluateTypeSafe(typeSafeKey, {
+        candidate: { lives_in: SOURCE_LOCATION || 'not stated', will_work: { remote: 'remote only', hybrid: 'remote, or hybrid in their own city', any: 'remote, hybrid or onsite' }[SOURCE_LOCATION_PREF] || 'remote only' },
+        job: { title: job.role, company: job.company, listed_location: job.location || 'not stated', posting_text: String(pageText || '').slice(0, 6000) },
+      }, {
+        where: { type: 'choice', instructions: 'Where can this job be done, and can this candidate do it from where they live? Read every location restriction in `job`, including limits on where remote employees may live. Remote does not mean worldwide.',
+          criteria: {
+            remote_ok: 'Remote, and open to someone living where the candidate lives',
+            hybrid_local: "Hybrid or partly in-office, in or near the candidate's city",
+            onsite_local: "Fully onsite, in or near the candidate's city",
+            not_eligible: 'Requires an office away from where the candidate lives, or limits remote work to places the candidate does not live',
+            unknown: 'The posting does not say enough to tell',
+          } },
+      });
+      const a = data.answers?.where;
+      if (a?.choice && Number(a.confidence) >= 0.8) {
+        const verdict = { remote_ok: 'remote', hybrid_local: 'hybrid', onsite_local: 'onsite' }[a.choice] || 'exclude';
+        return { verdict, location_found: job.location || '', reason: a.choice === 'unknown' ? 'The posting does not say where the job can be done' : 'Location checked against your preference', by: 'jev' };
+      }
+    } catch (e) { log('   Jev location check unavailable: ' + e.message.slice(0, 80)); }
+  }
+  try { return await auditLocation(key, job, pageText); }
+  catch (e) { return { verdict: 'exclude', location_found: '', reason: 'Location could not be verified: ' + e.message.slice(0, 80) }; }
+}
+
 // ── Browser sources ────────────────────────────────────────────────────────────
 // Each entry is one of three modes:
 //   apiMode      — hit an internal API directly (a16z)
@@ -920,13 +950,15 @@ async function main() {
   const jevMaxReviews = Number.isInteger(configuredReviews) && configuredReviews >= 0 ? Math.min(configuredReviews, 30) : 30;
   let jevReviews = 0;
   step('Phase 2 - Checking postings and locations');
-  for (const job of candidates.values()) {
+  // Each candidate is a page fetch plus a couple of judgments, all waiting on
+  // the network, so up to six are checked at once.
+  async function checkCandidate(job) {
     // A page that is gone excludes the job. A page that refuses us (bot
     // protection, rate limits, timeouts) should not sink the whole run: check
     // the job from what the listing itself says instead.
     let response=null;
     try { response=await publicFetch(job.url); } catch (e) { log('   ' + job.company + ' page unreachable (' + e.message.slice(0,60) + '); using the listing'); }
-    if (response && [404,410].includes(response.status)) { outcomes.get(job.url).outcome='url_dead'; excluded++; continue; }
+    if (response && [404,410].includes(response.status)) { outcomes.get(job.url).outcome='url_dead'; excluded++; return; }
     if (response && !response.ok) log('   ' + job.company + ' page answered ' + response.status + '; using the listing');
     const pageText=response?.ok ? (await response.text()).replace(/<script[\s\S]*?<\/script>/gi,'').replace(/<style[\s\S]*?<\/style>/gi,'').replace(/<[^>]+>/g,' ').replace(/\s+/g,' ') : '';
     const text=(pageText || `${job.role} at ${job.company}. Location: ${job.location || 'not stated'}. ${job.snippet || ''}`).slice(0,6000);
@@ -944,7 +976,7 @@ async function main() {
           outcomes.get(job.url).reason='Listing contained model-directed instructions';
           excluded++;
           log('EXCLUDED: possible prompt injection in ' + job.company + ' - ' + job.role);
-          continue;
+          return;
         }
         if (jev.fit_score != null && jev.fit_confidence >= 0.6) job.fit_score = jev.fit_score;
       } catch (e) { log('   Jev review unavailable: ' + e.message); }
@@ -953,16 +985,18 @@ async function main() {
       outcomes.get(job.url).outcome='selective_filter';
       outcomes.get(job.url).reason='Requires strong role fit and a confirmed annual USD base-pay range reaching your target';
       excluded++;
-      continue;
+      return;
     }
-    const audit=await auditLocation(key,job,text);
+    const audit=await decideLocation(key,typeSafeKey,job,text);
     const eligible=audit.verdict==='remote' || SOURCE_LOCATION_PREF!=='remote' && audit.verdict==='hybrid' || SOURCE_LOCATION_PREF==='any' && audit.verdict==='onsite';
-    if (!eligible) { outcomes.get(job.url).outcome='excluded';outcomes.get(job.url).reason=audit.reason;excluded++;continue; }
+    if (!eligible) { outcomes.get(job.url).outcome='excluded';outcomes.get(job.url).reason=audit.reason;excluded++;return; }
     const location=audit.location_found || job.location || '';
     jobs.push({...job,location,found_at:today,tier:job.fit_score>=9 ? 1 : job.fit_score>=7 ? 2 : 3});
     Object.assign(outcomes.get(job.url),{outcome:'added',location});
     log('NEW: ' + job.company + ' - ' + job.role);
   }
+  const queue=[...candidates.values()];
+  await Promise.all(Array.from({length:Math.min(6,queue.length)},async()=>{ while (queue.length) await checkCandidate(queue.shift()); }));
   step('Phase 3 - Saving results');
   const detail={date:today,run_at:new Date().toISOString(),total_excluded:excluded,
     jev_reviews: jevReviews, jev_review_limit: jevMaxReviews,
