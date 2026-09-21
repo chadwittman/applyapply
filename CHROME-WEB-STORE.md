@@ -53,7 +53,7 @@ Privacy: https://applyapply.xyz/privacy
 
 Google's current listing guidance calls for:
 
-- Store icon: `128x128` PNG (already in `extension/icons/icon-128.png`)
+- Store icon: `128x128` PNG with 96x96 artwork and 16px transparent padding: `store-assets/applyapply-store-icon-128.png`
 - At least one screenshot, up to five: `1280x800` PNG/JPEG (640x400 is also accepted)
 - Small promo tile: `440x280` PNG/JPEG
 - Optional marquee tile: `1400x560` PNG/JPEG
