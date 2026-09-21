@@ -48,7 +48,7 @@ for (const method of ['get','post','put','patch','delete']) {
     (req, res, next) => { try { Promise.resolve(handler(req,res,next)).catch(next); } catch (e) { next(e); } }));
 }
 const PORT = process.env.PORT || 5000;
-const VERSION = '0.28.2';
+const VERSION = '0.29.0';
 const IS_PRODUCTION = process.env.NODE_ENV === 'production';
 const APP_ORIGIN = process.env.APP_ORIGIN || 'http://localhost:5000';
 const ALLOWED_WEB_ORIGINS = new Set(
@@ -192,16 +192,25 @@ code{background:#111;border:1px solid #1e1e1e;padding:2px 7px;font-size:13px;fon
 </body></html>`);
 });
 
-app.get('/privacy', (req, res) => {
+// Privacy and Terms share one shell so the two legal pages cannot drift apart.
+const LEGAL_STYLE = `<style>
+*{box-sizing:border-box}body{margin:0;background:#000;color:#f5f5f5;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;line-height:1.65}
+a{color:#fff}.topbar{padding:22px 32px;border-bottom:1px solid #171717;display:flex;justify-content:space-between}.logo{font-weight:800;text-decoration:none}.nav{display:flex;gap:18px;font-size:13px}.nav a{text-decoration:none;color:#aaa}.wrap{max-width:760px;margin:0 auto;padding:64px 24px 110px}h1{font-size:34px;line-height:1.1;margin:0 0 12px}h2{font-size:18px;margin:38px 0 8px}p,li{font-size:14px;color:#c8c8c8}ul{padding-left:22px}.updated{font-size:12px;color:#888;margin-bottom:38px}.limited{border:1px solid #2b2b2b;padding:16px 18px;margin:24px 0;color:#ddd;font-size:14px}.foot{border-top:1px solid #171717;padding-top:24px;margin-top:52px;font-size:13px;color:#888}
+</style>`;
+function legalPage(res, { title, desc, path: urlPath, body }) {
   res.setHeader('Cache-Control', 'public, max-age=3600');
   res.send(`<!DOCTYPE html><html><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-${metaHead({title:'Privacy policy — applyapply', desc:'How applyapply collects, uses and protects profile, resume and job-application data.', path:'/privacy'})}
-<style>
-*{box-sizing:border-box}body{margin:0;background:#000;color:#f5f5f5;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;line-height:1.65}
-a{color:#fff}.topbar{padding:22px 32px;border-bottom:1px solid #171717;display:flex;justify-content:space-between}.logo{font-weight:800;text-decoration:none}.nav{display:flex;gap:18px;font-size:13px}.nav a{text-decoration:none;color:#aaa}.wrap{max-width:760px;margin:0 auto;padding:64px 24px 110px}h1{font-size:34px;line-height:1.1;margin:0 0 12px}h2{font-size:18px;margin:38px 0 8px}p,li{font-size:14px;color:#c8c8c8}ul{padding-left:22px}.updated{font-size:12px;color:#888;margin-bottom:38px}.limited{border:1px solid #2b2b2b;padding:16px 18px;margin:24px 0;color:#ddd;font-size:14px}.foot{border-top:1px solid #171717;padding-top:24px;margin-top:52px;font-size:13px;color:#888}
-</style></head><body><div class="topbar"><a class="logo" href="/">applyapply</a><div class="nav"><a href="/extension">Extension</a><a href="/buy">Credits</a></div></div>
-<main class="wrap"><h1>Privacy policy</h1><div class="updated">Last updated September 21, 2026</div>
+${metaHead({ title, desc, path: urlPath })}
+${LEGAL_STYLE}</head><body><div class="topbar"><a class="logo" href="/">applyapply</a><div class="nav"><a href="/extension">Extension</a><a href="/buy">Credits</a></div></div>
+<main class="wrap">${body}<div class="foot"><a href="/">applyapply.xyz</a> · <a href="/privacy">Privacy</a> · <a href="/terms">Terms</a> · <a href="/extension">Extension</a> · <a href="/login">Sign in</a> · <a href="mailto:wittman.c@gmail.com">Support</a></div></main></body></html>`);
+}
+
+app.get('/privacy', (req, res) => legalPage(res, {
+  title: 'Privacy policy — applyapply',
+  desc: 'How applyapply collects, uses and protects profile, resume and job-application data.',
+  path: '/privacy',
+  body: `<h1>Privacy policy</h1><div class="updated">Last updated September 21, 2026</div>
 <p>applyapply helps people find jobs and prepare applications. This policy explains what the applyapply website, server, and browser extension collect and how that information is used.</p>
 <div class="limited"><b>Chrome Web Store Limited Use disclosure:</b> applyapply uses data received from the extension only to provide and improve its single purpose: helping a user review and complete job applications. We do not sell user data, use it for advertising, or transfer it for unrelated purposes.</div>
 <h2>Information we handle</h2>
@@ -209,17 +218,48 @@ a{color:#fff}.topbar{padding:22px 32px;border-bottom:1px solid #171717;display:f
 <h2>How we use information</h2>
 <p>We use this information only to authenticate you, find and organize roles, generate tailored resumes and application materials, fill forms at your direction, save your work, charge credits, prevent abuse, troubleshoot failures, and improve reliability. Your profile, resume, answers, screenshots, and job materials are not sold, used for advertising, or used to train a general-purpose model. We do not submit an application without an action from you.</p>
 <h2>Service providers</h2>
-<p>We share only the data needed to provide the requested feature with service providers: Railway and Postgres for hosting and storage; Anthropic or OpenRouter for language-model generation; Hyperbrowser for browser-based sourcing; Stripe for payments; and Resend for transactional email. These providers process data on our behalf under their own terms and security practices.</p>
+<p>We share only the data needed to provide the requested feature with service providers: Railway and Postgres for hosting and storage; Anthropic or OpenRouter for language-model generation; TypeSafe for scoring how well a listing or tailored resume fits your target roles and for screening listings for hidden instructions; Hyperbrowser for browser-based sourcing; Stripe for payments; and Resend for transactional email. These providers process data on our behalf under their own terms and security practices.</p>
 <h2>What we do not do</h2>
 <p>We do not sell personal information, use it for targeted advertising, or allow people to read user application data except when you explicitly provide it for support or when needed for security, legal compliance, or abuse investigation. We do not use job-page data to build unrelated advertising profiles.</p>
 <h2>Retention and deletion</h2>
 <p>Your profile, resume, generated kits, pipeline, and saved answers remain in your account until you delete them. In <a href="/setup">Profile &amp; settings</a>, you can download an account export or permanently delete the account and its stored profile, resume, answers, jobs, kits, schedule, and operational records. Shared source-cache data contains public job listings, not your profile. Payment and fraud records may be retained longer where required for accounting, security, or legal obligations. You can also email <a href="mailto:wittman.c@gmail.com">wittman.c@gmail.com</a> from the account email address.</p>
 <h2>Security and extension behavior</h2>
-<p>Data is transmitted over HTTPS, sessions are authenticated with expiring tokens, production access is restricted, and the extension has no access to pages until you click its toolbar icon. The extension sends page data only when you request a fill, answer, resume, or application action. We do not sell user data, use it for targeted advertising, or transfer it for unrelated purposes. No internet service can guarantee absolute security, so please do not upload information you are not comfortable processing through the service providers described above.</p>
+<p>Data is transmitted over HTTPS, sessions are authenticated with expiring tokens, production access is restricted, and the extension has no access to pages until you click its toolbar icon. The extension sends page data only when you request a fill, answer, resume, or application action. If you use voice dictation, the extension uses Chrome's built-in speech recognition, which Google processes under its own terms; applyapply receives only the resulting text. We do not sell user data, use it for targeted advertising, or transfer it for unrelated purposes. No internet service can guarantee absolute security, so please do not upload information you are not comfortable processing through the service providers described above.</p>
+<h2>Terms</h2>
+<p>Use of applyapply is also governed by our <a href="/terms">Terms of Service</a>.</p>
 <h2>Changes and contact</h2>
 <p>We may update this policy as the product changes. We will update the date above and, when appropriate, notify account holders. Questions or privacy requests can be sent to <a href="mailto:wittman.c@gmail.com">wittman.c@gmail.com</a>.</p>
-<div class="foot"><a href="/">applyapply.xyz</a> · <a href="/extension">Extension</a> · <a href="/login">Sign in</a> · <a href="mailto:wittman.c@gmail.com">Support</a></div></main></body></html>`);
-});
+`,
+}));
+
+app.get('/terms', (req, res) => legalPage(res, {
+  title: 'Terms of Service — applyapply',
+  desc: 'The terms for using the applyapply website, browser extension and credits.',
+  path: '/terms',
+  body: `<h1>Terms of Service</h1><div class="updated">Last updated September 21, 2026</div>
+<p>These terms cover your use of the applyapply website, server, and browser extension (together, "applyapply"). By creating an account or using applyapply, you agree to them. If you do not agree, do not use the service.</p>
+<h2>Who can use applyapply</h2>
+<p>You must be at least 18 years old, or the age of majority where you live, and able to agree to these terms. You sign in with a link sent to your email address, so keep access to that inbox secure. You are responsible for activity on your account.</p>
+<h2>What applyapply does and does not do</h2>
+<p>applyapply finds job listings, drafts tailored resumes, cover notes and answers from the information you provide, and fills application forms when you ask it to. It never submits an application for you. Generated material can be wrong, incomplete or out of date, so read and correct everything before you submit it. You are responsible for what you send to employers, including making sure it is truthful. We do not guarantee interviews, offers or any other result, and we are not a recruiter or an employment agency.</p>
+<h2>Your content</h2>
+<p>You own the profile, resume, answers and other material you provide, and the materials generated for you. You give us permission to store and process that content, including through the service providers listed in our <a href="/privacy">Privacy policy</a>, only as needed to run applyapply for you. Only provide information you have the right to share.</p>
+<h2>Acceptable use</h2>
+<p>Do not use applyapply to break the law, to misrepresent your identity or qualifications, to send bulk or automated applications, to interfere with the service or with job sites, to get around usage limits or credit charges, or to resell or copy the service. You are responsible for following the terms of the job sites and application systems you use applyapply with.</p>
+<h2>Credits and payments</h2>
+<p>Some features use credits. New accounts may receive free starter credits. Purchased credits are a one-time, prepaid purchase with no subscription; they do not expire, have no cash value, and cannot be transferred. Stripe processes payments. If an operation fails, the credits it reserved are returned automatically. Purchased credits are not refundable except where the law requires it; if something went wrong with a purchase, email us and we will look into it. We may change credit prices for future purchases and operations, but not the balance you already hold.</p>
+<h2>Third-party services</h2>
+<p>applyapply links to and works on job sites and application systems we do not control. Their content, availability and terms are their own.</p>
+<h2>Suspension and deletion</h2>
+<p>You can delete your account at any time in <a href="/setup">Profile &amp; settings</a>. We may suspend or close accounts that break these terms or put the service or other users at risk. Unused free credits end when an account is closed.</p>
+<h2>Disclaimers</h2>
+<p>applyapply is provided "as is" and "as available". To the fullest extent the law allows, we disclaim all warranties, express or implied, including merchantability, fitness for a particular purpose and non-infringement. We do not promise the service will be uninterrupted or error-free.</p>
+<h2>Limitation of liability</h2>
+<p>To the fullest extent the law allows, applyapply is not liable for indirect, incidental, special, consequential or punitive damages, or for lost profits, lost opportunities or lost data. Our total liability for any claim relating to the service is limited to the amount you paid us in the 12 months before the claim arose.</p>
+<h2>Changes and contact</h2>
+<p>We may update these terms as the product changes. We will update the date above and, for material changes, notify account holders before they take effect. Continuing to use applyapply after a change means you accept the updated terms. Questions can be sent to <a href="mailto:wittman.c@gmail.com">wittman.c@gmail.com</a>.</p>
+`,
+}));
 
 app.get('/robots.txt', (req, res) => {
   const origin = APP_ORIGIN.replace(/\/$/, '');
@@ -852,6 +892,7 @@ setTimeout(function() { var b = document.querySelector('.drole'); startDemo('pro
     <a href="/setup">Setup</a>
     <a href="/pipeline">Pipeline</a>
     <a href="/privacy">Privacy</a>
+    <a href="/terms">Terms</a>
   </div>
 </footer>
 
@@ -910,6 +951,7 @@ input::placeholder{color:#a8a8a8}
   <input type="email" id="email" placeholder="you@example.com" autofocus/>
   <button class="btn" id="btn" onclick="send()">Send link</button>
   <div id="msg"></div>
+  <p style="font-size:12px;color:#e5e5e5;margin-top:14px">By continuing you agree to the <a href="/terms" style="color:#fff">Terms</a> and <a href="/privacy" style="color:#fff">Privacy policy</a>.</p>
 </div>
 <script>
 const EXT_ID=${scriptJSON(extId)};

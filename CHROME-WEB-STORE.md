@@ -70,7 +70,7 @@ Recommended screenshot sequence:
 2. The tailored resume panel with the download action visible.
 3. The Q&A section showing reviewable, editable answers and copy controls.
 4. A form with applyapply field controls visible, demonstrating fill-and-advance.
-5. The extension popup showing sign-in, credits, and the optional auto-detect setting.
+5. The extension popup showing sign-in, credits, and profile settings.
 
 Use real product screenshots, square corners, full bleed, and minimal overlay text. Do not show real email addresses, private resumes, API keys, or payment details.
 
@@ -83,8 +83,7 @@ Use real product screenshots, square corners, full bleed, and minimal overlay te
 | `clipboardWrite` | Supports the user-requested copy action for application answers. |
 | `scripting` | Injects the applyapply panel and form-filling behavior after the user opens it. |
 | `offscreen` | Provides optional voice transcription for an application answer after the user starts it. |
-| Named ATS host permissions | Automatically recognizes and assists supported job-board application pages. |
-| Optional `*://*/*` host permission | Enables auto-detection on other job sites only after the user explicitly grants it in the popup. Without it, the toolbar action still works through `activeTab`. |
+| Named ATS host permissions | When the user clicks the toolbar button, lets applyapply run inside application forms these platforms embed on company career sites (cross-origin iframes that activeTab does not cover), and lets the extension talk to its own server at applyapply.xyz. Nothing runs on page load. |
 
 ## Privacy answers
 

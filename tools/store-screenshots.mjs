@@ -152,7 +152,7 @@ try {
   await page.evaluate(() => window.dispatchEvent(new Event('scroll')));
   await shot('screenshot-4-fill.png');
 
-  // 5. The toolbar popup over a job page: sign-in state, credits, auto-detect.
+  // 5. The toolbar popup over a job page: sign-in state, credits, profile.
   const popup = await ctx.newPage();
   await popup.setViewportSize({ width: 340, height: 700 });
   await popup.route('https://applyapply.xyz/**', async route => {
