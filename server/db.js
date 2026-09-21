@@ -165,6 +165,8 @@ async function initSchema() {
   `);
   await q(`ALTER TABLE schedules ADD COLUMN IF NOT EXISTS frequency TEXT NOT NULL DEFAULT 'daily'`);
   await q(`ALTER TABLE schedules ADD COLUMN IF NOT EXISTS lookback_hours INTEGER NOT NULL DEFAULT 24`);
+  // How many of each run's best new matches get a kit written right away.
+  await q(`ALTER TABLE schedules ADD COLUMN IF NOT EXISTS auto_kits INTEGER NOT NULL DEFAULT 0`);
 
   // Shared source results. Board scrapes return the same jobs for everyone, and
   // the Google sources vary only by role titles — so the key is source + role
@@ -781,22 +783,25 @@ async function getSchedule(userEmail) {
 // alreadyPassedToday stamps last_run_at so that saving a schedule for a time
 // that has already gone by does not read as a missed run and fire immediately,
 // charging credits the user never asked to spend today.
-async function setSchedule(userEmail, { hour, minute, frequency = 'daily', enabled, sources, lookback_hours = 24 }, alreadyPassedToday = false) {
+async function setSchedule(userEmail, { hour, minute, frequency = 'daily', enabled, sources, lookback_hours = 24, auto_kits }, alreadyPassedToday = false) {
   const cadence = frequency === 'weekdays' ? 'weekdays' : 'daily';
   const lookback = Number(lookback_hours) === 0 ? 0 : 24;
+  // Older clients do not send auto_kits; leave the saved value alone then.
+  const kits = auto_kits === undefined ? null : Math.max(0, Math.min(5, Number(auto_kits) || 0));
   return q1(`
-    INSERT INTO schedules (user_email, hour, minute, frequency, enabled, sources, lookback_hours, last_run_at, updated_at)
-    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,NOW())
+    INSERT INTO schedules (user_email, hour, minute, frequency, enabled, sources, lookback_hours, last_run_at, auto_kits, updated_at)
+    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,COALESCE($9,0),NOW())
     ON CONFLICT (user_email) DO UPDATE SET
       hour = EXCLUDED.hour, minute = EXCLUDED.minute,
       frequency = EXCLUDED.frequency,
       enabled = EXCLUDED.enabled, sources = EXCLUDED.sources,
       lookback_hours = EXCLUDED.lookback_hours,
       last_run_at = COALESCE(EXCLUDED.last_run_at, schedules.last_run_at),
+      auto_kits = COALESCE($9, schedules.auto_kits),
       updated_at = NOW()
     RETURNING *
   `, [userEmail, hour, minute, cadence, enabled, sources ? JSON.stringify(sources) : null,
-      lookback, alreadyPassedToday ? new Date() : null]);
+      lookback, alreadyPassedToday ? new Date() : null, kits]);
 }
 
 async function getAccountExport(userEmail) {

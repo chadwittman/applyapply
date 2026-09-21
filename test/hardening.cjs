@@ -381,6 +381,24 @@ async function main() {
     assert.deepEqual(cov.gaps,['Managed a team of PMs']);
     assert.deepEqual(cov.answered,[{question:'Led a pricing change',answer:'Moved us to usage pricing; NRR went to 118%.'}]);
   });
+  await check('Opt-in kits are written for the best new matches, charged per kit, stopping at no credits',async()=>{
+    const owner='autokits@audit.invalid';await balance(owner,25);
+    await db.setProfile(owner,{first_name:'Auto',email:owner},true);
+    const put=await call('POST','/schedule',owner,{hour:8,minute:0,enabled:false,sources:['a16z job board'],auto_kits:3});
+    assert.equal(put.status,200,JSON.stringify(put.data));assert.equal(put.data.schedule.auto_kits,3);
+    const runJobs=[['https://jobs.lever.co/auto/best',1,9],['https://jobs.lever.co/auto/good',2,8],['https://jobs.lever.co/auto/ok',3,6],['https://jobs.lever.co/auto/low',3,4]]
+      .map(([url,tier,fit])=>({url,company:'Auto',role:'PM',found_at:'2026-09-21',tier,fit_score:fit}));
+    await db.saveSourceRun({id:'auto-run',date:'2026-09-21',sources:1,found:4,excluded:0,duration_ms:1,user_email:owner},runJobs,{sources:[]});
+    const {prepareKits}=requireServer('./server');
+    const ready=await prepareKits(owner,'auto-run',server.address().port);
+    // 25 credits pays for two 10-credit kits; the third is refused and nothing more is tried.
+    assert.equal(ready,2);assert.equal((await db.getUser(owner)).credits,5);
+    assert.ok(await db.findKit('https://jobs.lever.co/auto/best',owner));
+    assert.ok(await db.findKit('https://jobs.lever.co/auto/good',owner));
+    assert.equal(await db.findKit('https://jobs.lever.co/auto/low',owner),null);
+    const unchanged=await call('POST','/schedule',owner,{hour:8,minute:0,enabled:false,sources:['a16z job board']});
+    assert.equal(unchanged.data.schedule.auto_kits,3,'Older clients that omit auto_kits keep the setting');
+  });
   await check('Search window is part of the cache key and honors date-only board stamps',async()=>{
     assert.notEqual(db.cacheKeyFor('Sequoia job board','',true,'remote',24),db.cacheKeyFor('Sequoia job board','',true,'remote',0));
     assert.notEqual(db.cacheKeyFor('Lever jobs (Google)','PM',false,'remote',24),db.cacheKeyFor('Lever jobs (Google)','PM',false,'remote',0));

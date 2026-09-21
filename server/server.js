@@ -57,7 +57,7 @@ for (const method of ['get','post','put','patch','delete']) {
     (req, res, next) => { try { Promise.resolve(handler(req,res,next)).catch(next); } catch (e) { next(e); } }));
 }
 const PORT = process.env.PORT || 5000;
-const VERSION = '0.33.0';
+const VERSION = '0.34.0';
 const IS_PRODUCTION = process.env.NODE_ENV === 'production';
 const APP_ORIGIN = process.env.APP_ORIGIN || 'http://localhost:5000';
 const ALLOWED_WEB_ORIGINS = new Set(
@@ -2089,6 +2089,18 @@ function loadKeys() {
 const keys = loadKeys();
 const MODEL_OPENROUTER = 'anthropic/claude-haiku-4-5';
 const MODEL_ANTHROPIC = 'claude-haiku-4-5-20251001';
+// The model that writes kits, tailored resumes and cover letters. Measured
+// 2026-09-21 on a real Greenhouse posting (kit + resume in parallel):
+// Sonnet 4.6 33.8s; Sonnet 5 thinking off 23.3s; Sonnet 5 low effort 21.2s
+// with equal-or-better writing; Haiku 4.5 9.4s but returned an empty kit.
+// JAA_WRITER_MODEL / JAA_WRITER_THINKING / JAA_WRITER_EFFORT override it.
+const WRITER_MODEL = process.env.JAA_WRITER_MODEL || 'claude-sonnet-5';
+function writerOptions(model) {
+  if (!/^claude-(sonnet|opus)-5/.test(model)) return {};
+  const opts = { output_config: { effort: process.env.JAA_WRITER_EFFORT || 'low' } };
+  if (process.env.JAA_WRITER_THINKING === 'disabled') opts.thinking = { type: 'disabled' };
+  return opts;
+}
 
 async function loadApps(userEmail = null) {
   return userEmail ? db.getKits(userEmail) : [];
@@ -2244,7 +2256,7 @@ const r = await publicFetch(url, {
   } catch { return null; }
 }
 
-async function callClaude(prompt, maxTokens = 4096, model = null) {
+async function callClaude(prompt, maxTokens = 4096, model = null, extra = {}) {
   if (!keys) throw new Error('No API key configured');
   if (keys.provider === 'openrouter') {
     const r = await providerFetch('https://openrouter.ai/api/v1/chat/completions', {
@@ -2259,10 +2271,14 @@ async function callClaude(prompt, maxTokens = 4096, model = null) {
     const r = await providerFetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
       headers: { 'x-api-key': keys.key, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
-      body: JSON.stringify({ model: useModel, max_tokens: maxTokens, messages: [{ role: 'user', content: prompt }] }),
+      body: JSON.stringify({ model: useModel, max_tokens: maxTokens, messages: [{ role: 'user', content: prompt }], ...extra }),
     });
-    if (!r.ok) throw new Error(`Anthropic ${r.status}`);
-    return (await r.json()).content[0].text;
+    if (!r.ok) throw new Error(`Anthropic ${r.status}: ${(await r.text()).slice(0, 200)}`);
+    const data = await r.json();
+    // Thinking models return thinking blocks before the text.
+    const text = (data.content || []).find(b => b.type === 'text')?.text;
+    if (data.stop_reason === 'refusal' || text == null) throw new Error('Model returned no text' + (data.stop_reason ? ` (${data.stop_reason})` : ''));
+    return text;
   }
 }
 
@@ -2743,7 +2759,7 @@ Concrete over abstract: "built a pipeline that drove 4.5x revenue per title as C
           .then(r => { console.log(`[generate] resume ready ${Date.now() - started}ms`); return r; })
           .catch(e => { console.error('Resume in kit failed:', e.message); return null; })
       : Promise.resolve(null);
-    const raw = await callClaude(prompt, 4096, 'claude-sonnet-4-6');
+    const raw = await callClaude(prompt, 8000, WRITER_MODEL, writerOptions(WRITER_MODEL));
     console.log(`[generate] kit ready ${Date.now() - started}ms`);
     const parsed = JSON.parse(raw.match(/\{[\s\S]*\}/)[0]);
     const generated = applicationOutput(cleanEmDashes(parsed), {
@@ -2967,7 +2983,7 @@ Return ONLY valid JSON, no markdown:
   }
 }`;
 
-  const raw = await callClaude(prompt, 2800, 'claude-sonnet-4-6');
+  const raw = await callClaude(prompt, 6000, WRITER_MODEL, writerOptions(WRITER_MODEL));
   const match = raw.match(/\{[\s\S]*\}/);
   if (!match) throw new Error('No JSON in response');
   const tailored = tidyResume(resumeOutput(cleanEmDashes(JSON.parse(match[0]))));
@@ -3091,7 +3107,7 @@ Return ONLY valid JSON, no markdown:
 {"questions":[{"question":"<question>","theme":"product|growth|leadership|technical|other"}]}`;
 
   try {
-    const raw = await callClaude(prompt, 1500, 'claude-sonnet-4-6');
+    const raw = await callClaude(prompt, 4000, WRITER_MODEL, writerOptions(WRITER_MODEL));
     const match = raw.match(/\{[\s\S]*\}/);
     if (!match) throw new Error('No JSON in response');
     const parsed = JSON.parse(match[0]);
@@ -3390,6 +3406,36 @@ async function runIngest() {
   } finally { ingestRunning = false; }
 }
 
+// After a run adds jobs, write kits for the best few so they are ready when
+// the user opens them. Opt-in (schedules.auto_kits), charged per kit through
+// the normal /generate route, and it stops at the first refusal (for example
+// insufficient credits). Returns how many kits are ready.
+async function prepareKits(userEmail, runId, port = PORT) {
+  const n = (await db.getSchedule(userEmail).catch(() => null))?.auto_kits || 0;
+  if (!n) return 0;
+  const jobs = (await db.getJobsForRun(runId, userEmail))
+    .sort((a, b) => (a.tier ?? 9) - (b.tier ?? 9) || (b.fit_score ?? 0) - (a.fit_score ?? 0))
+    .slice(0, n);
+  const token = jwt.sign({ email: userEmail }, loadJwtSecret(), { expiresIn: '15m' });
+  const http = require('http');
+  const generate = job => new Promise(resolve => {
+    const payload = JSON.stringify({ url: job.url, company: job.company, role: job.role });
+    const r = http.request({ host: '127.0.0.1', port, path: '/generate', method: 'POST', timeout: 170000,
+      headers: { 'content-type': 'application/json', 'content-length': Buffer.byteLength(payload), authorization: 'Bearer ' + token, 'idempotency-key': 'auto-kit:' + runId + ':' + job.url.slice(0, 150) } },
+    res => { res.resume(); res.on('end', () => resolve(res.statusCode)); });
+    r.on('timeout', () => r.destroy()); r.on('error', () => resolve(0)); r.end(payload);
+  });
+  let ready = 0;
+  // Two at a time: fast, without starving interactive generations.
+  for (let i = 0; i < jobs.length; i += 2) {
+    const codes = await Promise.all(jobs.slice(i, i + 2).map(generate));
+    ready += codes.filter(c => c === 200).length;
+    if (codes.some(c => c === 402)) break;
+  }
+  console.log(`[auto kits] ${userEmail}: ${ready} of ${jobs.length} ready`);
+  return ready;
+}
+
 async function runScheduledSourcing(row) {
   const selected = selectSources(row.sources);
   if (!selected.length) return;
@@ -3418,6 +3464,7 @@ app.get('/schedule', async (req, res) => {
     enabled: row?.enabled ?? false,
     sources: row?.sources || null,
     lookback_hours: row?.lookback_hours ?? 24,
+    auto_kits: row?.auto_kits ?? 0,
     last_run_at: row?.last_run_at || null,
     timezone: SCHEDULE_TZ,
     catalog: ACTIVE_SOURCES.map(s => ({ name: s.name, credits: s.credits, desc: s.desc })),
@@ -3427,11 +3474,12 @@ app.get('/schedule', async (req, res) => {
 app.post('/schedule', async (req, res) => {
   const userEmail = reqUserEmail(req);
   if (!userEmail) return res.status(401).json({ error: 'Sign in required' });
-  const { hour, minute, frequency, enabled, sources, lookback_hours } = req.body || {};
+  const { hour, minute, frequency, enabled, sources, lookback_hours, auto_kits } = req.body || {};
   if (typeof enabled !== 'boolean' || !Number.isInteger(hour) || hour < 0 || hour > 23
       || !Number.isInteger(minute) || minute < 0 || minute > 59
       || (frequency !== undefined && !['daily','weekdays'].includes(frequency))
       || (lookback_hours !== undefined && ![0,24].includes(Number(lookback_hours)))
+      || (auto_kits !== undefined && ![0,3,5].includes(Number(auto_kits)))
       || (sources !== undefined && (!Array.isArray(sources) || sources.some(name => !SOURCE_CATALOG.some(s => s.name === name))))) {
     return res.status(400).json({ error: 'Invalid schedule settings' });
   }
@@ -3448,11 +3496,11 @@ app.post('/schedule', async (req, res) => {
   }).format(new Date()).split(':').map(Number);
   const passedToday = (h * 60 + m) <= (nowH * 60 + nowM);
   const row = await db.setSchedule(userEmail,
-    { hour: h, minute: m, frequency, enabled: !!enabled, sources: names, lookback_hours }, passedToday);
+    { hour: h, minute: m, frequency, enabled: !!enabled, sources: names, lookback_hours, auto_kits }, passedToday);
   const selected = selectSources(names);
   res.json({
     ok: true,
-    schedule: { hour: row.hour, minute: row.minute, frequency: row.frequency, enabled: row.enabled, sources: row.sources, lookback_hours: row.lookback_hours ?? 24 },
+    schedule: { hour: row.hour, minute: row.minute, frequency: row.frequency, enabled: row.enabled, sources: row.sources, lookback_hours: row.lookback_hours ?? 24, auto_kits: row.auto_kits ?? 0 },
     nightly_cost: selected.reduce((n, s) => n + s.credits, 0),
     weekly_cost: selected.reduce((n, s) => n + s.credits, 0) * (row.frequency === 'weekdays' ? 5 : 7),
     timezone: SCHEDULE_TZ,
@@ -3913,6 +3961,11 @@ ${alertBanners.join('\n')}
         <option value="24">Last 24 hours</option><option value="0">All currently listed</option>
       </select>
     </label>
+    <label style="font-size:11px;color:#fff">
+      prepare kits for the best new matches <select id="sched-autokits" onchange="schedCost()" style="background:#111;border:1px solid #1e1e1e;color:#fff;font-size:11px;padding:4px 6px;font-family:inherit">
+        <option value="0">Off</option><option value="3">Top 3 · up to ${CREDIT_COSTS.generate * 3} cr</option><option value="5">Top 5 · up to ${CREDIT_COSTS.generate * 5} cr</option>
+      </select>
+    </label>
   </div>
   </section>
   <section data-sched-step="2" hidden>
@@ -4282,6 +4335,7 @@ function loadSchedule(){
     document.getElementById('sched-time').value=String(d.hour).padStart(2,'0')+':'+String(d.minute).padStart(2,'0');
     document.getElementById('sched-frequency').value=d.frequency==='weekdays'?'weekdays':'daily';
     document.getElementById('sched-lookback').value=String(d.lookback_hours ?? 24);
+    document.getElementById('sched-autokits').value=String(d.auto_kits ?? 0);
     document.getElementById('sched-tz').textContent=(d.timezone||'').split('/').pop().replace('_',' ');
     if(d.last_run_at)document.getElementById('sched-last').textContent='last run '+new Date(d.last_run_at).toLocaleString();
     var on=d.sources&&d.sources.length?d.sources:(d.catalog||[]).map(function(c){return c.name;});
@@ -4308,7 +4362,7 @@ function schedCost(){
   document.getElementById('sched-count').textContent=picked.length+' of '+(SCHED.catalog||[]).length+' selected';
   document.getElementById('sched-next').disabled=!picked.length&&(schedStep===0||enabled);
   document.getElementById('sched-review').textContent=enabled
-    ? (huntRoles||'No target roles set')+' — '+picked.join(', ')+' · '+(days===5?'Weekdays':'Every day')+' at '+document.getElementById('sched-time').value+' · '+(document.getElementById('sched-lookback').value==='24'?'last 24 hours':'all currently listed')
+    ? (huntRoles||'No target roles set')+' — '+picked.join(', ')+' · '+(days===5?'Weekdays':'Every day')+' at '+document.getElementById('sched-time').value+' · '+(document.getElementById('sched-lookback').value==='24'?'last 24 hours':'all currently listed')+(Number(document.getElementById('sched-autokits').value)?' · kits for the top '+document.getElementById('sched-autokits').value:'')
     : 'Automatic hunting will be paused. No scheduled credits will be used.';
 }
 
@@ -4319,7 +4373,7 @@ function saveSchedule(){
   var t=(document.getElementById('sched-time').value||'06:00').split(':');
   var picked=[].slice.call(document.querySelectorAll('[data-sched-src]:checked')).map(function(i){return i.getAttribute('data-sched-src');});
   fetch('/schedule',{method:'POST',headers:Object.assign({'content-type':'application/json'},authHeaders()),
-    body:JSON.stringify({hour:Number(t[0]),minute:Number(t[1]),frequency:document.getElementById('sched-frequency').value,enabled:document.getElementById('sched-enabled').checked,sources:picked,lookback_hours:Number(document.getElementById('sched-lookback').value)})})
+    body:JSON.stringify({hour:Number(t[0]),minute:Number(t[1]),frequency:document.getElementById('sched-frequency').value,enabled:document.getElementById('sched-enabled').checked,sources:picked,lookback_hours:Number(document.getElementById('sched-lookback').value),auto_kits:Number(document.getElementById('sched-autokits').value)})})
   .then(function(r){return r.json();}).then(function(d){
     var lbl=document.getElementById('sched-label');
     if(!d || !d.ok || !d.schedule){status.textContent=d&&d.error||'Could not save schedule';schedCost();return;}
@@ -5799,12 +5853,13 @@ if (require.main === module) {
           const worker = require('./source-worker')(db, undefined, async op => {
             const complete = op.status === 'succeeded';
             const added = op.result?.added || 0;
+            const kitsReady = complete && added ? await prepareKits(op.user_email, op.result?.run_id || op.id).catch(e => { console.error('[auto kits]', e.message); return 0; }) : 0;
             const preferences = await db.getProfileByUserEmail(op.user_email);
             if (complete && added === 0 && preferences?.search_mode === 'selective') return;
             const scheduled = op.payload?.trigger === 'scheduled';
             const windowLabel = op.payload?.lookback_hours === 24 ? 'the last 24 hours' : 'the current listings';
             const message = complete
-              ? `${scheduled ? 'Your scheduled job search' : 'Your one-time job search'} finished. We pulled listings from ${windowLabel}, checked them against your roles, and added ${added} new role${added === 1 ? '' : 's'} to your pipeline. Review the matches to see new roles, duplicates, and filtered listings.`
+              ? `${scheduled ? 'Your scheduled job search' : 'Your one-time job search'} finished. We pulled listings from ${windowLabel}, checked them against your roles, and added ${added} new role${added === 1 ? '' : 's'} to your pipeline.${kitsReady ? ` Application kits are ready for the top ${kitsReady}.` : ''} Review the matches to see new roles, duplicates, and filtered listings.`
               : 'Your sourcing run did not finish, so its credits were returned automatically. You can review the run details and try again.';
             const link = APP_ORIGIN + '/sourcing';
             await sendEmail(op.user_email, 'applyapply: ' + (complete ? (scheduled ? 'scheduled search complete' : 'one-time search complete') : 'sourcing failed'),
@@ -5816,4 +5871,4 @@ if (require.main === module) {
     });
 }
 
-module.exports = { app, runScheduledSourcing };
+module.exports = { app, runScheduledSourcing, prepareKits };
