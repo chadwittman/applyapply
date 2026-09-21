@@ -294,6 +294,21 @@ async function main() {
     assert.equal((await db.getRuns(1,owner))[0].added,0);
     delete process.env.JAA_OPERATION_ID;
   });
+  await check('Search window is part of the cache key and honors date-only board stamps',async()=>{
+    assert.notEqual(db.cacheKeyFor('Sequoia job board','',true,'remote',24),db.cacheKeyFor('Sequoia job board','',true,'remote',0));
+    assert.notEqual(db.cacheKeyFor('Lever jobs (Google)','PM',false,'remote',24),db.cacheKeyFor('Lever jobs (Google)','PM',false,'remote',0));
+    const source=require('../source');
+    const now=Date.parse('2026-09-21T15:00:00Z');
+    assert.equal(source.postedInWindow('2026-09-20T00:00:00Z',now),true);
+    assert.equal(source.postedInWindow('2026-09-19T00:00:00Z',now),false);
+    assert.equal(source.postedInWindow('2026-09-20T16:00:00Z',now),true);
+    assert.equal(source.postedInWindow('2026-09-20T14:00:00Z',now),false);
+    assert.equal(source.postedInWindow(null,now),true);
+    assert.equal(source.windowPrecision({apiMode:{}},[{posted_at:'2026-09-20T16:00:00Z'}]),'exact');
+    assert.equal(source.windowPrecision({apiMode:{}},[{posted_at:'2026-09-20T16:00:00Z'},{posted_at:'2026-09-20T00:00:00Z'}]),'day');
+    assert.equal(source.windowPrecision({apiMode:{}},[{posted_at:null},{posted_at:'2026-09-20T16:00:00Z'}]),'partial');
+    assert.equal(source.windowPrecision({googleSearch:true},[]),'search_date');
+  });
   console.log(`\n${passed} adversarial regression groups passed. Providers mocked; DB and HTTP real.`);
 }
 main().catch(e=>{console.error(e);process.exitCode=1;}).finally(async()=>{

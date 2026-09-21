@@ -570,8 +570,11 @@ function roleKeyFor(roleTitles) {
     .split(',').map(r => r.trim().toLowerCase()).filter(Boolean).sort().join('|');
 }
 
-function cacheKeyFor(source, roleTitles, sharedAcrossRoles = false, locationPref = 'remote') {
-  return sharedAcrossRoles ? `v2::${source}::*` : `v2::${source}::${roleKeyFor(roleTitles)}::${locationPref}`;
+// The search window is part of the identity too: a last-24-hours fetch must
+// never be served to an all-listings run, or the reverse.
+function cacheKeyFor(source, roleTitles, sharedAcrossRoles = false, locationPref = 'remote', lookbackHours = 24) {
+  const windowKey = lookbackHours === 24 ? 'w24' : 'all';
+  return sharedAcrossRoles ? `v3::${source}::*::${windowKey}` : `v3::${source}::${roleKeyFor(roleTitles)}::${locationPref}::${windowKey}`;
 }
 
 async function getCachedSources(keys, maxAgeHours = 20) {

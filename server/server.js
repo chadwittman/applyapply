@@ -48,7 +48,7 @@ for (const method of ['get','post','put','patch','delete']) {
     (req, res, next) => { try { Promise.resolve(handler(req,res,next)).catch(next); } catch (e) { next(e); } }));
 }
 const PORT = process.env.PORT || 5000;
-const VERSION = '0.27.0';
+const VERSION = '0.28.0';
 const IS_PRODUCTION = process.env.NODE_ENV === 'production';
 const APP_ORIGIN = process.env.APP_ORIGIN || 'http://localhost:5000';
 const ALLOWED_WEB_ORIGINS = new Set(
@@ -3078,22 +3078,25 @@ async function runNightlyPrefetch() {
   catch (e) { return console.error('[prefetch] schedules:', e.message); }
   if (!rows.length) return console.log('[prefetch] nobody scheduled, skipping');
 
+  // The search window is part of the cache key, so warm each role set once
+  // per window its users actually run.
   const byRoles = new Map();
   for (const row of rows) {
     const profile = await getProfileByUserEmail(row.user_email).catch(() => null);
     const roles = profile?.target_roles || '';
-    const key = db.roleKeyFor(roles);
-    if (!byRoles.has(key)) byRoles.set(key, roles);
+    const lookback = (row.lookback_hours ?? 24) === 24 ? 24 : 0;
+    const key = db.roleKeyFor(roles) + '::' + lookback;
+    if (!byRoles.has(key)) byRoles.set(key, { roles, lookback });
   }
 
   console.log(`[prefetch] warming ${byRoles.size} distinct role set(s) for ${rows.length} scheduled user(s)`);
   const { spawn } = require('child_process');
-  for (const roles of byRoles.values()) {
+  for (const { roles, lookback } of byRoles.values()) {
     await new Promise(resolve => {
       const child = spawn('node', [path.join(__dirname, '../source.js')], {
         cwd: path.join(__dirname, '..'),
         stdio: ['ignore', 'pipe', 'pipe'],
-        env: { ...process.env, JAA_PREFETCH_ONLY: '1', ...(roles ? { JAA_TARGET_ROLES: roles } : {}) },
+        env: { ...process.env, JAA_PREFETCH_ONLY: '1', JAA_LOOKBACK_HOURS: String(lookback), ...(roles ? { JAA_TARGET_ROLES: roles } : {}) },
       });
       child.stdout.on('data', d => process.stdout.write(`[prefetch] ${d}`));
       child.stderr.on('data', d => process.stderr.write(`[prefetch] ${d}`));
@@ -3323,8 +3326,15 @@ app.get('/sourcing', async (req, res) => {
         const kitCount = fitJobs.filter(j => kitUrlSet.has(normUrl(j.url))).length;
         const openedCount = fitJobs.filter(j => openedSet.has(j.url)).length;
 
+        // How far the last-24-hours window can be trusted for this source.
+        const precision = {
+          exact: ['exact 24h', 'The board gives each posting a time, so the 24-hour window is exact.'],
+          day: ['by posting day', 'This board records the day a job was posted, not the time, so the window starts at the beginning of yesterday.'],
+          partial: ['some undated', 'Some postings had no date and were kept rather than dropped.'],
+          search_date: ['best-effort 24h', "Google's date filter is used. Listings without a date may be older."],
+        }[src.windowPrecision];
         const statParts = [
-          `${nTotal} pulled${src.windowCount != null && src.windowCount !== nTotal ? ` · ${src.windowCount} in window` : ''}`,
+          `${nTotal} pulled${src.windowCount != null && src.windowCount !== nTotal ? ` · ${src.windowCount} in window` : ''}${precision ? ` <span class="badge" title="${esc(precision[1])}">${precision[0]}</span>` : ''}`,
           fitJobs.length ? `<strong>${fitJobs.length} fit</strong>` : '0 fit',
           kitCount ? `${kitCount} kit${kitCount>1?'s':''}` : '',
           openedCount ? `${openedCount} opened` : '',

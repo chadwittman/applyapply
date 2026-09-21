@@ -328,6 +328,29 @@ let SOURCE_SEARCH_MODE = 'active'; // 'active' | 'selective'
 let SOURCE_SALARY = '';
 const LOOKBACK_HOURS = Number(process.env.JAA_LOOKBACK_HOURS || 24) === 24 ? 24 : 0;
 
+// Sequoia stamps a posting with its date only (midnight UTC), so a strict
+// 24-hour cutoff drops most of yesterday's jobs. Date-only stamps are kept when
+// they fall on or after the calendar day the window opens; full timestamps are
+// held to the exact window.
+function postedInWindow(postedAt, now = Date.now()) {
+  if (!LOOKBACK_HOURS || !postedAt) return true;
+  const posted = Date.parse(postedAt);
+  if (!Number.isFinite(posted)) return true;
+  const windowStart = now - LOOKBACK_HOURS * 60 * 60 * 1000;
+  if (/T00:00:00(\.0+)?Z$|^\d{4}-\d{2}-\d{2}$/.test(postedAt)) return posted >= Date.parse(new Date(windowStart).toISOString().slice(0, 10));
+  return posted >= windowStart;
+}
+
+// How much the last-24-hours window can be trusted for each kind of source.
+function windowPrecision(source, jobs) {
+  if (!LOOKBACK_HOURS) return 'all';
+  if (source.googleSearch) return 'search_date';
+  if (!jobs.length) return 'exact';
+  const stamped = jobs.filter(j => j.posted_at).length;
+  if (stamped < jobs.length) return 'partial';
+  return jobs.some(j => /T00:00:00(\.0+)?Z$/.test(j.posted_at)) ? 'day' : 'exact';
+}
+
 function buildHBSources() {
   const roleParts = ROLE_TITLES.split(', ').map(t => `"${t.toLowerCase()}"`).join(' OR ');
   const remoteQ = SOURCE_LOCATION_PREF === 'remote' ? ' remote' : '';
@@ -344,7 +367,7 @@ function buildHBSources() {
       waitMs: 2500,
       apiMode: {
         endpoint: '/api-boards/search-jobs',
-        body: { meta: { size: 200 }, board: { id: 'andreessen-horowitz', isParent: true }, query: { remoteOnly: true, postedSince: 'P1D', promoteFeatured: true } },
+        board: 'andreessen-horowitz',
       },
     },
     {
@@ -354,7 +377,7 @@ function buildHBSources() {
       waitMs: 2500,
       apiMode: {
         endpoint: '/api-boards/search-jobs',
-        body: { meta: { size: 200 }, board: { id: 'sequoia-capital', isParent: true }, query: { remoteOnly: true, postedSince: 'P1D', promoteFeatured: true } },
+        board: 'sequoia-capital',
       },
     },
     {
@@ -403,7 +426,7 @@ async function runBrowserSources(claudeKey, hbKey) {
 
   // Only allScanned is cacheable — `jobs` is filtered by this user's role
   // regex, so it gets recomputed locally from the shared raw results.
-  const keyOf = src => cacheKeyFor(src.name, ROLE_TITLES, !!src.apiMode, SOURCE_LOCATION_PREF);
+  const keyOf = src => cacheKeyFor(src.name, ROLE_TITLES, !!src.apiMode, SOURCE_LOCATION_PREF, LOOKBACK_HOURS);
   let misses = HB_SOURCES;
   try {
     const cached = await getCachedSources(HB_SOURCES.map(keyOf), SOURCE_CACHE_HOURS);
@@ -415,7 +438,7 @@ async function runBrowserSources(claudeKey, hbKey) {
       if (!source.apiMode && !Array.isArray(hit.jobs)) { misses.push(source); continue; }
       const found = source.apiMode ? all.filter(j => ROLE_RE.test(j.role)) : hit.jobs;
       item('·', `${source.name} — shared cache, ${all.length} scanned, ${found.length} match`);
-      results.push({ source: source.name, searched: hit.searched, rawCount: hit.rawCount, windowCount: hit.windowCount ?? all.length, jobs: found, allScanned: all, fromCache: true });
+      results.push({ source: source.name, searched: hit.searched, rawCount: hit.rawCount, windowCount: hit.windowCount ?? all.length, windowPrecision: hit.windowPrecision, jobs: found, allScanned: all, fromCache: true });
     }
   } catch (e) {
     log(`   cache unavailable (${e.message}) — fetching everything`);
@@ -452,36 +475,62 @@ async function runBrowserSources(claudeKey, hbKey) {
       process.stdout.write(`   Browsing ${source.name}...`);
       try {
 
-        // ── API mode (a16z) ────────────────────────────────────────────────
+        // ── Board mode (a16z, Sequoia) ─────────────────────────────────────
         if (source.apiMode) {
-          await page.goto(source.url, { waitUntil: 'networkidle', timeout: 30000 });
-          await page.waitForTimeout(source.waitMs);
-          // These boards moved to server rendering: the old JSON endpoint now
-          // answers 404 with an HTML page, so the API call is tried and the
-          // rendered DOM is read when it fails. Verified against a16z, where
-          // the API returns 404 and the DOM yields 25 jobs.
-          let apiData = await page.evaluate(async ({ endpoint, body }) => {
+          // Sequoia's board answers /api-boards/search-jobs only with the CSRF
+          // token its own page sends, so the token is taken from that request.
+          let csrf = '';
+          const onRequest = req => { const t = req.headers()['x-csrf-token']; if (t && /api-boards\//.test(req.url())) csrf = t; };
+          page.on('request', onRequest);
+          try {
+            await page.goto(source.url, { waitUntil: 'networkidle', timeout: 30000 });
+            await page.waitForTimeout(source.waitMs);
+          } finally { page.off('request', onRequest); }
+          // Stamps are date-only, so the API's own P1D filter drops most of
+          // yesterday; P2D is narrowed locally by postedInWindow().
+          let apiData = await page.evaluate(async ({ endpoint, board, csrf, postedSince }) => {
+            const out = [];
+            let sequence;
             try {
-              const r = await fetch(endpoint, {
-                method: 'POST',
-                headers: { 'content-type': 'application/json', 'accept': 'application/json', 'x-csrf-token': document.querySelector('meta[name=csrf-token]')?.content || document.documentElement.innerHTML.match(/csrfToken["']?\s*:\s*["']([^"']+)/)?.[1] || '' },
-                body: JSON.stringify(body),
-              });
-              if (!r.ok || !/json/.test(r.headers.get('content-type') || '')) return null;
-              const d = await r.json();
-              return (d.jobs || []).map(j => ({ role: j.title || '', company: j.companyName || '', url: j.applyUrl || '', location: j.remote ? 'Remote' : (j.location?.name || ''), posted_at: j.timeStamp || j.postedAt || j.createdAt || j.created_at || null, salary: j.salary || null }));
-            } catch { return null; }
-          }, source.apiMode);
+              for (let i = 0; i < 40; i++) {
+                const r = await fetch(endpoint, {
+                  method: 'POST',
+                  headers: { 'content-type': 'application/json', 'accept': 'application/json', 'x-csrf-token': csrf },
+                  body: JSON.stringify({ meta: { size: 100, ...(sequence ? { sequence } : {}) }, board: { id: board, isParent: true }, query: { remoteOnly: true, ...(postedSince ? { postedSince } : {}) } }),
+                });
+                if (!r.ok || !/json/.test(r.headers.get('content-type') || '')) return out.length ? out : null;
+                const d = await r.json();
+                for (const j of d.jobs || []) {
+                  out.push({ role: j.title || '', company: j.companyName || '', url: j.applyUrl || j.url || '',
+                    location: j.remote ? 'Remote' : (j.locations?.[0] || j.location?.name || ''),
+                    posted_at: j.timeStamp || j.postedAt || j.createdAt || null, salary: j.salary || null });
+                }
+                sequence = d.meta?.sequence;
+                if (!sequence || !(d.jobs || []).length) break;
+              }
+              return out;
+            } catch { return out.length ? out : null; }
+          }, { endpoint: source.apiMode.endpoint, board: source.apiMode.board, csrf, postedSince: LOOKBACK_HOURS ? 'P2D' : null });
 
           if ((!apiData || !apiData.length) && source.paginate) {
             await page.waitForSelector('a[href*="/jobs/"]', { timeout: 15000 }).catch(() => {});
             // "Show more jobs" is the only way deeper into these boards —
-            // scrolling does nothing. ~40 clicks reaches the end of the a16z
-            // board in about a minute.
+            // scrolling does nothing. The board is mostly newest first, with
+            // a few older featured jobs mixed in, so a last-24-hours run stops
+            // once the ten most recently loaded stamps are all outside the
+            // window instead of paging the whole board.
+            const windowStart = LOOKBACK_HOURS ? Date.now() - LOOKBACK_HOURS * 60 * 60 * 1000 : 0;
             const t0 = Date.now();
             let last = 0;
             for (let i = 0; i < 60; i++) {
               if (Date.now() - t0 > 150000) break;
+              if (windowStart) {
+                const newestOfLast = await page.evaluate(() => {
+                  const stamps = [...document.querySelectorAll('time[datetime]')].map(t => Date.parse(t.getAttribute('datetime'))).filter(Number.isFinite).slice(-10);
+                  return stamps.length === 10 ? Math.max(...stamps) : null;
+                });
+                if (newestOfLast && newestOfLast < windowStart) break;
+              }
               const clicked = await page.evaluate(() => {
                 const btn = [...document.querySelectorAll('button,a')]
                   .find(e => /show more|load more/i.test((e.innerText || '').trim()));
@@ -515,20 +564,32 @@ async function runBrowserSources(claudeKey, hbKey) {
                 const company = m[1].replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
                 const block = a.closest('li,article,div');
                 const blockText = (block?.innerText || '').replace(/\s+/g, ' ');
-                out.push({ role, company, url: a.href, location: /remote/i.test(blockText) ? 'Remote' : '' });
+                // The card's <time datetime> is the posting stamp. Only trust
+                // it when the card holds this one job.
+                let card = a.parentElement, posted_at = null;
+                for (let i = 0; card && i < 6; i++, card = card.parentElement) {
+                  const times = card.querySelectorAll('time[datetime]');
+                  if (!times.length) continue;
+                  const jobs = new Set([...card.querySelectorAll('a[href*="/jobs/"]')].map(x => x.href).filter(h => /^\/jobs\/[^/]+\/[^/]+/.test(new URL(h).pathname)));
+                  if (times.length === 1 && jobs.size === 1) posted_at = times[0].getAttribute('datetime');
+                  break;
+                }
+                out.push({ role, company, url: a.href, location: /remote/i.test(blockText) ? 'Remote' : '', posted_at });
               }
               return out;
             });
-            if (apiData.length) item('·', `${source.name} — API gone, read ${apiData.length} from the page`);
+            if (apiData.length) item('·', `${source.name} — read ${apiData.length} from the page`);
           }
           apiData = apiData || [];
           const allApiJobs = apiData.filter(j => j.url?.startsWith('http')).map(j => ({ ...j, fit_score: j.fit_score || 7 }));
-          const windowStart = Date.now() - LOOKBACK_HOURS * 60 * 60 * 1000;
-          const windowJobs = LOOKBACK_HOURS ? allApiJobs.filter(j => !j.posted_at || Date.parse(j.posted_at) >= windowStart) : allApiJobs;
+          const windowJobs = allApiJobs.filter(j => postedInWindow(j.posted_at));
+          const precision = windowPrecision(source, allApiJobs);
           if (LOOKBACK_HOURS && windowJobs.length !== allApiJobs.length) log(` ${allApiJobs.length - windowJobs.length} older than last 24 hours`);
+          if (precision === 'partial') log(` ${allApiJobs.filter(j => !j.posted_at).length} without a posting date kept`);
           const found = windowJobs.filter(j => ROLE_RE.test(j.role));
           log(` ${apiData.length} pulled, ${windowJobs.length} in window, ${found.length} role matches`);
-          results.push({ source: source.name, searched: source.url, rawCount: apiData.length, windowCount: windowJobs.length, jobs: found, allScanned: windowJobs });
+          if (!apiData.length) log(`   WARNING: ${source.name} returned no jobs; the board may have changed`);
+          results.push({ source: source.name, searched: source.url, rawCount: apiData.length, windowCount: windowJobs.length, windowPrecision: precision, jobs: found, allScanned: windowJobs });
           continue;
         }
 
@@ -593,7 +654,7 @@ Return JSON array ONLY — no markdown:
           found = found.filter(j => links.some(l => l.href === j.url));
           const allScannedLinks = links.map(l => ({ company: '', role: l.title || '(no title)', url: l.href, fit_score: 0, snippet: l.snippet }));
           log(` ${links.length} results, ${found.length} matches`);
-          results.push({ source: source.name, searched: source.query, rawCount: links.length, jobs: found, allScanned: allScannedLinks });
+          results.push({ source: source.name, searched: source.query, rawCount: links.length, windowPrecision: windowPrecision(source, []), jobs: found, allScanned: allScannedLinks });
           continue;
         }
 
@@ -691,10 +752,10 @@ Rules:
     const src = HB_SOURCES.find(x => x.name === r.source);
     try {
       await putCachedSource(
-        cacheKeyFor(r.source, ROLE_TITLES, !!src?.apiMode, SOURCE_LOCATION_PREF),
+        cacheKeyFor(r.source, ROLE_TITLES, !!src?.apiMode, SOURCE_LOCATION_PREF, LOOKBACK_HOURS),
         r.source,
         src?.apiMode ? '*' : roleKeyFor(ROLE_TITLES),
-        { searched: r.searched, rawCount: r.rawCount, windowCount: r.windowCount, allScanned: r.allScanned || [], jobs: r.jobs }
+        { searched: r.searched, rawCount: r.rawCount, windowCount: r.windowCount, windowPrecision: r.windowPrecision, allScanned: r.allScanned || [], jobs: r.jobs }
       );
     } catch (e) { log(`   cache write failed for ${r.source}: ${e.message}`); }
   }
@@ -799,7 +860,7 @@ async function main() {
   const detail={date:today,run_at:new Date().toISOString(),total_excluded:excluded,
     jev_reviews: jevReviews, jev_review_limit: jevMaxReviews,
     provider_usage:results.providerUsage || { hyperbrowser: { creditsUsed: 0 } },
-    sources:results.map(r=>({name:r.source,searched:r.searched,rawCount:r.rawCount,windowCount:r.windowCount,
+    sources:results.map(r=>({name:r.source,searched:r.searched,rawCount:r.rawCount,windowCount:r.windowCount,windowPrecision:r.windowPrecision,
       jobs:r.jobs.map(j=>outcomes.get(j.url) || j)}))};
   const added=await saveSourceRun({id:runId,date:today,sources:results.length,found:candidates.size,excluded,
     duration_ms:Date.now()-started,user_email:SOURCE_USER_EMAIL},jobs,detail,process.env.JAA_OPERATION_ID);
@@ -809,4 +870,4 @@ async function main() {
 if (require.main===module) {
   main().catch(e=>{log('Sourcing failed: '+e.message);process.exitCode=1;}).finally(()=>pool.end());
 }
-module.exports={main,runBrowserSources,normalizedJobs};
+module.exports={main,runBrowserSources,normalizedJobs,postedInWindow,windowPrecision};
