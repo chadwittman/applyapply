@@ -797,8 +797,12 @@ async function main() {
   step('Phase 1 - Searching sources');
   const results=await runBrowserSources(key,loadHBKey());
   if (!results.length) throw new Error('No sources were selected');
+  // One broken source should not sink the others. The run fails (and is fully
+  // refunded) only when every source failed; otherwise the failed sources are
+  // reported on the run and their credits returned when it is saved.
   const failures=results.filter(r=>r.error);
-  if (failures.length) throw new Error('Source failure: ' + failures.map(r=>r.source + ': ' + r.error).join('; '));
+  if (failures.length===results.length) throw new Error('Source failure: ' + failures.map(r=>r.source + ': ' + r.error).join('; '));
+  for (const f of failures) log('   ' + f.source + ' failed: ' + f.error + ' (credits for this source will be returned)');
   if (process.env.JAA_PREFETCH_ONLY==='1') return;
   const seen=await getSeenUrls(SOURCE_USER_EMAIL);
   const candidates=new Map();
@@ -860,10 +864,10 @@ async function main() {
   const detail={date:today,run_at:new Date().toISOString(),total_excluded:excluded,
     jev_reviews: jevReviews, jev_review_limit: jevMaxReviews,
     provider_usage:results.providerUsage || { hyperbrowser: { creditsUsed: 0 } },
-    sources:results.map(r=>({name:r.source,searched:r.searched,rawCount:r.rawCount,windowCount:r.windowCount,windowPrecision:r.windowPrecision,
+    sources:results.map(r=>({name:r.source,searched:r.searched,rawCount:r.rawCount,windowCount:r.windowCount,windowPrecision:r.windowPrecision,...(r.error?{error:r.error}:{}),
       jobs:r.jobs.map(j=>outcomes.get(j.url) || j)}))};
   const added=await saveSourceRun({id:runId,date:today,sources:results.length,found:candidates.size,excluded,
-    duration_ms:Date.now()-started,user_email:SOURCE_USER_EMAIL},jobs,detail,process.env.JAA_OPERATION_ID);
+    duration_ms:Date.now()-started,user_email:SOURCE_USER_EMAIL},jobs,detail,process.env.JAA_OPERATION_ID,failures.map(r=>r.source));
   log('Saved ' + added + ' new leads');
 }
 

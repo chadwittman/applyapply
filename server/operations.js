@@ -94,13 +94,30 @@ module.exports = function operations(pool) {
       WHERE o.id=$1 AND o.user_email=$2 AND e.id>$3 ORDER BY e.id LIMIT 1000`, [id,requireOwner(userEmail),after])).rows;
   }
 
-  async function saveSourceRun(run, jobs, detail, operationId) {
+  // failedSources: names of sources that errored in this run. Their share of
+  // the reserved credits is returned in the same transaction that commits
+  // the run, so a partial run never charges for work it did not do.
+  async function saveSourceRun(run, jobs, detail, operationId, failedSources = []) {
     requireOwner(run.user_email);
     return transaction(async c => {
       let op;
       if (operationId) {
         op = (await c.query("SELECT * FROM operations WHERE id=$1 AND user_email=$2 AND status='running' AND expires_at>NOW() FOR UPDATE", [operationId,run.user_email])).rows[0];
         if (!op) throw new Error('Sourcing operation is no longer active');
+      }
+      if (op && failedSources.length) {
+        const names = op.payload?.sources || [];
+        const prices = op.payload?.source_credits;
+        const failed = failedSources.filter(name => names.includes(name));
+        // Operations queued before per-source prices were recorded refund a proportional share.
+        const refund = Math.min(op.cost, prices
+          ? failed.reduce((n, name) => n + (Number(prices[name]) || 0), 0)
+          : Math.floor(op.cost * failed.length / Math.max(names.length, 1)));
+        if (refund > 0) {
+          await c.query('UPDATE users SET credits=credits+$1 WHERE email=$2', [refund,run.user_email]);
+          await c.query("INSERT INTO credit_ledger(user_email,operation_id,kind,amount) VALUES($1,$2,'partial_refund',$3) ON CONFLICT DO NOTHING", [run.user_email,op.id,refund]);
+          detail.credits_refunded = refund;
+        }
       }
       let added = 0;
       for (const job of jobs) {

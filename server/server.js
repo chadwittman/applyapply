@@ -48,7 +48,7 @@ for (const method of ['get','post','put','patch','delete']) {
     (req, res, next) => { try { Promise.resolve(handler(req,res,next)).catch(next); } catch (e) { next(e); } }));
 }
 const PORT = process.env.PORT || 5000;
-const VERSION = '0.29.1';
+const VERSION = '0.30.0';
 const IS_PRODUCTION = process.env.NODE_ENV === 'production';
 const APP_ORIGIN = process.env.APP_ORIGIN || 'http://localhost:5000';
 const ALLOWED_WEB_ORIGINS = new Set(
@@ -394,13 +394,26 @@ const SOURCE_CATALOG = [
   // Sequoia: API mode, same platform as a16z. HB ~8% of session.
   { name: 'Sequoia job board',        credits: calcSourceCredits(_h*0.08, 0),   on: true,  desc: 'Sequoia portfolio — API scrape, no Claude',              type: 'api' },
   // Google+Haiku: ~3k in/500 out = $0.005. HB ~10% each.
-  { name: 'YC / Work at a Startup',   credits: calcSourceCredits(_h*0.10, 0.5), on: true,  desc: 'YC companies — Google search + Haiku extract',          type: 'google' },
-  { name: 'Wellfound',                credits: calcSourceCredits(_h*0.10, 0.5), on: true,  desc: 'Wellfound startup jobs — Google search + Haiku extract', type: 'google' },
-  { name: 'Builtin remote product',   credits: calcSourceCredits(_h*0.10, 0.5), on: true,  desc: 'Builtin.com — Google search + Haiku extract',           type: 'google' },
-  { name: 'Ashby jobs (Google)',      credits: calcSourceCredits(_h*0.10, 0.5), on: true,  desc: 'Ashby ATS boards — Google search + Haiku extract',      type: 'google' },
-  { name: 'Lever jobs (Google)',      credits: calcSourceCredits(_h*0.10, 0.5), on: true,  desc: 'Lever ATS boards — Google search + Haiku extract',      type: 'google' },
-  { name: 'Greenhouse jobs (Google)', credits: calcSourceCredits(_h*0.10, 0.5), on: true,  desc: 'Greenhouse ATS — Google search + Haiku extract',        type: 'google' },
+  { name: 'YC / Work at a Startup',   credits: calcSourceCredits(_h*0.10, 0.5), on: false, retired: true,  desc: 'YC companies — Google search + Haiku extract',          type: 'google' },
+  { name: 'Wellfound',                credits: calcSourceCredits(_h*0.10, 0.5), on: false, retired: true,  desc: 'Wellfound startup jobs — Google search + Haiku extract', type: 'google' },
+  { name: 'Builtin remote product',   credits: calcSourceCredits(_h*0.10, 0.5), on: false, retired: true,  desc: 'Builtin.com — Google search + Haiku extract',           type: 'google' },
+  { name: 'Ashby jobs (Google)',      credits: calcSourceCredits(_h*0.10, 0.5), on: false, retired: true,  desc: 'Ashby ATS boards — Google search + Haiku extract',      type: 'google' },
+  { name: 'Lever jobs (Google)',      credits: calcSourceCredits(_h*0.10, 0.5), on: false, retired: true,  desc: 'Lever ATS boards — Google search + Haiku extract',      type: 'google' },
+  { name: 'Greenhouse jobs (Google)', credits: calcSourceCredits(_h*0.10, 0.5), on: false, retired: true,  desc: 'Greenhouse ATS — Google search + Haiku extract',        type: 'google' },
 ];
+
+// Google now answers every automated search with a CAPTCHA, stealth sessions
+// included (verified 2026-09-21), so the Google-backed sources are retired.
+// Their names stay valid in saved schedules and older clients but are
+// dropped at run time.
+const ACTIVE_SOURCES = SOURCE_CATALOG.filter(s => !s.retired);
+function selectSources(names) {
+  const picked = Array.isArray(names) && names.length ? ACTIVE_SOURCES.filter(s => names.includes(s.name)) : [];
+  return picked.length ? picked : ACTIVE_SOURCES.filter(s => s.on);
+}
+function sourcePayload(selected) {
+  return { sources: selected.map(s => s.name), source_credits: Object.fromEntries(selected.map(s => [s.name, s.credits])) };
+}
 
 function isLocalRequest(req) {
   if (IS_PRODUCTION || process.env.ALLOW_LOCAL_BYPASS !== 'true') return false;
@@ -3168,13 +3181,13 @@ async function runNightlyPrefetch() {
 }
 
 async function runScheduledSourcing(row) {
-  const selected = row.sources?.length ? SOURCE_CATALOG.filter(s => row.sources.includes(s.name)) : SOURCE_CATALOG.filter(s=>s.on);
+  const selected = selectSources(row.sources);
   if (!selected.length) return;
   const due = row.due_at ? new Date(row.due_at).toISOString() : new Date().toISOString().slice(0,10) + ':' + row.hour + ':' + row.minute;
   try {
     const op = await db.reserveOperation({ userEmail:row.user_email,action:'source',resource:'source',
       key:'schedule:' + due,cost:selected.reduce((n,s)=>n+s.credits,0),queued:true,
-      payload:{ sources:selected.map(s=>s.name), trigger:'scheduled', lookback_hours:row.lookback_hours ?? 24 } });
+      payload:{ ...sourcePayload(selected), trigger:'scheduled', lookback_hours:row.lookback_hours ?? 24 } });
     if (op.request_key !== 'source:schedule:' + due) return op;
     await db.markScheduleRun(row.user_email);
     return op;
@@ -3197,7 +3210,7 @@ app.get('/schedule', async (req, res) => {
     lookback_hours: row?.lookback_hours ?? 24,
     last_run_at: row?.last_run_at || null,
     timezone: SCHEDULE_TZ,
-    catalog: SOURCE_CATALOG.map(s => ({ name: s.name, credits: s.credits, desc: s.desc })),
+    catalog: ACTIVE_SOURCES.map(s => ({ name: s.name, credits: s.credits, desc: s.desc })),
   });
 });
 
@@ -3216,7 +3229,7 @@ app.post('/schedule', async (req, res) => {
   const h = Math.min(23, Math.max(0, Number(hour ?? SCHEDULE_DEFAULT.hour)));
   const m = Math.min(59, Math.max(0, Number(minute ?? SCHEDULE_DEFAULT.minute)));
   const names = Array.isArray(sources) && sources.length
-    ? SOURCE_CATALOG.filter(s => sources.includes(s.name)).map(s => s.name)
+    ? selectSources(sources).map(s => s.name)
     : null;
   // If the time they picked has already gone by today, treat today as done so
   // saving the schedule does not immediately trigger a run.
@@ -3226,7 +3239,7 @@ app.post('/schedule', async (req, res) => {
   const passedToday = (h * 60 + m) <= (nowH * 60 + nowM);
   const row = await db.setSchedule(userEmail,
     { hour: h, minute: m, frequency, enabled: !!enabled, sources: names, lookback_hours }, passedToday);
-  const selected = names?.length ? SOURCE_CATALOG.filter(s => names.includes(s.name)) : SOURCE_CATALOG.filter(s => s.on);
+  const selected = selectSources(names);
   res.json({
     ok: true,
     schedule: { hour: row.hour, minute: row.minute, frequency: row.frequency, enabled: row.enabled, sources: row.sources, lookback_hours: row.lookback_hours ?? 24 },
@@ -3250,19 +3263,18 @@ app.get('/source/status', async (req,res) => {
 });
 
 app.get('/source/catalog', (req, res) => {
-  res.json(SOURCE_CATALOG);
+  res.json(ACTIVE_SOURCES);
 });
 
 app.post('/source/run', apiLimiter, async (req,res) => {
   const userEmail=reqUserEmail(req);
   if (!userEmail) return res.status(401).json({error:'Sign in required'});
   if (Array.isArray(req.body.sources) && !req.body.sources.length) return res.status(400).json({error:'Select at least one source'});
-  const names=Array.isArray(req.body.sources) && req.body.sources.length ? req.body.sources : SOURCE_CATALOG.filter(s=>s.on).map(s=>s.name);
-  const selected=SOURCE_CATALOG.filter(s=>names.includes(s.name));
-  if (!selected.length) return res.status(400).json({error:'No valid sources selected'});
+  if (Array.isArray(req.body.sources) && req.body.sources.some(name => !SOURCE_CATALOG.some(s => s.name === name))) return res.status(400).json({error:'No valid sources selected'});
+  const selected=selectSources(req.body.sources);
   const roles=Array.isArray(req.body.roles) ? req.body.roles.filter(r=>typeof r==='string').slice(0,20).map(r=>r.slice(0,100)) : [];
   const op=await db.reserveOperation({userEmail,action:'source',resource:'source',key:req.get('Idempotency-Key') || crypto.randomUUID(),
-    cost:selected.reduce((n,s)=>n+s.credits,0),queued:true,payload:{sources:selected.map(s=>s.name),roles,trigger:'manual',lookback_hours:24}});
+    cost:selected.reduce((n,s)=>n+s.credits,0),queued:true,payload:{...sourcePayload(selected),roles,trigger:'manual',lookback_hours:24}});
   res.json({status:op.replay ? 'already_running' : 'started',operation_id:op.id,credits_charged:op.cost,sources:op.payload.sources});
 });
 
@@ -3395,7 +3407,7 @@ app.get('/sourcing', async (req, res) => {
           partial: ['some undated', 'Some postings had no date and were kept rather than dropped.'],
           search_date: ['best-effort 24h', "Google's date filter is used. Listings without a date may be older."],
         }[src.windowPrecision];
-        const statParts = [
+        const statParts = src.error ? [`<span class="badge" title="${esc(src.error)}">failed · credits returned</span>`] : [
           `${nTotal} pulled${src.windowCount != null && src.windowCount !== nTotal ? ` · ${src.windowCount} in window` : ''}${precision ? ` <span class="badge" title="${esc(precision[1])}">${precision[0]}</span>` : ''}`,
           fitJobs.length ? `<strong>${fitJobs.length} fit</strong>` : '0 fit',
           kitCount ? `${kitCount} kit${kitCount>1?'s':''}` : '',

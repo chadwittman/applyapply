@@ -306,6 +306,17 @@ async function main() {
       assert.equal((await db.getUser(fresh)).credits,0,'Re-created account gets no second grant');
     }finally{process.env.STARTER_CREDITS=prior;}
   });
+  await check('A partly failed run refunds only the failed sources, once',async()=>{
+    const owner='partial@audit.invalid';await balance(owner,20);
+    const op=await db.reserveOperation({userEmail:owner,action:'source',cost:12,payload:{sources:['A','B'],source_credits:{A:5,B:7}}});
+    await db.saveSourceRun({id:'partial-run',date:'2026-09-21',sources:2,found:0,excluded:0,duration_ms:1,user_email:owner},[],{sources:[]},op.id,['B','not-in-run']);
+    assert.equal((await db.getUser(owner)).credits,15);
+    assert.equal((await db.getOperation(op.id,owner)).status,'succeeded');
+    const {rows}=await db.pool.query("SELECT amount FROM credit_ledger WHERE operation_id=$1 AND kind='partial_refund'",[op.id]);
+    assert.deepEqual(rows.map(r=>r.amount),[7]);
+    const catalog=await (await originalFetch(origin+'/source/catalog')).json();
+    assert.ok(catalog.length && catalog.every(s=>!s.retired),'Retired sources are not offered');
+  });
   await check('Search window is part of the cache key and honors date-only board stamps',async()=>{
     assert.notEqual(db.cacheKeyFor('Sequoia job board','',true,'remote',24),db.cacheKeyFor('Sequoia job board','',true,'remote',0));
     assert.notEqual(db.cacheKeyFor('Lever jobs (Google)','PM',false,'remote',24),db.cacheKeyFor('Lever jobs (Google)','PM',false,'remote',0));
