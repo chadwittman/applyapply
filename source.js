@@ -326,10 +326,12 @@ let SOURCE_LOCATION = ''; // user's city for hybrid-office check
 let SOURCE_LOCATION_PREF = 'remote'; // 'remote' | 'hybrid' | 'any'
 let SOURCE_SEARCH_MODE = 'active'; // 'active' | 'selective'
 let SOURCE_SALARY = '';
+const LOOKBACK_HOURS = Number(process.env.JAA_LOOKBACK_HOURS || 24) === 24 ? 24 : 0;
 
 function buildHBSources() {
   const roleParts = ROLE_TITLES.split(', ').map(t => `"${t.toLowerCase()}"`).join(' OR ');
   const remoteQ = SOURCE_LOCATION_PREF === 'remote' ? ' remote' : '';
+  const afterQ = LOOKBACK_HOURS === 24 ? ` after:${new Date(Date.now() - 86400000).toISOString().slice(0, 10)}` : '';
   return [
     {
       name: 'a16z job board',
@@ -342,7 +344,7 @@ function buildHBSources() {
       waitMs: 2500,
       apiMode: {
         endpoint: '/api-boards/search-jobs',
-        body: { meta: { size: 200 }, board: { id: 'andreessen-horowitz', isParent: true }, query: { remoteOnly: true, postedSince: 'P2D', promoteFeatured: true } },
+        body: { meta: { size: 200 }, board: { id: 'andreessen-horowitz', isParent: true }, query: { remoteOnly: true, postedSince: 'P1D', promoteFeatured: true } },
       },
     },
     {
@@ -352,38 +354,38 @@ function buildHBSources() {
       waitMs: 2500,
       apiMode: {
         endpoint: '/api-boards/search-jobs',
-        body: { meta: { size: 200 }, board: { id: 'sequoia-capital', isParent: true }, query: { remoteOnly: true, promoteFeatured: true } },
+        body: { meta: { size: 200 }, board: { id: 'sequoia-capital', isParent: true }, query: { remoteOnly: true, postedSince: 'P1D', promoteFeatured: true } },
       },
     },
     {
       name: 'YC / Work at a Startup',
       googleSearch: true,
-      query: `site:workatastartup.com (${roleParts})${remoteQ}`,
+      query: `site:workatastartup.com (${roleParts})${remoteQ}${afterQ}`,
     },
     {
       name: 'Wellfound',
       googleSearch: true,
-      query: `site:wellfound.com (${roleParts})${remoteQ}`,
+      query: `site:wellfound.com (${roleParts})${remoteQ}${afterQ}`,
     },
     {
       name: 'Builtin remote product',
       googleSearch: true,
-      query: `site:builtin.com (${roleParts})${remoteQ}`,
+      query: `site:builtin.com (${roleParts})${remoteQ}${afterQ}`,
     },
     {
       name: 'Ashby jobs (Google)',
       googleSearch: true,
-      query: `site:jobs.ashbyhq.com (${roleParts})${remoteQ}`,
+      query: `site:jobs.ashbyhq.com (${roleParts})${remoteQ}${afterQ}`,
     },
     {
       name: 'Lever jobs (Google)',
       googleSearch: true,
-      query: `site:jobs.lever.co (${roleParts})${remoteQ}`,
+      query: `site:jobs.lever.co (${roleParts})${remoteQ}${afterQ}`,
     },
     {
       name: 'Greenhouse jobs (Google)',
       googleSearch: true,
-      query: `site:greenhouse.io (${roleParts})${remoteQ} ai startup`,
+      query: `site:greenhouse.io (${roleParts})${remoteQ} ai startup${afterQ}`,
     },
   ];
 }
@@ -413,7 +415,7 @@ async function runBrowserSources(claudeKey, hbKey) {
       if (!source.apiMode && !Array.isArray(hit.jobs)) { misses.push(source); continue; }
       const found = source.apiMode ? all.filter(j => ROLE_RE.test(j.role)) : hit.jobs;
       item('·', `${source.name} — shared cache, ${all.length} scanned, ${found.length} match`);
-      results.push({ source: source.name, searched: hit.searched, rawCount: hit.rawCount, jobs: found, allScanned: all, fromCache: true });
+      results.push({ source: source.name, searched: hit.searched, rawCount: hit.rawCount, windowCount: hit.windowCount ?? all.length, jobs: found, allScanned: all, fromCache: true });
     }
   } catch (e) {
     log(`   cache unavailable (${e.message}) — fetching everything`);
@@ -462,16 +464,17 @@ async function runBrowserSources(claudeKey, hbKey) {
             try {
               const r = await fetch(endpoint, {
                 method: 'POST',
-                headers: { 'content-type': 'application/json', 'accept': 'application/json', 'x-csrf-token': document.querySelector('meta[name=csrf-token]')?.content || '' },
+                headers: { 'content-type': 'application/json', 'accept': 'application/json', 'x-csrf-token': document.querySelector('meta[name=csrf-token]')?.content || document.documentElement.innerHTML.match(/csrfToken["']?\s*:\s*["']([^"']+)/)?.[1] || '' },
                 body: JSON.stringify(body),
               });
               if (!r.ok || !/json/.test(r.headers.get('content-type') || '')) return null;
               const d = await r.json();
-              return (d.jobs || []).map(j => ({ role: j.title || '', company: j.companyName || '', url: j.applyUrl || '', location: j.remote ? 'Remote' : (j.location?.name || '') }));
+              return (d.jobs || []).map(j => ({ role: j.title || '', company: j.companyName || '', url: j.applyUrl || '', location: j.remote ? 'Remote' : (j.location?.name || ''), posted_at: j.timeStamp || j.postedAt || j.createdAt || j.created_at || null, salary: j.salary || null }));
             } catch { return null; }
           }, source.apiMode);
 
           if ((!apiData || !apiData.length) && source.paginate) {
+            await page.waitForSelector('a[href*="/jobs/"]', { timeout: 15000 }).catch(() => {});
             // "Show more jobs" is the only way deeper into these boards —
             // scrolling does nothing. ~40 clicks reaches the end of the a16z
             // board in about a minute.
@@ -520,9 +523,12 @@ async function runBrowserSources(claudeKey, hbKey) {
           }
           apiData = apiData || [];
           const allApiJobs = apiData.filter(j => j.url?.startsWith('http')).map(j => ({ ...j, fit_score: j.fit_score || 7 }));
-          const found = allApiJobs.filter(j => ROLE_RE.test(j.role));
-          log(` ${apiData.length} total, ${found.length} matches`);
-          results.push({ source: source.name, searched: source.url, rawCount: apiData.length, jobs: found, allScanned: allApiJobs });
+          const windowStart = Date.now() - LOOKBACK_HOURS * 60 * 60 * 1000;
+          const windowJobs = LOOKBACK_HOURS ? allApiJobs.filter(j => !j.posted_at || Date.parse(j.posted_at) >= windowStart) : allApiJobs;
+          if (LOOKBACK_HOURS && windowJobs.length !== allApiJobs.length) log(` ${allApiJobs.length - windowJobs.length} older than last 24 hours`);
+          const found = windowJobs.filter(j => ROLE_RE.test(j.role));
+          log(` ${apiData.length} pulled, ${windowJobs.length} in window, ${found.length} role matches`);
+          results.push({ source: source.name, searched: source.url, rawCount: apiData.length, windowCount: windowJobs.length, jobs: found, allScanned: windowJobs });
           continue;
         }
 
@@ -688,7 +694,7 @@ Rules:
         cacheKeyFor(r.source, ROLE_TITLES, !!src?.apiMode, SOURCE_LOCATION_PREF),
         r.source,
         src?.apiMode ? '*' : roleKeyFor(ROLE_TITLES),
-        { searched: r.searched, rawCount: r.rawCount, allScanned: r.allScanned || [], jobs: r.jobs }
+        { searched: r.searched, rawCount: r.rawCount, windowCount: r.windowCount, allScanned: r.allScanned || [], jobs: r.jobs }
       );
     } catch (e) { log(`   cache write failed for ${r.source}: ${e.message}`); }
   }
@@ -793,7 +799,7 @@ async function main() {
   const detail={date:today,run_at:new Date().toISOString(),total_excluded:excluded,
     jev_reviews: jevReviews, jev_review_limit: jevMaxReviews,
     provider_usage:results.providerUsage || { hyperbrowser: { creditsUsed: 0 } },
-    sources:results.map(r=>({name:r.source,searched:r.searched,rawCount:r.rawCount,
+    sources:results.map(r=>({name:r.source,searched:r.searched,rawCount:r.rawCount,windowCount:r.windowCount,
       jobs:r.jobs.map(j=>outcomes.get(j.url) || j)}))};
   const added=await saveSourceRun({id:runId,date:today,sources:results.length,found:candidates.size,excluded,
     duration_ms:Date.now()-started,user_email:SOURCE_USER_EMAIL},jobs,detail,process.env.JAA_OPERATION_ID);

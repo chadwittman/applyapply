@@ -19,7 +19,7 @@ module.exports = function sourceWorker(db, launch = spawn, notify = async () => 
     for (const name of ['PATH','NODE_ENV','DATABASE_URL','DATABASE_SSL','ANTHROPIC_API_KEY','HYPERBROWSER_API_KEY','TYPESAFE_API_KEY','JAA_JEV','JAA_JEV_MAX_REVIEWS','SOURCE_CACHE_HOURS']) {
       if (process.env[name]) env[name] = process.env[name];
     }
-    Object.assign(env,{ JAA_USER_EMAIL:op.user_email,JAA_OPERATION_ID:op.id,JAA_ENABLED_SOURCES:JSON.stringify(op.payload.sources),
+    Object.assign(env,{ JAA_USER_EMAIL:op.user_email,JAA_OPERATION_ID:op.id,JAA_ENABLED_SOURCES:JSON.stringify(op.payload.sources),JAA_LOOKBACK_HOURS:String(op.payload.lookback_hours ?? 24),JAA_RUN_TRIGGER:op.payload.trigger || 'manual',
       ...(op.payload.roles?.length ? { JAA_TARGET_ROLES:op.payload.roles.join(', ') } : {}) });
     let child;
     try { child = launch(process.execPath,[path.join(__dirname,'../source.js')],{ env,cwd:path.join(__dirname,'..'),stdio:['ignore','pipe','pipe'] }); }

@@ -164,6 +164,7 @@ async function initSchema() {
     )
   `);
   await q(`ALTER TABLE schedules ADD COLUMN IF NOT EXISTS frequency TEXT NOT NULL DEFAULT 'daily'`);
+  await q(`ALTER TABLE schedules ADD COLUMN IF NOT EXISTS lookback_hours INTEGER NOT NULL DEFAULT 24`);
 
   // Shared source results. Board scrapes return the same jobs for everyone, and
   // the Google sources vary only by role titles — so the key is source + role
@@ -600,20 +601,53 @@ async function getSchedule(userEmail) {
 // alreadyPassedToday stamps last_run_at so that saving a schedule for a time
 // that has already gone by does not read as a missed run and fire immediately,
 // charging credits the user never asked to spend today.
-async function setSchedule(userEmail, { hour, minute, frequency = 'daily', enabled, sources }, alreadyPassedToday = false) {
+async function setSchedule(userEmail, { hour, minute, frequency = 'daily', enabled, sources, lookback_hours = 24 }, alreadyPassedToday = false) {
   const cadence = frequency === 'weekdays' ? 'weekdays' : 'daily';
+  const lookback = Number(lookback_hours) === 0 ? 0 : 24;
   return q1(`
-    INSERT INTO schedules (user_email, hour, minute, frequency, enabled, sources, last_run_at, updated_at)
-    VALUES ($1,$2,$3,$4,$5,$6,$7,NOW())
+    INSERT INTO schedules (user_email, hour, minute, frequency, enabled, sources, lookback_hours, last_run_at, updated_at)
+    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,NOW())
     ON CONFLICT (user_email) DO UPDATE SET
       hour = EXCLUDED.hour, minute = EXCLUDED.minute,
       frequency = EXCLUDED.frequency,
       enabled = EXCLUDED.enabled, sources = EXCLUDED.sources,
+      lookback_hours = EXCLUDED.lookback_hours,
       last_run_at = COALESCE(EXCLUDED.last_run_at, schedules.last_run_at),
       updated_at = NOW()
     RETURNING *
   `, [userEmail, hour, minute, cadence, enabled, sources ? JSON.stringify(sources) : null,
-      alreadyPassedToday ? new Date() : null]);
+      lookback, alreadyPassedToday ? new Date() : null]);
+}
+
+async function getAccountExport(userEmail) {
+  const owner = requireOwner(userEmail);
+  const profile = await getProfileByUserEmail(owner);
+  if (profile) delete profile.api_key;
+  return {
+    profile,
+    jobs: await q('SELECT * FROM jobs WHERE user_email=$1 ORDER BY found_at DESC', [owner]),
+    kits: await q('SELECT id,url,data,created_at,updated_at FROM kits WHERE user_email=$1 ORDER BY updated_at DESC', [owner]),
+    evidence: await q('SELECT question,answer,theme,job_url,created_at,updated_at FROM evidence WHERE user_email=$1 ORDER BY updated_at DESC', [owner]),
+    schedules: await q('SELECT hour,minute,frequency,enabled,sources,lookback_hours,last_run_at,updated_at FROM schedules WHERE user_email=$1', [owner]),
+  };
+}
+
+async function deleteAccount(userEmail) {
+  const owner = requireOwner(userEmail);
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    await client.query('DELETE FROM operation_events WHERE operation_id IN (SELECT id FROM operations WHERE user_email=$1)', [owner]);
+    for (const table of ['user_activity','decisions','evidence','resume_files','magic_links','schedules','runs','jobs','kits','profiles','purchases']) {
+      await client.query(`DELETE FROM ${table} WHERE user_email=$1`, [owner]);
+    }
+    await client.query('DELETE FROM stripe_events WHERE email=$1', [owner]);
+    await client.query('DELETE FROM operations WHERE user_email=$1', [owner]);
+    await client.query(`DELETE FROM job_merge_archive WHERE data->>'user_email'=$1`, [owner]);
+    await client.query('DELETE FROM users WHERE email=$1', [owner]);
+    await client.query('COMMIT');
+  } catch (e) { await client.query('ROLLBACK'); throw e; }
+  finally { client.release(); }
 }
 
 // Use a dated occurrence, not a 23-hour heuristic. The occurrence is also the
@@ -690,6 +724,7 @@ module.exports = {
   getEvidence, addEvidenceQuestions, addAnsweredEvidence, setEvidenceAnswer, deleteEvidence,
   getSetting, setSetting,
   getSchedule, setSchedule, getDueSchedules, markScheduleRun, getAllEnabledSchedules,
+  getAccountExport, deleteAccount,
   roleKeyFor, cacheKeyFor, getCachedSources, putCachedSource,
   getUser, getOrCreateUser, addUserCredits, deductUserCredits,
   createMagicLink, getMagicLink, useMagicLink,

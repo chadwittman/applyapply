@@ -48,7 +48,7 @@ for (const method of ['get','post','put','patch','delete']) {
     (req, res, next) => { try { Promise.resolve(handler(req,res,next)).catch(next); } catch (e) { next(e); } }));
 }
 const PORT = process.env.PORT || 5000;
-const VERSION = '0.26.0';
+const VERSION = '0.27.0';
 const IS_PRODUCTION = process.env.NODE_ENV === 'production';
 const APP_ORIGIN = process.env.APP_ORIGIN || 'http://localhost:5000';
 const ALLOWED_WEB_ORIGINS = new Set(
@@ -201,21 +201,21 @@ ${metaHead({title:'Privacy policy — applyapply', desc:'How applyapply collects
 *{box-sizing:border-box}body{margin:0;background:#000;color:#f5f5f5;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;line-height:1.65}
 a{color:#fff}.topbar{padding:22px 32px;border-bottom:1px solid #171717;display:flex;justify-content:space-between}.logo{font-weight:800;text-decoration:none}.nav{display:flex;gap:18px;font-size:13px}.nav a{text-decoration:none;color:#aaa}.wrap{max-width:760px;margin:0 auto;padding:64px 24px 110px}h1{font-size:34px;line-height:1.1;margin:0 0 12px}h2{font-size:18px;margin:38px 0 8px}p,li{font-size:14px;color:#c8c8c8}ul{padding-left:22px}.updated{font-size:12px;color:#888;margin-bottom:38px}.limited{border:1px solid #2b2b2b;padding:16px 18px;margin:24px 0;color:#ddd;font-size:14px}.foot{border-top:1px solid #171717;padding-top:24px;margin-top:52px;font-size:13px;color:#888}
 </style></head><body><div class="topbar"><a class="logo" href="/">applyapply</a><div class="nav"><a href="/extension">Extension</a><a href="/buy">Credits</a></div></div>
-<main class="wrap"><h1>Privacy policy</h1><div class="updated">Last updated September 18, 2026</div>
+<main class="wrap"><h1>Privacy policy</h1><div class="updated">Last updated September 21, 2026</div>
 <p>applyapply helps people find jobs and prepare applications. This policy explains what the applyapply website, server, and browser extension collect and how that information is used.</p>
 <div class="limited"><b>Chrome Web Store Limited Use disclosure:</b> applyapply uses data received from the extension only to provide and improve its single purpose: helping a user review and complete job applications. We do not sell user data, use it for advertising, or transfer it for unrelated purposes.</div>
 <h2>Information we handle</h2>
 <ul><li>Account information, including your email address and magic-link sign-in token.</li><li>Profile and resume information that you choose to provide, such as name, contact details, work history, education, work authorization, target roles, and uploaded resume files.</li><li>Job information you ask us to process, including job URLs, descriptions, application questions, screenshots, and answers entered through the extension.</li><li>Generated application materials, saved answers, pipeline status, credit balance, and basic operational logs needed to run the service.</li><li>Payment and purchase records. Stripe processes card details; applyapply does not receive or store full card numbers.</li></ul>
 <h2>How we use information</h2>
-<p>We use this information to authenticate you, find and organize roles, generate tailored resumes and application materials, fill forms at your direction, save your work, charge credits, prevent abuse, troubleshoot failures, and improve reliability. We do not submit an application without an action from you.</p>
+<p>We use this information only to authenticate you, find and organize roles, generate tailored resumes and application materials, fill forms at your direction, save your work, charge credits, prevent abuse, troubleshoot failures, and improve reliability. Your profile, resume, answers, screenshots, and job materials are not sold, used for advertising, or used to train a general-purpose model. We do not submit an application without an action from you.</p>
 <h2>Service providers</h2>
 <p>We share only the data needed to provide the requested feature with service providers: Railway and Postgres for hosting and storage; Anthropic or OpenRouter for language-model generation; Hyperbrowser for browser-based sourcing; Stripe for payments; and Resend for transactional email. These providers process data on our behalf under their own terms and security practices.</p>
 <h2>What we do not do</h2>
 <p>We do not sell personal information, use it for targeted advertising, or allow people to read user application data except when you explicitly provide it for support or when needed for security, legal compliance, or abuse investigation. We do not use job-page data to build unrelated advertising profiles.</p>
 <h2>Retention and deletion</h2>
-<p>Your profile, resume, generated kits, pipeline, and saved answers remain in your account until you delete them or ask us to delete your account. Operational and payment records may be retained longer where required for security, accounting, fraud prevention, or legal obligations. To request access, correction, export, or deletion, email <a href="mailto:wittman.c@gmail.com">wittman.c@gmail.com</a> from the account email address.</p>
-<h2>Security</h2>
-<p>Data is transmitted over HTTPS, sessions are authenticated with expiring tokens, and production access is restricted. No internet service can guarantee absolute security, so please do not upload information you are not comfortable processing through the service providers described above.</p>
+<p>Your profile, resume, generated kits, pipeline, and saved answers remain in your account until you delete them. In <a href="/setup">Profile &amp; settings</a>, you can download an account export or permanently delete the account and its stored profile, resume, answers, jobs, kits, schedule, and operational records. Shared source-cache data contains public job listings, not your profile. Payment and fraud records may be retained longer where required for accounting, security, or legal obligations. You can also email <a href="mailto:wittman.c@gmail.com">wittman.c@gmail.com</a> from the account email address.</p>
+<h2>Security and extension behavior</h2>
+<p>Data is transmitted over HTTPS, sessions are authenticated with expiring tokens, production access is restricted, and the extension has no access to pages until you click its toolbar icon. The extension sends page data only when you request a fill, answer, resume, or application action. We do not sell user data, use it for targeted advertising, or transfer it for unrelated purposes. No internet service can guarantee absolute security, so please do not upload information you are not comfortable processing through the service providers described above.</p>
 <h2>Changes and contact</h2>
 <p>We may update this policy as the product changes. We will update the date above and, when appropriate, notify account holders. Questions or privacy requests can be sent to <a href="mailto:wittman.c@gmail.com">wittman.c@gmail.com</a>.</p>
 <div class="foot"><a href="/">applyapply.xyz</a> · <a href="/extension">Extension</a> · <a href="/login">Sign in</a> · <a href="mailto:wittman.c@gmail.com">Support</a></div></main></body></html>`);
@@ -1624,6 +1624,13 @@ Numbers beat adjectives. Name the companies."></textarea>
   <button class="btn" id="saveBtn" onclick="save()">Save profile</button>
   <div id="status"></div>
 </div>
+<div class="sec" style="margin-top:34px;border-top:1px solid #222;padding-top:22px">
+  <div class="sec-label">Privacy</div>
+  <div class="hint" style="margin-bottom:12px">Your data is used to run applyapply for you. Download a copy or permanently delete this account and its stored profile, resume, answers, jobs, kits, and schedule.</div>
+  <button type="button" id="exportBtn" onclick="exportData()" style="padding:8px 12px;background:#111;border:1px solid #444;color:#fff;cursor:pointer">Download my data</button>
+  <button type="button" onclick="deleteAccount()" style="padding:8px 12px;background:none;border:1px solid #6b2222;color:#fca5a5;cursor:pointer;margin-left:8px">Delete account</button>
+  <div id="privacyStatus" class="hint" style="margin-top:10px"></div>
+</div>
 <div class="nav-links-footer">
   <a href="/pipeline">View pipeline →</a> &nbsp;·&nbsp; <a href="/sourcing">Run sourcing →</a>
 </div>
@@ -1635,6 +1642,24 @@ const FIELDS=['first_name','last_name','email','phone','location','work_authoriz
 function getKey(){
   const params=new URLSearchParams(location.search);
   return params.get('token')||localStorage.getItem('aa_session')||'';
+}
+async function exportData(){
+  const key=getKey();const st=document.getElementById('privacyStatus');
+  if(!key){st.textContent='Sign in first.';return;}
+  st.textContent='Preparing your export…';
+  const r=await fetch('/account/export',{headers:{'x-api-key':key}});
+  if(!r.ok){st.textContent='Could not prepare the export.';return;}
+  const blob=await r.blob();const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='applyapply-data.json';a.click();URL.revokeObjectURL(a.href);st.textContent='Downloaded.';
+}
+async function deleteAccount(){
+  const key=getKey();const email=document.getElementById('email')?.value||'';const st=document.getElementById('privacyStatus');
+  if(!key){st.textContent='Sign in first.';return;}
+  if(!confirm('This permanently deletes your profile, resume, answers, jobs, kits, schedule, and account. Continue?'))return;
+  const typed=prompt('Type your account email to confirm deletion:');if(!typed)return;
+  st.textContent='Deleting…';
+  const r=await fetch('/account/delete',{method:'POST',headers:{'content-type':'application/json','x-api-key':key},body:JSON.stringify({confirm_email:typed})});
+  const d=await r.json().catch(()=>({}));if(!r.ok){st.textContent=d.error||'Could not delete account.';return;}
+  localStorage.removeItem('aa_session');st.textContent='Account deleted.';setTimeout(()=>location.href='/',800);
 }
 
 function setField(f,v){const el=document.getElementById(f);if(!el||!v)return;el.tagName==='SELECT'?el.value=v:el.value=v;}
@@ -2985,6 +3010,27 @@ app.post('/clear', async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+app.get('/account/export', async (req, res) => {
+  const email = reqUserEmail(req);
+  if (!email) return res.status(401).json({ error: 'Sign in required' });
+  const data = await db.getAccountExport(email);
+  res.setHeader('Content-Type', 'application/json');
+  res.setHeader('Content-Disposition', 'attachment; filename="applyapply-data.json"');
+  res.setHeader('Cache-Control', 'no-store');
+  res.send(JSON.stringify({ exported_at: new Date().toISOString(), account: email, ...data }, null, 2));
+});
+
+app.post('/account/delete', async (req, res) => {
+  const email = reqUserEmail(req);
+  if (!email) return res.status(401).json({ error: 'Sign in required' });
+  if (String(req.body?.confirm_email || '').trim().toLowerCase() !== email.toLowerCase()) {
+    return res.status(400).json({ error: 'Type your account email to confirm deletion' });
+  }
+  await db.deleteAccount(email);
+  res.clearCookie('aa_session');
+  res.json({ ok: true });
+});
+
 // ── Schedule ──────────────────────────────────────────────────────────────────
 
 // Cron already pins this timezone; naming it once keeps the schedule, the
@@ -3063,7 +3109,7 @@ async function runScheduledSourcing(row) {
   try {
     const op = await db.reserveOperation({ userEmail:row.user_email,action:'source',resource:'source',
       key:'schedule:' + due,cost:selected.reduce((n,s)=>n+s.credits,0),queued:true,
-      payload:{ sources:selected.map(s=>s.name) } });
+      payload:{ sources:selected.map(s=>s.name), trigger:'scheduled', lookback_hours:row.lookback_hours ?? 24 } });
     if (op.request_key !== 'source:schedule:' + due) return op;
     await db.markScheduleRun(row.user_email);
     return op;
@@ -3083,6 +3129,7 @@ app.get('/schedule', async (req, res) => {
     frequency: row?.frequency === 'weekdays' ? 'weekdays' : 'daily',
     enabled: row?.enabled ?? false,
     sources: row?.sources || null,
+    lookback_hours: row?.lookback_hours ?? 24,
     last_run_at: row?.last_run_at || null,
     timezone: SCHEDULE_TZ,
     catalog: SOURCE_CATALOG.map(s => ({ name: s.name, credits: s.credits, desc: s.desc })),
@@ -3092,10 +3139,11 @@ app.get('/schedule', async (req, res) => {
 app.post('/schedule', async (req, res) => {
   const userEmail = reqUserEmail(req);
   if (!userEmail) return res.status(401).json({ error: 'Sign in required' });
-  const { hour, minute, frequency, enabled, sources } = req.body || {};
+  const { hour, minute, frequency, enabled, sources, lookback_hours } = req.body || {};
   if (typeof enabled !== 'boolean' || !Number.isInteger(hour) || hour < 0 || hour > 23
       || !Number.isInteger(minute) || minute < 0 || minute > 59
       || (frequency !== undefined && !['daily','weekdays'].includes(frequency))
+      || (lookback_hours !== undefined && ![0,24].includes(Number(lookback_hours)))
       || (sources !== undefined && (!Array.isArray(sources) || sources.some(name => !SOURCE_CATALOG.some(s => s.name === name))))) {
     return res.status(400).json({ error: 'Invalid schedule settings' });
   }
@@ -3112,11 +3160,11 @@ app.post('/schedule', async (req, res) => {
   }).format(new Date()).split(':').map(Number);
   const passedToday = (h * 60 + m) <= (nowH * 60 + nowM);
   const row = await db.setSchedule(userEmail,
-    { hour: h, minute: m, frequency, enabled: !!enabled, sources: names }, passedToday);
+    { hour: h, minute: m, frequency, enabled: !!enabled, sources: names, lookback_hours }, passedToday);
   const selected = names?.length ? SOURCE_CATALOG.filter(s => names.includes(s.name)) : SOURCE_CATALOG.filter(s => s.on);
   res.json({
     ok: true,
-    schedule: { hour: row.hour, minute: row.minute, frequency: row.frequency, enabled: row.enabled, sources: row.sources },
+    schedule: { hour: row.hour, minute: row.minute, frequency: row.frequency, enabled: row.enabled, sources: row.sources, lookback_hours: row.lookback_hours ?? 24 },
     nightly_cost: selected.reduce((n, s) => n + s.credits, 0),
     weekly_cost: selected.reduce((n, s) => n + s.credits, 0) * (row.frequency === 'weekdays' ? 5 : 7),
     timezone: SCHEDULE_TZ,
@@ -3149,7 +3197,7 @@ app.post('/source/run', apiLimiter, async (req,res) => {
   if (!selected.length) return res.status(400).json({error:'No valid sources selected'});
   const roles=Array.isArray(req.body.roles) ? req.body.roles.filter(r=>typeof r==='string').slice(0,20).map(r=>r.slice(0,100)) : [];
   const op=await db.reserveOperation({userEmail,action:'source',resource:'source',key:req.get('Idempotency-Key') || crypto.randomUUID(),
-    cost:selected.reduce((n,s)=>n+s.credits,0),queued:true,payload:{sources:selected.map(s=>s.name),roles}});
+    cost:selected.reduce((n,s)=>n+s.credits,0),queued:true,payload:{sources:selected.map(s=>s.name),roles,trigger:'manual',lookback_hours:24}});
   res.json({status:op.replay ? 'already_running' : 'started',operation_id:op.id,credits_charged:op.cost,sources:op.payload.sources});
 });
 
@@ -3276,7 +3324,7 @@ app.get('/sourcing', async (req, res) => {
         const openedCount = fitJobs.filter(j => openedSet.has(j.url)).length;
 
         const statParts = [
-          `${nTotal} checked`,
+          `${nTotal} pulled${src.windowCount != null && src.windowCount !== nTotal ? ` · ${src.windowCount} in window` : ''}`,
           fitJobs.length ? `<strong>${fitJobs.length} fit</strong>` : '0 fit',
           kitCount ? `${kitCount} kit${kitCount>1?'s':''}` : '',
           openedCount ? `${openedCount} opened` : '',
@@ -3410,6 +3458,19 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;backgrou
   .missed-input,.missed-btn{width:100%}
   .missed-btn{padding:10px;text-align:center}
   #source-panel{padding:14px 16px}
+  .topbar{align-items:flex-start}
+  .topbar .nav{order:3;width:100%;overflow-x:auto;white-space:nowrap;padding-top:4px}
+  .topbar .nav a{font-size:12px}
+  .hunt-home{padding:22px 16px}
+  .hunt-home h1{font-size:22px}
+  .hunt-actions{align-items:stretch;flex-direction:column}
+  .hunt-actions .run-btn,.hunt-actions .hunt-secondary{width:100%;text-align:center}
+  #sched-panel,#source-panel{padding:20px 16px!important}
+  .wizard-title{font-size:19px}
+  .wizard-actions{position:sticky;bottom:0;background:#0a0a0a;padding:12px 0;border-top:1px solid #222}
+  .src-sel-row{display:grid;grid-template-columns:20px minmax(0,1fr) auto auto;gap:8px;padding:10px 0}
+  .src-sel-type{display:none}
+  .source-only{margin-left:0}
   .src-footer{flex-direction:column;gap:10px;align-items:stretch}
   .run-confirm-btn{text-align:center;padding:12px}
 }
@@ -3551,6 +3612,11 @@ ${alertBanners.join('\n')}
       frequency <select id="sched-frequency" onchange="schedCost()" style="background:#111;border:1px solid #1e1e1e;color:#fff;font-size:11px;padding:4px 6px;font-family:inherit">
         <option value="daily">Every day</option>
         <option value="weekdays">Weekdays only</option>
+      </select>
+    </label>
+    <label style="font-size:11px;color:#aaa;display:flex;align-items:center;gap:6px">
+      search window <select id="sched-lookback" onchange="schedCost()" style="background:#111;border:1px solid #1e1e1e;color:#fff;font-size:11px;padding:4px 6px;font-family:inherit">
+        <option value="24">Last 24 hours</option><option value="0">All currently listed</option>
       </select>
     </label>
   </div>
@@ -3921,6 +3987,7 @@ function loadSchedule(){
     document.getElementById('sched-enabled').checked=!!d.enabled;
     document.getElementById('sched-time').value=String(d.hour).padStart(2,'0')+':'+String(d.minute).padStart(2,'0');
     document.getElementById('sched-frequency').value=d.frequency==='weekdays'?'weekdays':'daily';
+    document.getElementById('sched-lookback').value=String(d.lookback_hours ?? 24);
     document.getElementById('sched-tz').textContent=(d.timezone||'').split('/').pop().replace('_',' ');
     if(d.last_run_at)document.getElementById('sched-last').textContent='last run '+new Date(d.last_run_at).toLocaleString();
     var on=d.sources&&d.sources.length?d.sources:(d.catalog||[]).map(function(c){return c.name;});
@@ -3947,7 +4014,7 @@ function schedCost(){
   document.getElementById('sched-count').textContent=picked.length+' of '+(SCHED.catalog||[]).length+' selected';
   document.getElementById('sched-next').disabled=!picked.length&&(schedStep===0||enabled);
   document.getElementById('sched-review').textContent=enabled
-    ? (huntRoles||'No target roles set')+' — '+picked.join(', ')+' · '+(days===5?'Weekdays':'Every day')+' at '+document.getElementById('sched-time').value+' '+(SCHED.timezone||'America/Chicago')
+    ? (huntRoles||'No target roles set')+' — '+picked.join(', ')+' · '+(days===5?'Weekdays':'Every day')+' at '+document.getElementById('sched-time').value+' · '+(document.getElementById('sched-lookback').value==='24'?'last 24 hours':'all currently listed')
     : 'Automatic hunting will be paused. No scheduled credits will be used.';
 }
 
@@ -3958,7 +4025,7 @@ function saveSchedule(){
   var t=(document.getElementById('sched-time').value||'06:00').split(':');
   var picked=[].slice.call(document.querySelectorAll('[data-sched-src]:checked')).map(function(i){return i.getAttribute('data-sched-src');});
   fetch('/schedule',{method:'POST',headers:Object.assign({'content-type':'application/json'},authHeaders()),
-    body:JSON.stringify({hour:Number(t[0]),minute:Number(t[1]),frequency:document.getElementById('sched-frequency').value,enabled:document.getElementById('sched-enabled').checked,sources:picked})})
+    body:JSON.stringify({hour:Number(t[0]),minute:Number(t[1]),frequency:document.getElementById('sched-frequency').value,enabled:document.getElementById('sched-enabled').checked,sources:picked,lookback_hours:Number(document.getElementById('sched-lookback').value)})})
   .then(function(r){return r.json();}).then(function(d){
     var lbl=document.getElementById('sched-label');
     if(!d || !d.ok || !d.schedule){status.textContent=d&&d.error||'Could not save schedule';schedCost();return;}
@@ -5440,11 +5507,13 @@ if (require.main === module) {
             const added = op.result?.added || 0;
             const preferences = await db.getProfileByUserEmail(op.user_email);
             if (complete && added === 0 && preferences?.search_mode === 'selective') return;
+            const scheduled = op.payload?.trigger === 'scheduled';
+            const windowLabel = op.payload?.lookback_hours === 24 ? 'the last 24 hours' : 'the current listings';
             const message = complete
-              ? `Your overnight job search finished. ${added} new role${added === 1 ? '' : 's'} were added to your pipeline. Review the matches, open a role, and generate a tailored application when one looks right.`
+              ? `${scheduled ? 'Your scheduled job search' : 'Your one-time job search'} finished. We pulled listings from ${windowLabel}, checked them against your roles, and added ${added} new role${added === 1 ? '' : 's'} to your pipeline. Review the matches to see new roles, duplicates, and filtered listings.`
               : 'Your sourcing run did not finish, so its credits were returned automatically. You can review the run details and try again.';
             const link = APP_ORIGIN + '/sourcing';
-            await sendEmail(op.user_email, 'applyapply: ' + (complete ? 'sourcing complete' : 'sourcing failed'),
+            await sendEmail(op.user_email, 'applyapply: ' + (complete ? (scheduled ? 'scheduled search complete' : 'one-time search complete') : 'sourcing failed'),
               '<div style="font-family:-apple-system,sans-serif;max-width:520px;margin:40px auto;padding:32px;background:#fff;border:1px solid #e5e5e5;border-radius:8px"><h2 style="font-size:18px;font-weight:700;margin-bottom:12px">' + (complete ? 'Your job search finished' : 'Your sourcing run was returned') + '</h2><p style="color:#555;font-size:14px;line-height:1.6;margin-bottom:20px">' + escapeHtml(message) + '</p><a href="' + escapeHtml(link) + '" style="display:inline-block;background:#0a0a0a;color:#fff;text-decoration:none;padding:11px 22px;border-radius:6px;font-size:14px;font-weight:600">Review your pipeline</a></div>', message + '\n\nReview your pipeline: ' + link);
           });
           worker.start();
