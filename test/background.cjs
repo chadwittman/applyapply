@@ -14,7 +14,8 @@ const chrome={
   tabs:{onUpdated:{addListener:noop},onRemoved:{addListener:noop},create:async tab=>opened.push(tab),sendMessage:async()=>{throw new Error('not injected');}},
   scripting:{executeScript:async options=>{scripts.push(options);return [];}},
 };
-vm.runInNewContext(fs.readFileSync(require('node:path').join(__dirname,'../extension/background.js'),'utf8'),{
+const extensionDir=process.env.AA_EXTENSION_DIR || require('node:path').join(__dirname,'../extension');
+vm.runInNewContext(fs.readFileSync(require('node:path').join(extensionDir,'background.js'),'utf8'),{
   chrome,URL,crypto,console,fetch:async(url,options)=>{calls.push({url,options});return {ok:true,status:200,text:async()=>JSON.stringify({email:'synthetic@test.local'}),json:async()=>({email:'synthetic@test.local'})};},
 });
 const origin='https://applyapply.xyz';
@@ -42,7 +43,7 @@ const request=(key,url=origin+'/profile')=>send({type:'SERVER_FETCH',url,options
   chrome.tabs.sendMessage=async(_id,message)=>{assert.equal(message.type,'FORCE_INIT');return {ok:true};};
   await onClick({id:2,url:'https://jobs.ashbyhq.com/acme/job-id'});
   assert.equal(scripts.length,2,'Existing sidebar reopened without duplicate injection');
-  const manifest=JSON.parse(fs.readFileSync(require('node:path').join(__dirname,'../extension/manifest.json'),'utf8'));
+  const manifest=JSON.parse(fs.readFileSync(require('node:path').join(extensionDir,'manifest.json'),'utf8'));
   assert.equal(manifest.action.default_popup,undefined);
   assert.equal(manifest.content_scripts,undefined);
   assert.ok(!calls.some(call=>call.url.endsWith('/generate')),'Opening never generates');

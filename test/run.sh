@@ -45,4 +45,18 @@ for t in ${AA_TEST_SUITES:-test/isolation.mjs test/kits-and-profiles.mjs test/ev
   node "$t" || fail=1
 done
 
+# Every extension build still in Chrome Web Store review or in users' hands
+# must keep working against this server. Tag each submission store-<version>.
+if [[ -z "${AA_TEST_SUITES:-}" ]]; then
+  for tag in $(git tag -l 'store-*'); do
+    dir="$(mktemp -d)"
+    git archive "$tag" extension | tar -x -C "$dir"
+    for t in test/extension-ui.mjs test/background.cjs; do
+      echo "═══ $t against $tag ═══"
+      AA_EXTENSION_DIR="$dir/extension" node "$t" || fail=1
+    done
+    rm -rf "$dir"
+  done
+fi
+
 [[ $fail -eq 0 ]] && echo "ALL SUITES PASSED" || { echo "SUITE FAILURES"; exit 1; }

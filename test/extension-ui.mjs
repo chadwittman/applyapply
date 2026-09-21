@@ -8,13 +8,15 @@ const { chromium } = require('playwright-core');
 const jwt = require('jsonwebtoken');
 const db = require('./db');
 const origin = process.env.APP_ORIGIN;
-const alice = 'extension-alice@test.local', bob = 'extension-bob@test.local';
+// A second pass against a frozen release shares this database, so it gets its own accounts.
+const run = process.env.AA_EXTENSION_DIR ? '-' + process.pid : '';
+const alice = `extension-alice${run}@test.local`, bob = `extension-bob${run}@test.local`;
 const token = email => jwt.sign({ email },process.env.APPLYAPPLY_JWT_SECRET);
 const url = 'https://jobs.lever.co/fixture/job-one';
 for (const email of [alice,bob]) await db.getOrCreateUser(email);
 await db.setProfile(alice,{ first_name:'Alice',email:alice,work_authorization:'yes',sponsorship:'no' },true);
 await db.setProfile(bob,{ first_name:'Bob',email:bob },true);
-await db.saveKit({ id:'extension-kit',user_email:alice,url,company:'<img src=x onerror="window.INJECTED=1">',role:'PM',profile:{first_name:'STALE_IDENTITY'},tailored:{headline:'Draft'},
+await db.saveKit({ id:'extension-kit'+run,user_email:alice,url,company:'<img src=x onerror="window.INJECTED=1">',role:'PM',profile:{first_name:'STALE_IDENTITY'},tailored:{headline:'Draft'},
   tailored_resume:{name:'Alice',summary:'Draft',experience:[],skills:[],coverage:{confidence:'thin',gaps:['Describe a project you led.']}} });
 const browser = await chromium.launch({headless:true,executablePath:process.env.AA_CHROME || undefined});
 const page = await browser.newPage();
@@ -51,7 +53,9 @@ await page.evaluate(({origin,key})=>{
     }}};
 }, {origin,key:token(alice)});
 try {
-  await page.addScriptTag({content:await readFile(new URL('../extension/content.js',import.meta.url),'utf8')});
+  // AA_EXTENSION_DIR runs this suite against a frozen release (see run.sh).
+const extensionDir = process.env.AA_EXTENSION_DIR || new URL('../extension/',import.meta.url).pathname;
+await page.addScriptTag({content:await readFile(extensionDir.replace(/\/?$/,'/')+'content.js','utf8')});
   await page.waitForSelector('#jaa-root'); await page.waitForTimeout(800);
   assert.deepEqual(errors,[], 'Content script boot errors');
   assert.ok(await page.locator('#jaa-root .sh-company').count(), 'Sidebar rendered');

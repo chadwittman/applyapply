@@ -8,6 +8,10 @@
 3. Deploy the API and extension from the same commit. The extension version must be incremented for every Chrome release.
 4. Run the smoke test below against a staging account before sending traffic to production.
 
+## Extension builds in review or in the wild
+
+Every extension build submitted to the Chrome Web Store is tagged `store-<version>` (for example `store-1.19.3`). `npm test` re-runs the extension suites against each tagged build, so a server change that would break a build under review or already installed fails the tests. Keep server endpoints backward compatible; add fields, don't rename or remove them.
+
 ## Required production controls
 
 - Use a managed Postgres database with automated backups and point-in-time recovery.
