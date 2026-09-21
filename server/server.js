@@ -5,7 +5,16 @@ const fs = require('fs');
 const path = require('path');
 const cron = require('node-cron');
 const multer = require('multer');
-const pdfParse = require('pdf-parse');
+const pdfParseOnce = require('pdf-parse');
+// pdf-parse 1.1.1's bundled pdf.js fails at random on about 1 in 20 parses of
+// the very same file ("bad XRef entry"); a retry succeeds. Three tries make a
+// spurious upload failure roughly 1 in 8,000.
+async function pdfParse(buffer) {
+  for (let attempt = 1; ; attempt++) {
+    try { return await pdfParseOnce(buffer); }
+    catch (e) { if (attempt >= 3 || !/XRef/i.test(e.message)) throw e; }
+  }
+}
 const jwt = require('jsonwebtoken');
 const crypto = require('crypto');
 const rateLimit = require('express-rate-limit');
@@ -48,7 +57,7 @@ for (const method of ['get','post','put','patch','delete']) {
     (req, res, next) => { try { Promise.resolve(handler(req,res,next)).catch(next); } catch (e) { next(e); } }));
 }
 const PORT = process.env.PORT || 5000;
-const VERSION = '0.31.0';
+const VERSION = '0.32.0';
 const IS_PRODUCTION = process.env.NODE_ENV === 'production';
 const APP_ORIGIN = process.env.APP_ORIGIN || 'http://localhost:5000';
 const ALLOWED_WEB_ORIGINS = new Set(
@@ -203,7 +212,7 @@ function legalPage(res, { title, desc, path: urlPath, body }) {
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 ${metaHead({ title, desc, path: urlPath })}
 ${LEGAL_STYLE}</head><body><div class="topbar"><a class="logo" href="/">applyapply</a><div class="nav"><a href="/extension">Extension</a><a href="/buy">Credits</a></div></div>
-<main class="wrap">${body}<div class="foot"><a href="/">applyapply.xyz</a> · <a href="/privacy">Privacy</a> · <a href="/terms">Terms</a> · <a href="/extension">Extension</a> · <a href="/login">Sign in</a> · <a href="/support">Support</a></div></main></body></html>`);
+<main class="wrap">${body}<div class="foot"><a href="/">applyapply.xyz</a> · <a href="/privacy">Privacy</a> · <a href="/terms">Terms</a> · <a href="/agents">Agents &amp; API</a> · <a href="/extension">Extension</a> · <a href="/login">Sign in</a> · <a href="/support">Support</a></div></main></body></html>`);
 }
 
 app.get('/privacy', (req, res) => legalPage(res, {
@@ -339,6 +348,21 @@ app.use(express.json({ limit: '1mb',
   verify: (req, res, buf) => { req.rawBody = buf; },
 }));
 
+// Personal API keys (aa_live_...) let a user's own agent act for them. The key
+// resolves to the account here, before any route runs; a key that does not
+// resolve is rejected outright rather than falling through as signed out.
+app.use(async (req, res, next) => {
+  const presented = req.headers['authorization']?.match(/^Bearer (aa_live_\S+)$/)?.[1]
+    || (req.headers['x-api-key']?.startsWith('aa_live_') ? req.headers['x-api-key'] : null);
+  if (!presented) return next();
+  try {
+    const email = await db.emailForApiKey(presented);
+    if (!email) return res.status(401).json({ error: 'Invalid or revoked API key' });
+    req.apiKeyEmail = email;
+    next();
+  } catch (e) { next(e); }
+});
+
 // Rate limiters
 const authLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 min
@@ -355,6 +379,9 @@ const apiLimiter = rateLimit({
   legacyHeaders: false,
   message: { error: 'Rate limit exceeded' },
   skip: (req) => isLocalRequest(req),
+  // Agents reach the API through /mcp on loopback, so an API key is limited
+  // per account; everything else per client IP.
+  keyGenerator: (req) => req.apiKeyEmail ? 'key:' + req.apiKeyEmail : rateLimit.ipKeyGenerator(req.ip),
 });
 
 // ── Credits ───────────────────────────────────────────────────────────────────
@@ -931,6 +958,7 @@ setTimeout(function() { var b = document.querySelector('.drole'); startDemo('pro
     <a href="/privacy">Privacy</a>
     <a href="/terms">Terms</a>
     <a href="/support">Support</a>
+    <a href="/agents">Agents</a>
   </div>
 </footer>
 
@@ -939,6 +967,10 @@ setTimeout(function() { var b = document.querySelector('.drole'); startDemo('pro
 });
 
 app.get('/credits', async (req, res) => {
+  if (req.apiKeyEmail) {
+    const user = await getUser(req.apiKeyEmail);
+    return res.json({ balance: user?.credits ?? 0, email: req.apiKeyEmail, costs: CREDIT_COSTS });
+  }
   // JWT session
   const bearer = req.headers['authorization']?.match(/^Bearer (.+)/)?.[1]
     || (req.headers['x-api-key']?.startsWith('eyJ') ? req.headers['x-api-key'] : null);
@@ -1124,6 +1156,10 @@ if(EXT_ID&&SESSION){
 });
 
 app.get('/auth/me', async (req, res) => {
+  if (req.apiKeyEmail) {
+    const user = await getUser(req.apiKeyEmail);
+    return res.json({ email: req.apiKeyEmail, credits: user?.credits ?? 0 });
+  }
   const bearer = req.headers['authorization']?.match(/^Bearer (.+)/)?.[1]
     || (req.headers['x-api-key']?.startsWith('eyJ') ? req.headers['x-api-key'] : null);
   if (!bearer) return res.status(401).json({ error: 'Not signed in' });
@@ -1376,6 +1412,7 @@ async function resolveProfile(req) {
 // ── Profile endpoints ─────────────────────────────────────────────────────────
 
 function authFromRequest(req) {
+  if (req.apiKeyEmail) return { type: 'api_key', email: req.apiKeyEmail };
   const bearer = req.headers['authorization']?.match(/^Bearer (.+)/)?.[1]
     || (req.headers['x-api-key']?.startsWith('eyJ') ? req.headers['x-api-key'] : null);
   if (bearer) {
@@ -1705,6 +1742,19 @@ Numbers beat adjectives. Name the companies."></textarea>
   <div id="status"></div>
 </div>
 <div class="sec" style="margin-top:34px;border-top:1px solid #222;padding-top:22px">
+  <div class="sec-label">Agent access &nbsp;<a href="/agents" style="color:#fff;font-weight:400;text-transform:none;letter-spacing:0">Docs →</a></div>
+  <div style="display:flex;gap:8px;margin:10px 0 12px;flex-wrap:wrap">
+    <input id="keyName" placeholder="Key name, e.g. Claude" maxlength="80" style="flex:1 1 200px;padding:8px 10px;background:#0a0a0a;border:1px solid #333;color:#fff;font-family:inherit">
+    <button type="button" onclick="createKey()" style="padding:8px 14px;background:#fff;color:#000;border:none;font-weight:600;cursor:pointer;font-family:inherit">Create API key</button>
+  </div>
+  <div id="newKey" style="display:none;border:1px solid #2f6f5e;padding:12px;margin-bottom:12px">
+    <div style="font-size:12px;color:#fff;margin-bottom:6px">Copy this key now. It is not shown again.</div>
+    <pre id="newKeyConfig" style="white-space:pre-wrap;word-break:break-all;font-size:12px;color:#e5e5e5;margin:0 0 8px"></pre>
+    <button type="button" onclick="navigator.clipboard.writeText(document.getElementById('newKeyConfig').textContent);this.textContent='Copied'" style="padding:6px 10px;background:#111;border:1px solid #444;color:#fff;cursor:pointer">Copy</button>
+  </div>
+  <div id="keyList"></div>
+</div>
+<div class="sec" style="margin-top:34px;border-top:1px solid #222;padding-top:22px">
   <div class="sec-label">Privacy</div>
   <div class="hint" style="margin-bottom:12px">Your data is used to run applyapply for you. Download a copy or permanently delete this account and its stored profile, resume, answers, jobs, kits, and schedule.</div>
   <button type="button" id="exportBtn" onclick="exportData()" style="padding:8px 12px;background:#111;border:1px solid #444;color:#fff;cursor:pointer">Download my data</button>
@@ -1723,6 +1773,28 @@ function getKey(){
   const params=new URLSearchParams(location.search);
   return params.get('token')||localStorage.getItem('aa_session')||'';
 }
+async function loadKeys(){
+  const key=getKey();const list=document.getElementById('keyList');if(!key||!list)return;
+  const r=await fetch('/api-keys',{headers:{'x-api-key':key}});if(!r.ok)return;
+  const keys=await r.json();
+  list.innerHTML=keys.map(k=>'<div style="display:flex;gap:10px;align-items:center;padding:6px 0;border-bottom:1px solid #1a1a1a;font-size:13px;color:#fff"><span style="flex:1">'+escHtml(k.name)+' <code style="color:#e5e5e5">'+escHtml(k.prefix)+'…</code></span><span style="font-size:12px;color:#e5e5e5">'+(k.last_used_at?'used '+new Date(k.last_used_at).toLocaleDateString():'never used')+'</span><button type="button" data-id="'+escHtml(k.id)+'" onclick="revokeKey(this.dataset.id)" style="padding:4px 8px;background:none;border:1px solid #6b2222;color:#fca5a5;cursor:pointer">Revoke</button></div>').join('');
+}
+function escHtml(v){return String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
+async function createKey(){
+  const key=getKey();if(!key)return;
+  const name=document.getElementById('keyName').value.trim()||'Agent';
+  const r=await fetch('/api-keys',{method:'POST',headers:{'content-type':'application/json','x-api-key':key},body:JSON.stringify({name})});
+  const d=await r.json().catch(()=>({}));if(!r.ok){alert(d.error||'Could not create key');return;}
+  const config={mcpServers:{applyapply:{type:'http',url:location.origin+'/mcp',headers:{Authorization:'Bearer '+d.key}}}};
+  document.getElementById('newKeyConfig').textContent=d.key+'\\n\\n'+JSON.stringify(config,null,2);
+  document.getElementById('newKey').style.display='';document.getElementById('keyName').value='';loadKeys();
+}
+async function revokeKey(id){
+  const key=getKey();if(!key||!confirm('Revoke this key? Agents using it stop working immediately.'))return;
+  await fetch('/api-keys/'+encodeURIComponent(id),{method:'DELETE',headers:{'x-api-key':key}});loadKeys();
+}
+loadKeys();
+
 async function exportData(){
   const key=getKey();const st=document.getElementById('privacyStatus');
   if(!key){st.textContent='Sign in first.';return;}
@@ -2336,6 +2408,7 @@ const SOURCED_FILE = path.join(__dirname, '../sourced-jobs.json');
 
 function reqUserEmail(req) {
   if (req.userEmail) return req.userEmail;
+  if (req.apiKeyEmail) return req.apiKeyEmail;
   // try to resolve from auth header without requireCredits middleware
   const bearer = req.headers['authorization']?.match(/^Bearer (.+)/)?.[1]
     || (req.headers['x-api-key']?.startsWith('eyJ') ? req.headers['x-api-key'] : null);
@@ -3090,9 +3163,84 @@ app.post('/clear', async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-app.get('/account/export', async (req, res) => {
+// Account-level actions need a signed-in session, not an agent's API key.
+const requireSession = (req, res) => {
+  if (req.apiKeyEmail) { res.status(403).json({ error: 'Sign in to do this; API keys cannot manage the account' }); return null; }
   const email = reqUserEmail(req);
-  if (!email) return res.status(401).json({ error: 'Sign in required' });
+  if (!email) { res.status(401).json({ error: 'Sign in required' }); return null; }
+  return email;
+};
+
+const { TOOLS: MCP_TOOLS } = require('./mcp')(app, { db, port: PORT, limiter: apiLimiter, sourceNames: () => ACTIVE_SOURCES.map(s => s.name) });
+
+app.get('/agents', (req, res) => {
+  const origin = APP_ORIGIN.replace(/\/$/, '');
+  const code = t => `<pre style="background:#0d0d0d;border:1px solid #222;padding:14px;overflow-x:auto;font-size:12.5px;color:#e5e5e5;white-space:pre">${escapeHtml(t)}</pre>`;
+  legalPage(res, {
+    title: 'Agents & API — applyapply',
+    desc: 'Connect Claude or any MCP-capable agent to applyapply with a personal API key.',
+    path: '/agents',
+    body: `<h1>Use applyapply from your agent</h1>
+<p>Give your own agent (Claude, ChatGPT, Cursor, or anything that speaks MCP or HTTP) an applyapply API key, and it can search current job listings, run sourcing, and write tailored application kits for you. It spends your credits the same way the website and extension do, and like them it never submits an application: you review and submit.</p>
+<h2>1. Create a key</h2>
+<p>Sign in, open <a href="/setup">Profile &amp; settings</a>, and create a key under Agent access. Keys start with <code>aa_live_</code>, are shown once, and can be revoked there at any time.</p>
+<h2>2. Connect over MCP</h2>
+<p>Claude Code:</p>
+${code(`claude mcp add --transport http applyapply ${origin}/mcp --header "Authorization: Bearer aa_live_..."`)}
+<p>Any client that takes an MCP config file:</p>
+${code(JSON.stringify({ mcpServers: { applyapply: { type: 'http', url: origin + '/mcp', headers: { Authorization: 'Bearer aa_live_...' } } } }, null, 2))}
+<p>Then ask it something like "find Head of Product roles posted today and write a kit for the best one".</p>
+<h2>Tools</h2>
+<ul>${MCP_TOOLS.map(t => `<li><b>${t.name}</b>: ${escapeHtml(t.description)}</li>`).join('')}</ul>
+<h2>Or call the HTTP API</h2>
+<p>Every tool is a plain HTTP route. Send the key as <code>Authorization: Bearer aa_live_...</code>.</p>
+${code(`curl ${origin}/auth/me -H "Authorization: Bearer $APPLYAPPLY_KEY"
+curl -X POST ${origin}/generate -H "Authorization: Bearer $APPLYAPPLY_KEY" \\
+  -H "Content-Type: application/json" -d '{"url":"https://jobs.ashbyhq.com/company/job-id"}'`)}
+<ul>
+<li><code>GET /auth/me</code>: email and credits</li>
+<li><code>GET /profile</code>, <code>POST /profile</code>: read or update profile fields</li>
+<li><code>GET /source/catalog</code>, <code>POST /source/run</code>, <code>GET /source/status</code>: sourcing</li>
+<li><code>GET /sourced?status=new</code>, <code>POST /sourced/status</code>: your pipeline</li>
+<li><code>POST /generate</code> (${CREDIT_COSTS.generate} credits), <code>GET /application?url=</code>: application kits</li>
+</ul>
+<h2>Limits</h2>
+<p>60 requests a minute per account. Keys cannot create other keys, export the account, or delete it; those need a signed-in session.</p>`,
+  });
+});
+
+app.get('/llms.txt', (req, res) => {
+  const origin = APP_ORIGIN.replace(/\/$/, '');
+  res.type('text/plain').send(`# applyapply
+
+> applyapply finds jobs that match a person's target roles and writes tailored application kits (resume, cover note, answers to the form's questions). The person reviews and submits; applyapply never submits applications.
+
+Agents can act for a user with a personal API key (created at ${origin}/setup) over MCP at ${origin}/mcp or plain HTTP.
+
+- [Agents & API](${origin}/agents): connecting an agent, tools, HTTP routes, limits
+- [Privacy policy](${origin}/privacy)
+- [Terms of Service](${origin}/terms)
+- [Support](${origin}/support)
+`);
+});
+
+app.get('/api-keys', async (req, res) => {
+  const email = requireSession(req, res); if (!email) return;
+  res.json(await db.listApiKeys(email));
+});
+app.post('/api-keys', async (req, res) => {
+  const email = requireSession(req, res); if (!email) return;
+  try { res.json(await db.createApiKey(email, req.body?.name)); }
+  catch (e) { res.status(e.status || 500).json({ error: e.status ? e.message : 'Could not create key' }); }
+});
+app.delete('/api-keys/:id', async (req, res) => {
+  const email = requireSession(req, res); if (!email) return;
+  if (!await db.revokeApiKey(email, req.params.id)) return res.status(404).json({ error: 'No such key' });
+  res.json({ ok: true });
+});
+
+app.get('/account/export', async (req, res) => {
+  const email = requireSession(req, res); if (!email) return;
   const data = await db.getAccountExport(email);
   res.setHeader('Content-Type', 'application/json');
   res.setHeader('Content-Disposition', 'attachment; filename="applyapply-data.json"');
@@ -3101,8 +3249,7 @@ app.get('/account/export', async (req, res) => {
 });
 
 app.post('/account/delete', async (req, res) => {
-  const email = reqUserEmail(req);
-  if (!email) return res.status(401).json({ error: 'Sign in required' });
+  const email = requireSession(req, res); if (!email) return;
   if (String(req.body?.confirm_email || '').trim().toLowerCase() !== email.toLowerCase()) {
     return res.status(400).json({ error: 'Type your account email to confirm deletion' });
   }

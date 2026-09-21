@@ -341,6 +341,31 @@ async function main() {
     for (const t of ['Senior Product Marketing Manager, Instacart+','Senior Manager, Product Design - Product Platform','Head of Growth Marketing','Director, Product Partnerships','Senior Software Engineer']) assert.ok(!m.test(t),t);
     assert.equal(roleMatcher('').test('Product Manager'),false);
   });
+  await check('Agents can use MCP with an API key; keys cannot manage the account; revoked keys stop',async()=>{
+    const owner='agent@audit.invalid';await balance(owner,25);
+    await db.setProfile(owner,{email:owner,target_roles:'Product Manager'},true);
+    const {id,key}=await db.createApiKey(owner,'Test agent');
+    assert.match(key,/^aa_live_/);
+    const rpc=async(body,k=key)=>{const r=await originalFetch(origin+'/mcp',{method:'POST',headers:{'content-type':'application/json',authorization:'Bearer '+k},body:JSON.stringify(body)});return {status:r.status,data:await r.json().catch(()=>null)};};
+    const init=await rpc({jsonrpc:'2.0',id:1,method:'initialize',params:{protocolVersion:'2025-06-18',capabilities:{},clientInfo:{name:'test',version:'1'}}});
+    assert.equal(init.data.result.protocolVersion,'2025-06-18');assert.equal(init.data.result.serverInfo.name,'applyapply');
+    assert.equal((await originalFetch(origin+'/mcp',{method:'POST',headers:{'content-type':'application/json',authorization:'Bearer '+key},body:JSON.stringify({jsonrpc:'2.0',method:'notifications/initialized'})})).status,202);
+    const tools=(await rpc({jsonrpc:'2.0',id:2,method:'tools/list'})).data.result.tools.map(t=>t.name);
+    for (const t of ['search_listings','generate_application_kit','start_sourcing_run','get_account']) assert.ok(tools.includes(t),t);
+    const account=JSON.parse((await rpc({jsonrpc:'2.0',id:3,method:'tools/call',params:{name:'get_account',arguments:{}}})).data.result.content[0].text);
+    assert.equal(account.email,owner);
+    const search=JSON.parse((await rpc({jsonrpc:'2.0',id:4,method:'tools/call',params:{name:'search_listings',arguments:{window:'last_24_hours'}}})).data.result.content[0].text);
+    assert.ok(search.listings.some(l=>l.url==='https://ledger.test/new-pm'),'Ledger listing found through MCP');
+    const missing=(await rpc({jsonrpc:'2.0',id:5,method:'tools/call',params:{name:'get_application_kit',arguments:{url:'https://jobs.lever.co/none/none'}}})).data.result;
+    assert.equal(missing.isError,true);
+    assert.equal((await rpc({jsonrpc:'2.0',id:6,method:'tools/list'},'aa_live_notarealkey')).status,401);
+    for (const [method,path] of [['GET','/api-keys'],['POST','/account/delete'],['GET','/account/export']]) {
+      assert.equal((await originalFetch(origin+path,{method,headers:{'content-type':'application/json',authorization:'Bearer '+key},body:method==='POST'?'{}':undefined})).status,403,path);
+    }
+    assert.equal(await db.revokeApiKey(owner,id),true);
+    assert.equal((await rpc({jsonrpc:'2.0',id:7,method:'tools/list'})).status,401,'Revoked key rejected');
+    assert.equal((await rpc({jsonrpc:'2.0',id:8,method:'tools/list'},'')).status,401,'No key rejected');
+  });
   await check('Search window is part of the cache key and honors date-only board stamps',async()=>{
     assert.notEqual(db.cacheKeyFor('Sequoia job board','',true,'remote',24),db.cacheKeyFor('Sequoia job board','',true,'remote',0));
     assert.notEqual(db.cacheKeyFor('Lever jobs (Google)','PM',false,'remote',24),db.cacheKeyFor('Lever jobs (Google)','PM',false,'remote',0));

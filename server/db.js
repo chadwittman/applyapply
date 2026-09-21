@@ -200,6 +200,20 @@ async function initSchema() {
     )
   `);
   await q(`CREATE INDEX IF NOT EXISTS idx_listings_source_posted ON listings (source, COALESCE(posted_at, first_seen) DESC)`);
+  // Personal API keys for agents. Only a SHA-256 of the key is stored.
+  await q(`
+    CREATE TABLE IF NOT EXISTS api_keys (
+      id TEXT PRIMARY KEY,
+      user_email TEXT NOT NULL,
+      name TEXT NOT NULL,
+      key_hash TEXT NOT NULL UNIQUE,
+      prefix TEXT NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      last_used_at TIMESTAMPTZ,
+      revoked_at TIMESTAMPTZ
+    )
+  `);
+  await q(`CREATE INDEX IF NOT EXISTS idx_api_keys_user ON api_keys (user_email)`);
   await q(`
     CREATE TABLE IF NOT EXISTS ingest_state (
       source TEXT PRIMARY KEY,
@@ -641,6 +655,37 @@ async function getCachedSources(keys, maxAgeHours = 20) {
   return Object.fromEntries(rows.map(r => [r.cache_key, r.payload]));
 }
 
+// ── API keys ──────────────────────────────────────────────────────────────────
+
+const hashKey = key => require('crypto').createHash('sha256').update(key).digest('hex');
+
+async function createApiKey(userEmail, name) {
+  requireOwner(userEmail);
+  const crypto = require('crypto');
+  const key = 'aa_live_' + crypto.randomBytes(24).toString('base64url');
+  const id = 'key_' + crypto.randomBytes(8).toString('hex');
+  const active = await q1(`SELECT COUNT(*)::int AS n FROM api_keys WHERE user_email=$1 AND revoked_at IS NULL`, [userEmail]);
+  if (active.n >= 10) throw Object.assign(new Error('Revoke a key before creating another (limit 10)'), { status: 400 });
+  await q(`INSERT INTO api_keys (id, user_email, name, key_hash, prefix) VALUES ($1,$2,$3,$4,$5)`,
+    [id, userEmail, String(name || 'Agent').slice(0, 80), hashKey(key), key.slice(0, 12)]);
+  return { id, key };
+}
+
+async function listApiKeys(userEmail) {
+  return q(`SELECT id, name, prefix, created_at, last_used_at FROM api_keys WHERE user_email=$1 AND revoked_at IS NULL ORDER BY created_at DESC`, [requireOwner(userEmail)]);
+}
+
+async function revokeApiKey(userEmail, id) {
+  const rows = await q(`UPDATE api_keys SET revoked_at=NOW() WHERE id=$1 AND user_email=$2 AND revoked_at IS NULL RETURNING id`, [id, requireOwner(userEmail)]);
+  return rows.length > 0;
+}
+
+async function emailForApiKey(key) {
+  if (typeof key !== 'string' || !key.startsWith('aa_live_') || key.length > 100) return null;
+  const row = await q1(`UPDATE api_keys SET last_used_at=NOW() WHERE key_hash=$1 AND revoked_at IS NULL RETURNING user_email`, [hashKey(key)]);
+  return row?.user_email || null;
+}
+
 // ── Listings ledger ───────────────────────────────────────────────────────────
 
 // Board stamps that are exactly midnight UTC are dates, not times.
@@ -773,7 +818,7 @@ async function deleteAccount(userEmail) {
   try {
     await client.query('BEGIN');
     await client.query('DELETE FROM operation_events WHERE operation_id IN (SELECT id FROM operations WHERE user_email=$1)', [owner]);
-    for (const table of ['user_activity','decisions','evidence','resume_files','schedules','runs','jobs','kits','profiles','purchases']) {
+    for (const table of ['user_activity','decisions','evidence','resume_files','schedules','runs','jobs','kits','profiles','purchases','api_keys']) {
       await client.query(`DELETE FROM ${table} WHERE user_email=$1`, [owner]);
     }
     // magic_links keys on `email`; listing it above made every deletion fail.
@@ -864,6 +909,7 @@ module.exports = {
   getAccountExport, deleteAccount,
   roleKeyFor, cacheKeyFor, getCachedSources, putCachedSource,
   upsertListings, getListings, countListings, getIngestState, recordIngest, withIngestLock,
+  createApiKey, listApiKeys, revokeApiKey, emailForApiKey,
   getUser, getOrCreateUser, addUserCredits, deductUserCredits,
   createMagicLink, getMagicLink, useMagicLink,
 };
