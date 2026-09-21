@@ -8,12 +8,17 @@ ApplyApply is an Express/Postgres job-search product with a Chrome MV3 extension
 
 - Site: https://applyapply.xyz
 - Health: https://applyapply.xyz/health
-- Version: 0.27.0
-- Latest commit: 69df938 (deployed successfully on Railway)
-- Extension: 1.19.0 at https://applyapply.xyz/extension.zip
+- Version: 0.28.0
+- Latest commit: a8b07aa (deployed successfully on Railway)
+- Extension: 1.19.1 at https://applyapply.xyz/extension.zip
 - Railway project/service IDs are intentionally omitted here; use the local Railway context or production notes if infrastructure work is needed.
 
 ## Recent shipped behavior
+
+- Sequoia sourcing fixed (it had been returning 0 jobs): the search API takes the page's own CSRF token and pages through results, and the window is applied by posting day because Sequoia stamps are date-only.
+- a16z reads exact `<time datetime>` stamps from the page and stops paging once past the 24-hour window.
+- The shared source cache key includes the search window, and the nightly prefetch warms each window in use.
+- The run view labels each source's window: exact 24h, by posting day, some undated, or best-effort 24h (Google).
 
 - Extension is toolbar-first: job pages open the sidebar; unrelated pages open the pipeline. Opening never generates or charges.
 - Sourcing has focused steps for one-time searches and automatic hunting, with Only / Select all / None source controls.
@@ -36,7 +41,7 @@ Tests require local Postgres and Chrome. `test/run.sh` creates a throwaway datab
 
 ## Important open caveat
 
-The 24-hour window is exact for sources exposing a posting timestamp and date-filtered for Google-indexed sources. Some indexed listings do not expose a reliable timestamp; they remain visible with pulled/window counts rather than being falsely treated as exact.
+Google-indexed sources rely on Google's `after:` date filter and are labeled best-effort in the UI. Board sources report their own precision per run.
 
 ## Sensitive files excluded from the handoff archive
 
@@ -44,7 +49,5 @@ The 24-hour window is exact for sources exposing a posting timestamp and date-fi
 
 ## Next useful work
 
-1. Run a real scheduled 24-hour search and inspect Sequoia's pulled/window/match counts.
-2. Add source-specific timestamp confidence to the UI so users can see which sources are exact versus best-effort.
-3. Continue the Google Flights-style simplification pass through profile setup and application review.
-4. Finish Chrome Web Store submission and replace the unpacked-extension install flow.
+1. Continue the Google Flights-style simplification pass through profile setup and application review.
+2. Finish Chrome Web Store submission (needs 1280x800 screenshots; listing copy and promo tiles are ready) and replace the unpacked-extension install flow.
