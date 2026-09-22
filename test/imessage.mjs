@@ -57,7 +57,7 @@ try {
   assert.match(got[0], /ChatCo, Head of Product \(9\/10 match\)/);
   const kitLink = got[0].match(/https?:\/\/\S+\/k\/[A-Za-z0-9_-]{16}/)?.[0];
   assert.match(got[0], /Your kit: https?:\S+\/k\/[A-Za-z0-9_-]{16}/);
-  assert.match(got[0], /tailored resume \(3\.2\/5\) and cover letter as PDFs/);
+  assert.match(got[0], /tailored resume \(64% match\) and cover letter as PDFs/);
   assert.match(got[0], /Reply yes and I'll ask 2 quick questions, one at a time, then rewrite it with your answers \(8 credits\)/);
   console.log('PASS: a job link comes back as one reply with the kit link and the resume offer');
   // The kit link opens on a phone that is not signed in, with files to attach.
@@ -69,7 +69,7 @@ try {
   // The whole block copies on tap, not just its button.
   await phone.click('.blk .ans >> nth=0');
   assert.equal(await phone.evaluate(() => navigator.clipboard.readText()), 'Why: Route Assist taught me trust.');
-  assert.match(await phone.textContent('body'), /Match: Solid 3\.2\/5/);
+  assert.match(await phone.textContent('body'), /Match 64%/);
   assert.match(await phone.textContent('body'), /Launched Route Assist\./, 'Tailored resume shown');
   const save = await phone.request.post(kitLink + '/answer', { data: { question: 'Shipped a browser extension', answer: 'Built applyapply, 1.19 in the Chrome Web Store.' } });
   assert.equal(save.status(), 200);
@@ -77,6 +77,7 @@ try {
   assert.ok((await db.getEvidence(email, { answeredOnly: true })).some(r => /Chrome Web Store/.test(r.answer)));
   await phone.reload();
   assert.equal(await phone.inputValue('.gap[data-q="Shipped a browser extension"] textarea'), 'Built applyapply, 1.19 in the Chrome Web Store.', 'Answered gap shows its answer');
+  assert.match(await phone.textContent('body'), /What you've told us[\s\S]*Chrome Web Store/, 'Saved answers are visible on the kit page');
   assert.match(await phone.textContent('h1'), /ChatCo/);
   assert.match(await phone.textContent('body'), /Route Assist, 4,000 weekly users\./);
   assert.match(await phone.textContent('body'), /Only you can answer[\s\S]*When can you start\?/);

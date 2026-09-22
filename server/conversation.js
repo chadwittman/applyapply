@@ -78,7 +78,7 @@ module.exports = function conversation({ db, port, signToken, origin, kitLink, r
       const parts = [
         `${kit.company || 'This role'}, ${kit.role || ''}${kit.fit_score ? ` (${kit.fit_score}/10 match)` : ''}`,
         `Your kit: ${link}`,
-        `Inside: your tailored resume${score ? ` (${Number(score).toFixed(1)}/5)` : ''} and cover letter as PDFs, ${answers ? `${answers} answered question${answers === 1 ? '' : 's'}` : 'your details'}, everything one tap to copy.`,
+        `Inside: your tailored resume${score ? ` (${Math.round((Number(score) / 5) * 100)}% match)` : ''} and cover letter as PDFs, ${answers ? `${answers} answered question${answers === 1 ? '' : 's'}` : 'your details'}, everything one tap to copy.`,
         gaps.length ? `Want the resume dialed in for this role? Reply yes and I'll ask ${gaps.length === 1 ? 'one question' : `${gaps.length} quick questions`}, one at a time, then rewrite it with your answers (${resumeCost} credits).` : null,
       ].filter(Boolean);
       await say(email, parts.join('\n\n'), { kind: gaps.length ? 'resume_offer' : 'kit', url: kit.url, kit_id: kit.id, link, gaps });
@@ -100,10 +100,15 @@ module.exports = function conversation({ db, port, signToken, origin, kitLink, r
       const r = await api(email, 'POST', '/resume-tailor', { appId: meta.kit_id });
       if (r.status === 402) return say(email, `You're out of credits, so I couldn't rewrite it. Top up here: ${origin}/buy`);
       if (r.status !== 200) return say(email, 'I couldn\'t rewrite the resume. Your answers are saved; try "rewrite" again in a moment.');
+      const pct = x => Math.round((Number(x) / 5) * 100);
       const score = r.data.jev_match?.score, was = Number(r.data.previous_match_score);
+      const used = Number(r.data.evidence_used) || 0;
       const gaps = r.data.coverage?.gaps || [];
-      await say(email, [note, `Your tailored resume is ready${score ? `. Match ${Number(score).toFixed(1)}/5${Number.isFinite(was) ? ` (was ${was.toFixed(1)})` : ''}` : ''}: ${meta.link || `${origin}/${meta.url}`}`,
-        gaps.length ? `Still not shown: ${gaps.length === 1 ? 'one thing' : gaps.length + ' things'}. Reply yes to answer ${gaps.length === 1 ? 'it' : 'them'} too.` : null].filter(Boolean).join(' '),
+      const move = score && Number.isFinite(was)
+        ? pct(score) > pct(was) ? `Match ${pct(score)}%, up from ${pct(was)}%.` : `Match ${pct(score)}%, about the same as before.`
+        : score ? `Match ${pct(score)}%.` : '';
+      await say(email, [note, `Your resume is rewritten${used ? ` using ${used} of your answers` : ''}. ${move}`.trim(), meta.link || `${origin}/${meta.url}`,
+        gaps.length ? `Your answers are saved and in the resume. ${gaps.length === 1 ? 'One more thing' : gaps.length + ' more things'} the posting asks for that it still can't show. Reply yes to add ${gaps.length === 1 ? 'it' : 'them'}.` : null].filter(Boolean).join('\n\n'),
       { kind: gaps.length ? 'resume_offer' : 'kit', kit_id: meta.kit_id, url: meta.url, link: meta.link, gaps });
     });
   }

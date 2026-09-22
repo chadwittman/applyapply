@@ -58,7 +58,7 @@ for (const method of ['get','post','put','patch','delete']) {
     (req, res, next) => { try { Promise.resolve(handler(req,res,next)).catch(next); } catch (e) { next(e); } }));
 }
 const PORT = process.env.PORT || 5000;
-const VERSION = '0.42.2';
+const VERSION = '0.43.0';
 const IS_PRODUCTION = process.env.NODE_ENV === 'production';
 const APP_ORIGIN = process.env.APP_ORIGIN || 'http://localhost:5000';
 const ALLOWED_WEB_ORIGINS = new Set(
@@ -721,6 +721,8 @@ app.get('/k/:token', apiLimiter, async (req, res) => {
   const resumeText = resume ? [resume.summary, ...(resume.experience || []).map(e => [`${e.company} · ${e.title}${e.dates ? ' · ' + e.dates : ''}`, ...(e.bullets || []).map(b => '• ' + b)].join('\n')), resume.skills?.length ? 'Skills: ' + resume.skills.join(', ') : ''].filter(Boolean).join('\n\n') : '';
   const labels = ['', 'Weak', 'Limited', 'Solid', 'Strong', 'Exceptional'];
   const score = resume?.jev_match?.score, was = Number(resume?.previous_match_score);
+  const pct = x => Math.round((Number(x) / 5) * 100);
+  const myAnswers = (await db.getEvidence(found.owner, { answeredOnly: true }).catch(() => [])).slice(-12).reverse();
   const cov = resume?.coverage || {};
   const gapItems = [...(cov.answered || []).map(a => ({ q: a.question, a: a.answer })), ...(cov.gaps || []).map(q => ({ q, a: '' }))];
   const rows = copyRow('First name', profile.first_name) + copyRow('Last name', profile.last_name) + copyRow('Email', profile.email) + copyRow('Phone', profile.phone) + copyRow('LinkedIn', profile.linkedin) + copyRow('Website', profile.website) + copyRow('Location', profile.location);
@@ -768,11 +770,12 @@ ${rows ? '<h2>Your details</h2>' + rows : ''}
 ${block('Why this role', t.why_role)}${block('Cover note', t.cover_note)}${(t.qa || []).filter(x => x.a).map(x => block(x.q, x.a)).join('')}
 ${blanks.length ? `<h2>Only you can answer</h2><ul class="left">${blanks.map(q => `<li>${escapeHtml(q)}</li>`).join('')}</ul>` : ''}
 ${resume ? `<h2>Tailored resume</h2>
-${score ? `<div class="score">Match: ${escapeHtml(labels[Math.round(score)] || 'Reviewed')} ${escapeHtml(Number(score).toFixed(1))}/5${Number.isFinite(was) ? ` · was ${escapeHtml(was.toFixed(1))}` : ''}</div>` : ''}
+${score ? `<div class="score">Match ${pct(score)}%${Number.isFinite(was) ? `, up from ${pct(was)}%` : ` · ${escapeHtml(labels[Math.round(score)] || 'Reviewed')}`}${resume.evidence_used ? ` · written with ${resume.evidence_used} of your answers` : ''}</div>` : ''}
 ${block('Resume', resumeText)}
 ${gapItems.length ? `<h2>Make it stronger</h2>
 ${gapItems.map((g, i) => `<div class="gap" data-q="${escapeHtml(g.q)}"><div class="gap-q">${escapeHtml(g.q)}</div><div class="gap-row"><textarea id="g${i}" placeholder="Say it or type it. Specifics beat adjectives.">${escapeHtml(g.a)}</textarea><button class="mic" type="button" aria-label="Talk">🎤</button></div><div class="st">${g.a ? 'Saved to your profile' : ''}</div></div>`).join('')}
 <button class="rewrite" id="rewrite">Rewrite resume with my answers · ${CREDIT_COSTS.resume} credits</button><div class="st" id="rewrite-st"></div>` : ''}` : ''}
+${myAnswers.length ? `<h2>What you've told us</h2>${myAnswers.map(a => block(a.question, a.answer)).join('')}` : ''}
 <div class="foot">Private link, expires ${escapeHtml(expires)}. Anyone with it can read this kit.</div>
 </div>
 <script>
@@ -852,7 +855,7 @@ app.post('/imessage/send', apiLimiter, async (req, res) => {
       const refusal = await chat.voiceCharge(email, Number(req.body?.seconds) || 0);
       if (refusal) return db.addChatMessage(email, 'out', refusal);
     }
-    return chat.handle(email, text, { voice });
+    return chat.handle(email, voice ? await fixVoiceNames(email, text) : text, { voice });
   })().catch(e => { console.error('[chat]', e.message); db.addChatMessage(email, 'out', 'Something went wrong on my side. Try that again.').catch(() => {}); });
 });
 app.post('/imessage/reset', async (req, res) => {
@@ -3618,6 +3621,49 @@ app.delete('/interview/:id', async (req, res) => {
 });
 
 // Clean up voice transcript
+// Names only the candidate uses (companies, products, schools) so a voice
+// note that mishears one can be corrected: "drink Checker" -> "EdgeRank
+// Checker". Drawn from their own resume, bio and saved answers.
+const COMMON_WORDS = new Set(['The','This','That','These','Those','When','What','Where','How','Why','Which','With','From','Then','Also','And','But','For','My','We','They','You','It','At','In','On','Of','A','An','I']);
+function namesFrom(...texts) {
+  const found = [];
+  for (const text of texts) {
+    for (const match of String(text || '').match(/\b[A-Z][a-zA-Z0-9&.'-]+(?:\s+[A-Z][a-zA-Z0-9&.'-]+){0,3}/g) || []) {
+      const name = match.trim();
+      if (name.length > 2 && !COMMON_WORDS.has(name)) found.push(name);
+    }
+  }
+  return [...new Set(found)].slice(0, 80);
+}
+async function candidateNames(userEmail, kit = null) {
+  const profile = userEmail ? await getProfileByUserEmail(userEmail).catch(() => null) : null;
+  const evidence = userEmail ? await db.getEvidence(userEmail, { answeredOnly: true }).catch(() => []) : [];
+  return namesFrom(profile?.resume_text, profile?.bio, profile?.current_employer, profile?.school,
+    ...evidence.map(e => e.answer), kit?.company, kit?.role, kit?.tailored?.why_role, ...(kit?.tailored?.qa || []).map(q => q.a));
+}
+
+// A voice note as the person said it, with misheard names put right. No
+// rewriting: this is their answer, not ours.
+async function fixVoiceNames(userEmail, transcript) {
+  const names = await candidateNames(userEmail);
+  if (!names.length || !keys) return transcript;
+  try {
+    const fixed = await callClaude(`A speech-to-text system transcribed this person speaking. It often mishears names of companies, products and schools.
+
+Names this person actually uses:
+${names.join(', ')}
+
+Transcript: ${transcript}
+
+Return the transcript with two kinds of mistake fixed, and nothing else:
+1. Names misheard as other words ("drink checker" -> "EdgeRank Checker", when that name is in the list above).
+2. Industry terms misheard as similar-sounding words ("add tech" -> "ad tech", "sass" -> "SaaS", "a p i" -> "API", "gee tee em" -> "GTM", "N double R" -> "NRR").
+Keep their words, phrasing, grammar and meaning exactly as spoken. Do not tidy, shorten or rewrite. If nothing needs correcting, return the transcript unchanged. Return only the text.`, 600, MODEL_ANTHROPIC);
+    const cleaned = String(fixed || '').trim();
+    return cleaned && cleaned.length < transcript.length * 2 ? cleaned : transcript;
+  } catch (e) { console.error('[voice names]', e.message); return transcript; }
+}
+
 app.post('/voice', requireCredits('voice'), async (req, res) => {
   const { transcript, question, appId, kitId } = req.body;
   if (!transcript) return res.status(400).json({ error: 'transcript required' });
@@ -3635,6 +3681,7 @@ app.post('/voice', requireCredits('voice'), async (req, res) => {
       const text = [appData.tailored?.cover_note, appData.tailored?.why_role, ...(appData.tailored?.qa || []).map(q => q.a)].filter(Boolean).join(' ');
       const extracted = [...new Set((text.match(/\b[A-Z][a-zA-Z]+(?:\s+[A-Z][a-zA-Z]+)*/g) || []).filter(w => w.length > 2 && !['The','This','That','These','Those','When','What','Where','How','Why','Which','With','From','Then','Also','And','But','For'].includes(w)))];
       properNouns.push(...extracted);
+      properNouns.push(...await candidateNames(reqUserEmail(req), appData));
       kitContext = `Company: ${appData.company}\nRole: ${appData.role}\n`;
       if (appData.tailored?.why_role) kitContext += `Context: ${appData.tailored.why_role.slice(0, 400)}\n`;
     }
