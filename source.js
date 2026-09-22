@@ -6,7 +6,7 @@ require('./server/env');
 const fs = require('fs');
 const path = require('path');
 const { saveSourceRun, pool, getSeenUrls, getProfileByUserEmail, cacheKeyFor, roleKeyFor, getCachedSources, putCachedSource,
-  upsertListings, getListings, countListings, getIngestState, recordIngest, withIngestLock } = require('./server/db');
+  upsertListings, getListings, countListings, getIngestState, recordIngest, withIngestLock, pruneStorage } = require('./server/db');
 const { FEEDS, fetchFeed } = require('./server/feeds');
 const { canonicalUrl } = require('./server/posting');
 const { publicFetch } = require('./server/public-fetch');
@@ -875,6 +875,8 @@ async function ingestAll({ force = false } = {}) {
   for (const name of LEDGER_SOURCES) {
     try { await ingestSource(name, { force }); } catch { failures++; }
   }
+  try { const pruned = await pruneStorage(); log('   pruned ' + JSON.stringify(pruned)); }
+  catch (e) { log('   prune failed: ' + e.message); }
   if (failures === LEDGER_SOURCES.length) throw new Error('Every source failed to ingest');
 }
 

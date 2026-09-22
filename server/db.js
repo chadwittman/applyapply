@@ -778,6 +778,25 @@ async function recordIngest(source, { ok, count = null, error = null, full = fal
       last_count = COALESCE($3, ingest_state.last_count), last_error = $4`, [source, ok, count, error, full]);
 }
 
+// The database lives on a small volume, and the ledger adds thousands of rows
+// a day, so every ingest prunes what no run can use any more: listings posted
+// (or first seen) over 60 days ago and not seen in a week, stale shared cache,
+// and run progress logs older than 30 days (run results are kept).
+async function pruneStorage() {
+  const counts = {};
+  counts.listings = (await q(`DELETE FROM listings WHERE COALESCE(posted_at, first_seen) < NOW() - INTERVAL '60 days' AND last_seen < NOW() - INTERVAL '7 days' RETURNING 1`)).length;
+  counts.source_cache = (await q(`DELETE FROM source_cache WHERE fetched_at < NOW() - INTERVAL '3 days' RETURNING 1`)).length;
+  counts.operation_events = (await q(`DELETE FROM operation_events WHERE created_at < NOW() - INTERVAL '30 days' RETURNING 1`)).length;
+  return counts;
+}
+
+async function storageStats() {
+  const [size] = await q(`SELECT pg_database_size(current_database())::bigint AS bytes`);
+  const tables = await q(`SELECT relname AS table, pg_total_relation_size(relid)::bigint AS bytes, n_live_tup::bigint AS rows
+    FROM pg_stat_user_tables ORDER BY pg_total_relation_size(relid) DESC LIMIT 15`);
+  return { database_bytes: Number(size.bytes), tables: tables.map(t => ({ table: t.table, bytes: Number(t.bytes), rows: Number(t.rows) })) };
+}
+
 // One ingest per source at a time across every server process and run.
 async function withIngestLock(source, fn) {
   const client = await pool.connect();
@@ -835,7 +854,11 @@ async function getAccountExport(userEmail) {
     jobs: await q('SELECT * FROM jobs WHERE user_email=$1 ORDER BY found_at DESC', [owner]),
     kits: await q('SELECT id,url,data,created_at,updated_at FROM kits WHERE user_email=$1 ORDER BY updated_at DESC', [owner]),
     evidence: await q('SELECT question,answer,theme,job_url,created_at,updated_at FROM evidence WHERE user_email=$1 ORDER BY updated_at DESC', [owner]),
-    schedules: await q('SELECT hour,minute,frequency,enabled,sources,lookback_hours,last_run_at,updated_at FROM schedules WHERE user_email=$1', [owner]),
+    schedules: await q('SELECT hour,minute,frequency,enabled,sources,lookback_hours,auto_kits,last_run_at,updated_at FROM schedules WHERE user_email=$1', [owner]),
+    runs: await q('SELECT id,date,run_at,sources,found,added,excluded,detail FROM runs WHERE user_email=$1 ORDER BY run_at DESC', [owner]),
+    credit_history: await q('SELECT kind,amount,operation_id,created_at FROM credit_ledger WHERE user_email=$1 ORDER BY created_at DESC', [owner]),
+    api_keys: await q('SELECT name,prefix,created_at,last_used_at,revoked_at FROM api_keys WHERE user_email=$1 ORDER BY created_at DESC', [owner]),
+    resume_structure: (await q1('SELECT data,created_at FROM resume_structures WHERE user_email=$1', [owner])) || null,
   };
 }
 
@@ -936,7 +959,7 @@ module.exports = {
   getAccountExport, deleteAccount,
   roleKeyFor, cacheKeyFor, getCachedSources, putCachedSource,
   upsertListings, getListings, countListings, getIngestState, recordIngest, withIngestLock,
-  createApiKey, listApiKeys, revokeApiKey, emailForApiKey, getResumeStructure, saveResumeStructure,
+  createApiKey, listApiKeys, revokeApiKey, emailForApiKey, getResumeStructure, saveResumeStructure, pruneStorage, storageStats,
   getUser, getOrCreateUser, addUserCredits, deductUserCredits,
   createMagicLink, getMagicLink, useMagicLink,
 };

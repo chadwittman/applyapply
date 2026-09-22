@@ -58,7 +58,7 @@ for (const method of ['get','post','put','patch','delete']) {
     (req, res, next) => { try { Promise.resolve(handler(req,res,next)).catch(next); } catch (e) { next(e); } }));
 }
 const PORT = process.env.PORT || 5000;
-const VERSION = '0.35.0';
+const VERSION = '0.35.1';
 const IS_PRODUCTION = process.env.NODE_ENV === 'production';
 const APP_ORIGIN = process.env.APP_ORIGIN || 'http://localhost:5000';
 const ALLOWED_WEB_ORIGINS = new Set(
@@ -531,7 +531,9 @@ function loadAdminSecret() {
 function requireAdmin(req, res, next) {
   const secret = loadAdminSecret();
   if (!secret) return res.status(503).json({ error: 'Admin not configured' });
-  if (req.headers['x-admin-secret'] !== secret) return res.status(403).json({ error: 'Forbidden' });
+  const given = Buffer.from(String(req.headers['x-admin-secret'] || ''));
+  const expected = Buffer.from(secret);
+  if (given.length !== expected.length || !crypto.timingSafeEqual(given, expected)) return res.status(403).json({ error: 'Forbidden' });
   next();
 }
 
@@ -1168,6 +1170,11 @@ app.get('/auth/me', async (req, res) => {
   if (!payload) return res.status(401).json({ error: 'Session expired' });
   const user = await getUser(payload.email);
   res.json({ email: payload.email, credits: user?.credits ?? 0 });
+});
+
+app.get('/admin/storage', requireAdmin, async (req, res) => {
+  res.setHeader('Cache-Control', 'no-store');
+  res.json(await db.storageStats());
 });
 
 app.post('/admin/credits/add-by-email', requireAdmin, async (req, res) => {

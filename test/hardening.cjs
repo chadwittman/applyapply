@@ -400,6 +400,17 @@ async function main() {
     const unchanged=await call('POST','/schedule',owner,{hour:8,minute:0,enabled:false,sources:['a16z job board']});
     assert.equal(unchanged.data.schedule.auto_kits,3,'Older clients that omit auto_kits keep the setting');
   });
+  await check('Storage pruning removes only stale listings; export includes runs, credits and keys',async()=>{
+    await db.upsertListings('We Work Remotely',[{url:'https://ledger.test/ancient',company:'Old',role:'PM',posted_at:new Date(Date.now()-90*86400000).toISOString()}]);
+    await db.pool.query("UPDATE listings SET last_seen=NOW()-INTERVAL '30 days' WHERE url='https://ledger.test/ancient'");
+    const pruned=await db.pruneStorage();
+    assert.ok(pruned.listings>=1);
+    const left=(await db.pool.query("SELECT url FROM listings WHERE url IN ('https://ledger.test/ancient','https://ledger.test/new-pm')")).rows.map(r=>r.url);
+    assert.deepEqual(left,['https://ledger.test/new-pm']);
+    const exported=await db.getAccountExport('agent@audit.invalid');
+    for (const k of ['runs','credit_history','api_keys','resume_structure']) assert.ok(k in exported,k);
+    assert.ok(exported.api_keys.length && !('key_hash' in exported.api_keys[0]),'Key metadata exported without the hash');
+  });
   await check('Search window is part of the cache key and honors date-only board stamps',async()=>{
     assert.notEqual(db.cacheKeyFor('Sequoia job board','',true,'remote',24),db.cacheKeyFor('Sequoia job board','',true,'remote',0));
     assert.notEqual(db.cacheKeyFor('Lever jobs (Google)','PM',false,'remote',24),db.cacheKeyFor('Lever jobs (Google)','PM',false,'remote',0));
