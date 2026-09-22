@@ -1,0 +1,121 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Head of Product at applyapply · Demo</title>
+<meta name="description" content="Try applyapply on a sample job application. The real extension sidebar, sample data, nothing sent or charged.">
+<link rel="icon" href="/brand/icon-32.png">
+<style>
+*{box-sizing:border-box}
+body{margin:0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;color:#1f2328;background:#fff;transition:margin-right .28s}
+/* Mock browser toolbar */
+.top{position:sticky;top:0;z-index:50}
+.chrome{background:#f1f3f4;border-bottom:1px solid #dadce0;padding:8px 14px;display:flex;align-items:center;gap:10px;font-size:13px}
+.dots{display:flex;gap:6px}.dots i{width:11px;height:11px;border-radius:50%;background:#dadce0;display:block}
+.url{flex:1;min-width:0;background:#fff;border:1px solid #dadce0;border-radius:16px;padding:6px 14px;color:#5f6368;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ext{position:relative;display:flex;align-items:center;gap:6px}
+.ext-btn{width:32px;height:32px;border-radius:50%;border:none;background:transparent;cursor:pointer;display:flex;align-items:center;justify-content:center;padding:0}
+.ext-btn:hover{background:#e3e5e8}
+.ext-btn img{width:20px;height:20px;border-radius:4px}
+.ext-btn.pulse{animation:pulse 1.6s infinite}
+@keyframes pulse{0%{box-shadow:0 0 0 0 rgba(10,10,10,.45)}70%{box-shadow:0 0 0 10px rgba(10,10,10,0)}100%{box-shadow:0 0 0 0 rgba(10,10,10,0)}}
+.hint{position:absolute;right:0;top:40px;background:#0a0a0a;color:#fff;padding:10px 12px;border-radius:6px;font-size:13px;width:230px;line-height:1.45;box-shadow:0 6px 20px rgba(0,0,0,.2)}
+.hint:before{content:'';position:absolute;top:-6px;right:12px;border:6px solid transparent;border-top:0;border-bottom-color:#0a0a0a}
+.demo-bar{background:#0a0a0a;color:#fff;font-size:13px;padding:8px 14px;display:flex;gap:12px;align-items:center;flex-wrap:wrap;justify-content:space-between}
+.demo-bar a{color:#fff;font-weight:600}
+/* The sample application, laid out like a hosted job board */
+header.co{padding:28px 24px 8px;max-width:760px;margin:0 auto;display:flex;align-items:center;gap:12px}
+.logo{width:40px;height:40px;border-radius:9px;background:#0a0a0a;display:flex;align-items:center;justify-content:center}
+.logo img{width:26px;height:26px}
+.company-name{font-weight:700;font-size:18px}
+main{max-width:760px;margin:0 auto;padding:8px 24px 80px}
+h1{font-size:32px;margin:14px 0 6px;letter-spacing:-.01em}
+.meta{color:#57606a;font-size:15px;margin-bottom:26px}
+h2{font-size:18px;margin:30px 0 10px}
+p,li{font-size:15.5px;line-height:1.7;color:#30363d}
+form{margin-top:10px;border-top:1px solid #d8dee4;padding-top:6px}
+.field{margin:20px 0 0}
+label{display:block;font-size:14px;font-weight:600;margin-bottom:7px}
+label .req{color:#cf222e;margin-left:2px}
+input[type=text],input[type=email],input[type=tel],input[type=url],textarea,select{width:100%;padding:10px 12px;border:1px solid #d0d7de;border-radius:6px;font:inherit;font-size:15px;background:#fff}
+textarea{min-height:120px;resize:vertical}
+.row{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+@media(max-width:620px){.row{grid-template-columns:1fr}h1{font-size:26px}}
+.file{display:flex;align-items:center;gap:10px;font-size:14px;color:#57606a}
+.file input{font-size:14px}
+.submit{margin-top:28px;background:#0a0a0a;color:#fff;border:0;border-radius:6px;padding:13px 26px;font-size:16px;font-weight:600;cursor:pointer}
+.modal{position:fixed;inset:0;background:rgba(0,0,0,.45);display:flex;align-items:center;justify-content:center;z-index:2147483647;padding:16px}
+.modal[hidden]{display:none}
+.modal div{background:#fff;border-radius:10px;padding:26px;max-width:420px}
+.modal h3{margin:0 0 10px;font-size:20px}
+.modal p{margin:0 0 18px}
+.modal a,.modal button{display:inline-block;background:#0a0a0a;color:#fff;border:0;border-radius:6px;padding:11px 18px;font-size:15px;font-weight:600;text-decoration:none;cursor:pointer;margin-right:8px}
+.modal button{background:#eaeef2;color:#1f2328}
+</style>
+</head>
+<body>
+<div class="top">
+<div class="chrome" id="demo-chrome">
+  <div class="dots"><i></i><i></i><i></i></div>
+  <div class="url">careers.applyapply.xyz/jobs/head-of-product</div>
+  <div class="ext">
+    <button class="ext-btn pulse" id="demo-ext" title="applyapply" aria-label="Open applyapply"><img src="/brand/icon-32.png" alt=""></button>
+    <div class="hint" id="demo-hint">This is your browser toolbar. Click the applyapply icon to open it on this application.</div>
+  </div>
+</div>
+<div class="demo-bar"><span>Demo: the real applyapply sidebar with a sample candidate. Nothing is sent, saved or charged, whatever the buttons say.</span><a href="/login">Get applyapply →</a></div>
+</div>
+
+<header class="co" id="header"><div class="logo"><img src="/brand/icon-32.png" alt=""></div><div class="company-name">applyapply</div></header>
+<main>
+  <h1>Head of Product</h1>
+  <div class="meta">Remote (US) · Product · Full-time</div>
+  <p>applyapply finds the jobs that fit a person and writes the application with them: a tailored resume, a cover note, and answers to every question on the form. The candidate reviews it and submits it themselves.</p>
+  <h2>What you'll do</h2>
+  <ul>
+    <li>Own the product from sourcing through submission, across the web app, the browser extension and the agent API.</li>
+    <li>Decide what gets written by a model and what gets selected, and make both feel instant.</li>
+    <li>Talk to job seekers every week and turn what you hear into shipped changes.</li>
+  </ul>
+  <h2>You might be a fit if</h2>
+  <ul>
+    <li>You have taken an AI product from first research to real, repeated use.</li>
+    <li>You measure outcomes, not output, and can say what you chose not to build.</li>
+  </ul>
+
+  <h2>Apply for this job</h2>
+  <form id="application" onsubmit="return false">
+    <div class="row">
+      <div class="field"><label for="first_name">First Name<span class="req">*</span></label><input type="text" id="first_name" name="first_name"></div>
+      <div class="field"><label for="last_name">Last Name<span class="req">*</span></label><input type="text" id="last_name" name="last_name"></div>
+    </div>
+    <div class="row">
+      <div class="field"><label for="email">Email<span class="req">*</span></label><input type="email" id="email" name="email"></div>
+      <div class="field"><label for="phone">Phone</label><input type="tel" id="phone" name="phone"></div>
+    </div>
+    <div class="field"><label for="resume">Resume/CV<span class="req">*</span></label><div class="file"><input type="file" id="resume" name="resume" accept=".pdf,.doc,.docx"></div></div>
+    <div class="field"><label for="linkedin">LinkedIn Profile</label><input type="url" id="linkedin" name="linkedin"></div>
+    <div class="field"><label for="website">Website</label><input type="url" id="website" name="website"></div>
+    <div class="field"><label for="location">Location (City)</label><input type="text" id="location" name="location"></div>
+    <div class="field"><label for="authorized">Are you legally authorized to work in the United States?<span class="req">*</span></label>
+      <select id="authorized" name="authorized"><option value="">Select...</option><option value="yes">Yes</option><option value="no">No</option></select></div>
+    <div class="field"><label for="sponsorship">Will you now or in the future require visa sponsorship?<span class="req">*</span></label>
+      <select id="sponsorship" name="sponsorship"><option value="">Select...</option><option value="yes">Yes</option><option value="no">No</option></select></div>
+    <div class="field"><label for="why">Why do you want to join applyapply?<span class="req">*</span></label><textarea id="why" name="why"></textarea></div>
+    <div class="field"><label for="zero_to_one">Describe a product you took from zero to one.<span class="req">*</span></label><textarea id="zero_to_one" name="zero_to_one"></textarea></div>
+    <div class="field"><label for="not_build">How do you decide what not to build?</label><textarea id="not_build" name="not_build"></textarea></div>
+    <div class="field"><label for="start">When is the earliest you could start?</label><input type="text" id="start" name="start"></div>
+    <button type="submit" class="submit" id="demo-submit">Submit Application</button>
+  </form>
+</main>
+
+<div class="modal" id="demo-done" hidden><div>
+  <h3>This is where you'd submit</h3>
+  <p>applyapply never submits for you. You review every answer, fix anything, and press submit yourself. In this demo nothing was sent anywhere.</p>
+  <a href="/login">Try it on a real job</a><button type="button" id="demo-close">Keep exploring</button>
+</div></div>
+
+<script src="/demo/demo.js"></script>
+</body>
+</html>

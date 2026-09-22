@@ -58,7 +58,7 @@ for (const method of ['get','post','put','patch','delete']) {
     (req, res, next) => { try { Promise.resolve(handler(req,res,next)).catch(next); } catch (e) { next(e); } }));
 }
 const PORT = process.env.PORT || 5000;
-const VERSION = '0.35.3';
+const VERSION = '0.36.0';
 const IS_PRODUCTION = process.env.NODE_ENV === 'production';
 const APP_ORIGIN = process.env.APP_ORIGIN || 'http://localhost:5000';
 const ALLOWED_WEB_ORIGINS = new Set(
@@ -213,7 +213,7 @@ function legalPage(res, { title, desc, path: urlPath, body }) {
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 ${metaHead({ title, desc, path: urlPath })}
 ${LEGAL_STYLE}</head><body><div class="topbar"><a class="logo" href="/">applyapply</a><div class="nav"><a href="/extension">Extension</a><a href="/buy">Credits</a></div></div>
-<main class="wrap">${body}<div class="foot"><a href="/">applyapply.xyz</a> · <a href="/privacy">Privacy</a> · <a href="/terms">Terms</a> · <a href="/agents">Agents &amp; API</a> · <a href="/extension">Extension</a> · <a href="/login">Sign in</a> · <a href="/support">Support</a></div></main></body></html>`);
+<main class="wrap">${body}<div class="foot"><a href="/">applyapply.xyz</a> · <a href="/privacy">Privacy</a> · <a href="/terms">Terms</a> · <a href="/agents">Agents &amp; API</a> · <a href="/demo">Demo</a> · <a href="/extension">Extension</a> · <a href="/login">Sign in</a> · <a href="/support">Support</a></div></main></body></html>`);
 }
 
 app.get('/privacy', (req, res) => legalPage(res, {
@@ -298,6 +298,7 @@ app.get('/robots.txt', (req, res) => {
     'User-agent: *',
     'Allow: /$',
     'Allow: /buy',
+    'Allow: /demo',
     'Allow: /extension',
     'Allow: /brand/',
     'Disallow: /pipeline',
@@ -564,6 +565,21 @@ const NAV_CSS = `
 
 // ── Landing page ─────────────────────────────────────────────────────────────
 
+// ── Demo ──────────────────────────────────────────────────────────────────────
+// A sample application running the real extension sidebar. demo.js answers
+// every request the sidebar makes in the page, so nothing reaches the API and
+// no credits are used. content.js is served from the extension itself so the
+// demo cannot drift from what users install.
+const DEMO_DIR = path.join(__dirname, 'demo');
+const demoFile = (file, type) => (req, res) => {
+  res.setHeader('Cache-Control', 'public, max-age=300');
+  res.type(type).sendFile(file);
+};
+app.get('/demo', demoFile(path.join(DEMO_DIR, 'index.html'), 'html'));
+app.get('/demo/demo.js', demoFile(path.join(DEMO_DIR, 'demo.js'), 'application/javascript'));
+app.get('/demo/content.js', demoFile(path.join(__dirname, '../extension/content.js'), 'application/javascript'));
+app.get('/demo/jspdf.js', demoFile(path.join(__dirname, '../extension/vendor/jspdf.umd.min.js'), 'application/javascript'));
+
 app.get('/', (req, res) => {
   res.setHeader('Content-Type', 'text/html');
   res.send(`<!DOCTYPE html>
@@ -677,7 +693,7 @@ footer{padding:24px 32px;border-top:1px solid #111;display:flex;justify-content:
   <p>applyapply finds matching roles while you sleep, then builds a tailored resume, cover note, and thoughtful answers for each one. You wake up to a shortlist of real opportunities, review the work, and apply with the Chrome extension.</p>
   <div class="ctas">
     <a href="/buy" class="btn-w">Get started — $10</a>
-    <a href="/pipeline" class="btn-g">See the pipeline</a>
+    <a href="/demo" class="btn-g">Try it on a sample job</a>
   </div>
 </div>
 
