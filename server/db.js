@@ -533,6 +533,23 @@ async function deductUserCredits(email, amount) {
   `, [amount, email]);
 }
 
+// A small charge outside the operations flow (a long voice note, say), with a
+// ledger line so it shows in the account export. Returns false if short.
+async function chargeCredits(userEmail, amount, kind) {
+  const owner = requireOwner(userEmail);
+  if (!Number.isInteger(amount) || amount <= 0) return true;
+  const row = await deductUserCredits(owner, amount);
+  if (!row) return false;
+  await q(`INSERT INTO credit_ledger (user_email, operation_id, kind, amount) VALUES ($1,$2,$3,$4)`,
+    [owner, kind + ':' + Date.now() + ':' + Math.random().toString(36).slice(2, 8), kind, -amount]);
+  return true;
+}
+
+async function countVoiceNotesToday(userEmail) {
+  const row = await q1(`SELECT COUNT(*)::int AS n FROM chat_messages WHERE user_email=$1 AND direction='in' AND (meta->>'voice')::boolean AND created_at > NOW() - INTERVAL '24 hours'`, [requireOwner(userEmail)]);
+  return row?.n || 0;
+}
+
 // ── Kits ──────────────────────────────────────────────────────────────────────
 
 async function saveKit(kit) {
@@ -1044,7 +1061,7 @@ module.exports = {
   createApiKey, listApiKeys, revokeApiKey, emailForApiKey, getResumeStructure, saveResumeStructure, pruneStorage, storageStats,
   kitShareToken, kitForShare,
   addChatMessage, getChatMessages, lastChatMeta, lastChatPrompt, updateChatMeta, hasChatHistory, clearChat,
-  getUser, getOrCreateUser, addUserCredits, deductUserCredits,
+  getUser, getOrCreateUser, addUserCredits, deductUserCredits, chargeCredits, countVoiceNotesToday,
   createMagicLink, getMagicLink, useMagicLink,
 };
 Object.assign(module.exports, require('./operations')(pool), require('./payments')(pool));

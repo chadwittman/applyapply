@@ -26,7 +26,7 @@ function findJobLink(text) {
   return bare ? 'https://' + bare[1].replace(/[).,;!?]+$/, '') : null;
 }
 
-module.exports = function conversation({ db, port, signToken, origin, kitLink }) {
+module.exports = function conversation({ db, port, signToken, origin, kitLink, resumeCost = 8 }) {
   const typing = new Map(); // email -> since (ms); the test page shows dots
 
   function api(email, method, path, body) {
@@ -66,38 +66,56 @@ module.exports = function conversation({ db, port, signToken, origin, kitLink })
       if (r.status === 402) return say(email, `You're out of credits. Top up here: ${origin}/buy`);
       if (r.status !== 200 || !r.data?.tailored) return say(email, 'I couldn\'t write a kit for that link. Check it opens a job posting, then send it again.');
       const kit = r.data, t = kit.tailored;
-      const blanks = (t.qa || []).filter(x => !x.a).map(x => x.q);
-      // A private link that opens this kit on the phone without signing in.
+      // One text: the link to everything, and the offer to tune the resume.
+      // The kit page holds the answers, the PDFs and the copy buttons.
       const token = kitLink ? await kitLink(email, kit.id).catch(() => null) : null;
       const link = token ? `${origin}/k/${token}` : `${origin}/${kit.url}`;
-      await say(email, `${kit.company || 'This role'}, ${kit.role || ''}${kit.fit_score ? `. Match ${kit.fit_score}/10` : ''}. Your kit, with your resume and cover letter as PDFs: ${link}\nEach answer below is its own message so you can copy it.`, { kind: 'kit', url: kit.url, kit_id: kit.id, link });
-      if (t.why_role) await say(email, ['Why this role:', t.why_role]);
-      if (t.cover_note) await say(email, ['Cover note:', t.cover_note]);
-      for (const item of (t.qa || []).filter(x => x.a)) await say(email, [item.q, item.a]);
-      if (blanks.length) await say(email, `Only you can answer these, so I left them blank:\n${blanks.map(q => '• ' + q).join('\n')}`);
-      await offerResumeQuestions(email, kit, link);
+      const gaps = kit.tailored_resume?.coverage?.gaps || [];
+      const score = kit.tailored_resume?.jev_match?.score;
+      const answers = (t.qa || []).filter(x => x.a).length;
+      const parts = [
+        `${kit.company || 'This role'}, ${kit.role || ''}${kit.fit_score ? ` (${kit.fit_score}/10 match)` : ''}`,
+        `Your kit: ${link}`,
+        `Inside: your tailored resume${score ? ` (${Number(score).toFixed(1)}/5)` : ''} and cover letter as PDFs, ${answers ? `${answers} answered question${answers === 1 ? '' : 's'}` : 'your details'}, everything one tap to copy.`,
+        gaps.length ? `Want the resume dialed in for this role? Reply yes and I'll send ${gaps.length === 1 ? 'a question' : `${gaps.length} quick questions`}, then rewrite it with your answers (${resumeCost} credits).` : null,
+      ].filter(Boolean);
+      await say(email, parts.join('\n\n'), { kind: gaps.length ? 'resume_offer' : 'kit', url: kit.url, kit_id: kit.id, link, gaps });
     });
   }
 
-  // After a kit: say how the tailored resume scores and offer to ask about
-  // what it can't show yet. "yes" starts the questions, one at a time.
-  async function offerResumeQuestions(email, kit, link) {
-    const r = kit.tailored_resume, gaps = r?.coverage?.gaps || [];
-    const score = r?.jev_match?.score ? ` It's a ${Number(r.jev_match.score).toFixed(1)}/5 match.` : '';
-    if (!r) return say(email, 'Open the job on your laptop and the extension fills the form from this kit.');
-    if (!gaps.length) return say(email, `Your resume is tailored for this role.${score} It's in the kit as a PDF.`);
-    await say(email, `Your resume is tailored for this role.${score} It doesn't show ${gaps.length === 1 ? 'one thing' : gaps.length + ' things'} this role asks for. Want to answer ${gaps.length === 1 ? 'it' : 'them'} for a stronger custom resume? Reply yes.`,
-      { kind: 'resume_offer', kit_id: kit.id, url: kit.url, link, gaps });
+  // All the questions in one message. Answer them in one reply (numbered, or
+  // one long voice note), or a few at a time.
+  async function askGaps(email, meta) {
+    const open = meta.gaps.filter(q => !meta.answers?.[q]);
+    await say(email, `${open.length === 1 ? 'One question' : `${open.length} quick questions`}, answer in one reply (number them) or a voice note:\n${open.map((q, i) => `${i + 1}) ${q}`).join('\n')}\n\nReply "done" when you want the rewrite.`,
+      { ...meta, kind: 'gap_batch', open });
   }
 
-  async function askGap(email, session) {
-    const [question, ...rest] = session.gaps || [];
-    session.total = session.total || 1;
-    if (!question) {
-      return say(email, `That's all of them. Want me to rewrite your resume with your answers? Reply rewrite (${8} credits).`, { kind: 'rewrite_offer', kit_id: session.kit_id, url: session.url, link: session.link });
+  // "1) ... 2) ..." splits by number; anything else answers the first open one.
+  function splitAnswers(message, open) {
+    const parts = String(message).split(/(?:^|\n|\s)(\d)[).:-]\s+/).filter(x => x !== '');
+    const answers = {};
+    if (parts.length > 1 && /^\d$/.test(parts[0])) {
+      for (let i = 0; i + 1 < parts.length; i += 2) {
+        const q = open[Number(parts[i]) - 1];
+        if (q && parts[i + 1].trim()) answers[q] = parts[i + 1].trim();
+      }
     }
-    await say(email, `${session.total - rest.length} of ${session.total}: ${question}\nReply with what you've done there, or "skip". A voice note works too.`,
-      { kind: 'gap_question', question, gaps: rest, total: session.total, kit_id: session.kit_id, url: session.url, link: session.link });
+    if (!Object.keys(answers).length && open[0] && message.trim()) answers[open[0]] = message.trim();
+    return answers;
+  }
+
+  async function rewriteResume(email, meta, note) {
+    return withTyping(email, async () => {
+      const r = await api(email, 'POST', '/resume-tailor', { appId: meta.kit_id });
+      if (r.status === 402) return say(email, `You're out of credits, so I couldn't rewrite it. Top up here: ${origin}/buy`);
+      if (r.status !== 200) return say(email, 'I couldn\'t rewrite the resume. Your answers are saved; try "rewrite" again in a moment.');
+      const score = r.data.jev_match?.score, was = Number(r.data.previous_match_score);
+      const gaps = r.data.coverage?.gaps || [];
+      await say(email, [note, `Your tailored resume is ready${score ? `. Match ${Number(score).toFixed(1)}/5${Number.isFinite(was) ? ` (was ${was.toFixed(1)})` : ''}` : ''}: ${meta.link || `${origin}/${meta.url}`}`,
+        gaps.length ? `Still not shown: ${gaps.length === 1 ? 'one thing' : gaps.length + ' things'}. Reply yes to answer ${gaps.length === 1 ? 'it' : 'them'} too.` : null].filter(Boolean).join(' '),
+      { kind: gaps.length ? 'resume_offer' : 'kit', kit_id: meta.kit_id, url: meta.url, link: meta.link, gaps });
+    });
   }
 
   async function matches(email) {
@@ -116,24 +134,32 @@ module.exports = function conversation({ db, port, signToken, origin, kitLink })
 
     // What we last asked decides how a reply is read: "yes" to the resume
     // offer starts the questions; anything else after a question is its answer.
-    const prompt = await db.lastChatPrompt(email, ['resume_offer', 'gap_question', 'rewrite_offer']);
+    const prompt = await db.lastChatPrompt(email, ['resume_offer', 'gap_batch']);
     const link = findJobLink(message);
     const command = /^(help|\?|matches|jobs|new|search|status|credits|rewrite|stop|skip \d|applied \d|\d$)/.test(lower);
     if (prompt?.meta?.kind === 'resume_offer' && !prompt.meta.done && /^(y|yes|yeah|yep|sure|ok|okay|go|let'?s go)\b/.test(lower)) {
       await db.updateChatMeta(prompt.id, { ...prompt.meta, done: true });
-      return askGap(email, { gaps: prompt.meta.gaps, total: prompt.meta.gaps.length, kit_id: prompt.meta.kit_id, url: prompt.meta.url, link: prompt.meta.link });
+      return askGaps(email, { ...prompt.meta, answers: {} });
     }
     if (prompt?.meta?.kind === 'resume_offer' && !prompt.meta.done && /^(n|no|nope|nah|not now|later)\b/.test(lower)) {
       await db.updateChatMeta(prompt.id, { ...prompt.meta, done: true });
       return say(email, 'No problem. Your kit is ready as it is. Text "rewrite" anytime to redo the resume.');
     }
-    if (prompt?.meta?.kind === 'gap_question' && !prompt.meta.answered && !link && !command) {
-      await db.updateChatMeta(prompt.id, { ...prompt.meta, answered: true });
-      if (!/^(skip|next|pass|no)$/.test(lower)) {
-        const saved = await api(email, 'POST', '/interview/context', { question: prompt.meta.question, answer: message });
-        await say(email, saved.status === 200 ? 'Saved to your profile.' : 'I couldn\'t save that one, but let\'s keep going.');
+    if (prompt?.meta?.kind === 'gap_batch' && !prompt.meta.done && !link && !command) {
+      const meta = prompt.meta, answers = { ...(meta.answers || {}) };
+      const done = /^(done|that'?s it|finished|go|rewrite)\b/.test(lower);
+      if (!done) {
+        for (const [question, answer] of Object.entries(splitAnswers(message, meta.open || meta.gaps))) {
+          const saved = await api(email, 'POST', '/interview/context', { question, answer });
+          if (saved.status === 200) answers[question] = answer;
+        }
       }
-      return askGap(email, { gaps: prompt.meta.gaps, total: prompt.meta.total, kit_id: prompt.meta.kit_id, url: prompt.meta.url, link: prompt.meta.link });
+      const open = meta.gaps.filter(q => !answers[q]);
+      await db.updateChatMeta(prompt.id, { ...meta, answers, open, done: done || !open.length });
+      const saved = Object.keys(answers).length;
+      if (!done && open.length) return askGaps(email, { ...meta, answers });
+      if (!saved) return say(email, 'No problem, your kit is ready as it is. Reply yes anytime to tune the resume.');
+      return rewriteResume(email, meta, `Got ${saved} answer${saved === 1 ? '' : 's'}.`);
     }
     if (link) return writeKit(email, link);
     if (/^(help|\?)$/.test(lower)) return say(email, HELP);
@@ -166,26 +192,34 @@ module.exports = function conversation({ db, port, signToken, origin, kitLink })
       return say(email, `You have ${r.data?.credits ?? 0} credits. A kit costs 10. Top up: ${origin}/buy`);
     }
     if (/^rewrite\b/.test(lower)) {
-      const last = await db.lastChatMeta(email, 'kit');
-      if (prompt?.meta?.kind === 'rewrite_offer' || prompt?.meta?.kind === 'gap_question') await db.updateChatMeta(prompt.id, { ...prompt.meta, answered: true, done: true });
+      const last = await db.lastChatPrompt(email, ['kit', 'resume_offer', 'gap_batch']);
+      if (prompt) await db.updateChatMeta(prompt.id, { ...prompt.meta, done: true });
       if (!last?.meta?.kit_id) return say(email, 'Send me a job link first, then text "rewrite".');
-      return withTyping(email, async () => {
-        const r = await api(email, 'POST', '/resume-tailor', { appId: last.meta.kit_id });
-        if (r.status === 402) return say(email, `You're out of credits. Top up here: ${origin}/buy`);
-        if (r.status !== 200) return say(email, r.data?.error || 'I couldn\'t rewrite the resume.');
-        const score = r.data.jev_match?.score, was = r.data.previous_match_score;
-        await say(email, `Resume rewritten for this role${score ? `. Match ${score.toFixed(1)}/5${was ? ` (was ${Number(was).toFixed(1)})` : ''}` : ''}. It's in your kit: ${last.meta.link || `${origin}/${last.meta.url}`}`);
-        const gaps = r.data.coverage?.gaps || [];
-        if (gaps.length) await say(email, `It still doesn't show ${gaps.length === 1 ? 'one thing' : gaps.length + ' things'} this role asks for. Want to answer ${gaps.length === 1 ? 'it' : 'them'}? Reply yes.`,
-          { kind: 'resume_offer', kit_id: last.meta.kit_id, url: last.meta.url, link: last.meta.link, gaps });
-      });
+      return rewriteResume(email, last.meta, '');
     }
     if (/^stop\b/.test(lower)) return say(email, 'Okay. I won\'t text you about searches. Send a job link anytime.');
     return say(email, HELP);
   }
 
+  // Voice notes are free up to a couple of minutes and a normal day's use.
+  // Past that they cost a credit per started minute, which roughly doubles
+  // what transcription costs, so heavy use pays for itself instead of being
+  // cut off. Returns a message to send instead of handling, or null.
+  const VOICE_FREE_SECONDS = 120, VOICE_FREE_PER_DAY = 30;
+  async function voiceCharge(email, seconds) {
+    const length = Math.max(0, Math.round(Number(seconds) || 0));
+    const today = await db.countVoiceNotesToday(email).catch(() => 0);
+    const overLength = Math.max(0, Math.ceil((length - VOICE_FREE_SECONDS) / 60));
+    const overCount = today >= VOICE_FREE_PER_DAY ? 1 : 0;
+    const credits = overLength + overCount;
+    if (!credits) return null;
+    if (await db.chargeCredits(email, credits, 'voice_note')) return null;
+    return `That voice note needs ${credits} credit${credits === 1 ? '' : 's'} (over ${VOICE_FREE_SECONDS / 60} minutes or ${VOICE_FREE_PER_DAY} notes today) and you're out. Top up here: ${origin}/buy`;
+  }
+
   return {
     handle,
+    voiceCharge,
     isTyping: email => typing.has(email),
     notifySearchDone: async (email, added) => {
       if (!await db.hasChatHistory(email)) return;

@@ -58,7 +58,7 @@ for (const method of ['get','post','put','patch','delete']) {
     (req, res, next) => { try { Promise.resolve(handler(req,res,next)).catch(next); } catch (e) { next(e); } }));
 }
 const PORT = process.env.PORT || 5000;
-const VERSION = '0.39.0';
+const VERSION = '0.40.0';
 const IS_PRODUCTION = process.env.NODE_ENV === 'production';
 const APP_ORIGIN = process.env.APP_ORIGIN || 'http://localhost:5000';
 const ALLOWED_WEB_ORIGINS = new Set(
@@ -769,7 +769,7 @@ if (rw) rw.addEventListener('click', function () {
 // /imessage runs the real conversation engine (server/conversation.js) and
 // shows replies on a phone-style page instead of sending an iMessage. Only
 // accounts in IMESSAGE_TESTERS can use it until the Sendblue line goes live.
-const chat = require('./conversation')({ db, port: PORT, origin: APP_ORIGIN.replace(/\/$/, ''), kitLink: (email, kitId) => db.kitShareToken(email, kitId),
+const chat = require('./conversation')({ db, port: PORT, origin: APP_ORIGIN.replace(/\/$/, ''), kitLink: (email, kitId) => db.kitShareToken(email, kitId), resumeCost: CREDIT_COSTS.resume,
   signToken: email => jwt.sign({ email }, loadJwtSecret(), { expiresIn: '15m' }) });
 const chatTesters = () => new Set(String(process.env.IMESSAGE_TESTERS || 'wittman.c@gmail.com').toLowerCase().split(',').map(e => e.trim()).filter(Boolean));
 function chatUser(req, res) {
@@ -790,7 +790,14 @@ app.post('/imessage/send', apiLimiter, async (req, res) => {
   const text = String(req.body?.text || '').trim().slice(0, 4000);
   if (!text) return res.status(400).json({ error: 'Type a message' });
   res.status(202).json({ ok: true });
-  chat.handle(email, text, { voice: req.body?.voice === true }).catch(e => { console.error('[chat]', e.message); db.addChatMessage(email, 'out', 'Something went wrong on my side. Try that again.').catch(() => {}); });
+  const voice = req.body?.voice === true;
+  (async () => {
+    if (voice) {
+      const refusal = await chat.voiceCharge(email, Number(req.body?.seconds) || 0);
+      if (refusal) return db.addChatMessage(email, 'out', refusal);
+    }
+    return chat.handle(email, text, { voice });
+  })().catch(e => { console.error('[chat]', e.message); db.addChatMessage(email, 'out', 'Something went wrong on my side. Try that again.').catch(() => {}); });
 });
 app.post('/imessage/reset', async (req, res) => {
   const email = chatUser(req, res); if (!email) return;

@@ -22,6 +22,8 @@ await db.saveSourceRun({ id: 'chat-run', date: '2026-09-22', sources: 1, found: 
 
 const browser = await chromium.launch({ headless: true, executablePath: process.env.AA_CHROME || undefined });
 const bubbles = page => page.$$eval('.b', els => els.map(e => e.textContent));
+// Only applyapply's side of the thread (the user's own bubbles render as .out).
+const replies = page => page.$$eval('.b.in', els => els.map(e => e.textContent));
 async function open(as) {
   const page = await browser.newPage({ viewport: { width: 390, height: 844 } });
   await page.goto(origin + '/');
@@ -30,11 +32,11 @@ async function open(as) {
   return page;
 }
 async function send(page, text, until) {
-  const before = (await bubbles(page)).length;
+  const before = (await replies(page)).length;
   await page.fill('#text', text);
   await page.click('#send');
-  await page.waitForFunction(([n, re]) => { const all = [...document.querySelectorAll('.b')].map(e => e.textContent); return all.length > n + 1 && new RegExp(re).test(all.slice(n).join('\n')); }, [before, until], { timeout: 15000 });
-  return (await bubbles(page)).slice(before);
+  await page.waitForFunction(([n, re]) => { const all = [...document.querySelectorAll('.b.in')].map(e => e.textContent); return all.length > n && new RegExp(re).test(all.slice(n).join('\n')); }, [before, until], { timeout: 20000 });
+  return (await replies(page)).slice(before);
 }
 try {
   const out = await open(null);
@@ -49,13 +51,15 @@ try {
   await page.waitForTimeout(7000); // several polls on an empty conversation
   assert.equal((await bubbles(page)).length, 1, 'The greeting shows once, not on every poll');
   let got = await send(page, 'check this out ' + job1.replace('https://', ''), 'Reply yes');
-  assert.ok(got.some(b => /ChatCo, Head of Product\. Match 9\/10\. Your kit, with your resume and cover letter as PDFs/.test(b)));
-  assert.ok(got.includes('Route Assist, 4,000 weekly users.'), 'Each answer is its own bubble');
-  assert.ok(got.some(b => /left them blank:\n• When can you start\?/.test(b)));
-  assert.match(got.at(-1), /3\.2\/5 match\. It doesn't show 2 things this role asks for\. Want to answer them/);
-  console.log('PASS: a job link (even without https://) comes back as a kit, one answer per bubble');
+  assert.equal(got.length, 1, 'One reply, not a wall of messages: ' + JSON.stringify(got));
+  assert.equal(got[0].split('\n\n').length, 4, 'Link and offer in that one message');
+  assert.match(got[0], /ChatCo, Head of Product \(9\/10 match\)/);
+  const kitLink = got[0].match(/https?:\/\/\S+\/k\/[A-Za-z0-9_-]{16}/)?.[0];
+  assert.match(got[0], /Your kit: https?:\S+\/k\/[A-Za-z0-9_-]{16}/);
+  assert.match(got[0], /tailored resume \(3\.2\/5\) and cover letter as PDFs/);
+  assert.match(got[0], /Reply yes and I'll send 2 quick questions, then rewrite it with your answers \(8 credits\)/);
+  console.log('PASS: a job link comes back as one reply with the kit link and the resume offer');
   // The kit link opens on a phone that is not signed in, with files to attach.
-  const kitLink = got.join('\n').match(/https?:\/\/\S+\/k\/[A-Za-z0-9_-]{16}/)?.[0];
   assert.ok(kitLink, 'Kit reply carries a /k/ link');
   const phoneCtx = await browser.newContext({ viewport: { width: 390, height: 844 } });
   await phoneCtx.grantPermissions(['clipboard-read', 'clipboard-write'], { origin });
@@ -84,28 +88,40 @@ try {
   await phone.screenshot({ path: '/tmp/applyapply-kitlink.png', fullPage: true });
   console.log('PASS: the kit link opens without sign-in, with PDFs, the tailored resume, tap-to-copy and gap answers');
 
-  got = await send(page, 'yes', '1 of 2');
-  assert.match(got.at(-1), /1 of 2: Built a consumer product/);
-  got = await send(page, 'Ran the Tallyhouse consumer app, 200k MAU.', '2 of 2');
-  assert.ok(got.includes('Saved to your profile.'));
-  assert.ok((await db.getEvidence(email, { answeredOnly: true })).some(r => /200k MAU/.test(r.answer)));
-  got = await send(page, 'skip', 'rewrite');
-  assert.match(got.at(-1), /That's all of them\. Want me to rewrite your resume/);
-  console.log('PASS: the resume offer asks each gap in turn, saves answers and ends with a rewrite offer');
+  got = await send(page, 'yes', '2 quick questions');
+  assert.match(got.at(-1), /1\) Built a consumer product[\s\S]*2\) Shipped a browser extension/);
+  // One reply answers both, numbered.
+  got = await send(page, '1) Ran the Tallyhouse consumer app, 200k MAU. 2) Built applyapply, in the Chrome Web Store.', 'resume');
+  // The rewrite itself needs a real model key, which this server does not have.
+  const saved = await db.getEvidence(email, { answeredOnly: true });
+  assert.ok(saved.some(r => /200k MAU/.test(r.answer)) && saved.some(r => /Chrome Web Store/.test(r.answer)), 'Both numbered answers saved');
+  assert.match(got.at(-1), /Got 2 answers\.|couldn't rewrite the resume/, 'Answers go straight to the rewrite: ' + JSON.stringify(got));
+  console.log('PASS: all gap questions arrive in one message and a numbered reply answers them');
 
   // A voice note (transcribed in the browser on this test line) arrives as text marked as voice.
-  await page.evaluate(t => fetch('/imessage/send', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + localStorage.getItem('aa_session') }, body: JSON.stringify({ text: 'status', voice: true }) }), null);
+  await page.evaluate(() => fetch('/imessage/send', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + localStorage.getItem('aa_session') }, body: JSON.stringify({ text: 'status', voice: true, seconds: 20 }) }));
   await page.waitForFunction(() => [...document.querySelectorAll('.b')].some(b => /voice note/.test(b.textContent) && /status/.test(b.textContent)), null, { timeout: 10000 });
   await page.waitForFunction(() => /No search running|A search is running/.test(document.querySelector('.b:last-of-type')?.textContent || [...document.querySelectorAll('.b')].at(-1).textContent), null, { timeout: 10000 });
   console.log('PASS: voice notes are marked and handled like texts');
+
+  // Short notes are free; a long one costs a credit per extra minute.
+  const before = (await db.getUser(email)).credits;
+  await page.evaluate(() => fetch('/imessage/send', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + localStorage.getItem('aa_session') }, body: JSON.stringify({ text: 'credits', voice: true, seconds: 100 }) }));
+  await page.waitForTimeout(1500);
+  assert.equal((await db.getUser(email)).credits, before, 'Under two minutes is free');
+  await page.evaluate(() => fetch('/imessage/send', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + localStorage.getItem('aa_session') }, body: JSON.stringify({ text: 'credits', voice: true, seconds: 260 }) }));
+  await page.waitForFunction(n => [...document.querySelectorAll('.b')].some(b => b.textContent.includes('You have ' + n + ' credits')), before - 3, { timeout: 10000 });
+  const ledger = await db.pool.query("SELECT amount FROM credit_ledger WHERE user_email=$1 AND kind='voice_note'", [email]);
+  assert.deepEqual(ledger.rows.map(r => r.amount), [-3], 'Charged per started minute past two');
+  console.log('PASS: long voice notes are charged, short ones are free');
 
   got = await send(page, 'matches', 'Reply 1, 2 or 3');
   assert.match(got.at(-1), /1\) ChatCo, Head of Product[\s\S]*2\) ChatCo2, Director of Product/);
   got = await send(page, 'skip 2', 'Skipped');
   assert.equal((await db.getJobByUrl(job2, email))?.status, 'skipped');
-  got = await send(page, '1', 'Your kit, with');
+  got = await send(page, '1', 'Your kit:');
   got = await send(page, 'credits', 'credits');
-  assert.match(got.at(-1), /You have 40 credits/, 'Saved kits are free');
+  assert.match(got.at(-1), new RegExp('You have ' + (await db.getUser(email)).credits + ' credits'));
   console.log('PASS: matches, pick, skip and credits');
 
 

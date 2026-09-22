@@ -58,14 +58,14 @@
     timer = setTimeout(poll, Date.now() < busyUntil ? 700 : 3000);
   }
 
-  let voiceNote = false;
+  let voiceNote = false, voiceSeconds = 0;
   bar.addEventListener('submit', async e => {
     e.preventDefault();
     const text = input.value.trim();
     if (!text) return;
-    const voice = voiceNote; voiceNote = false;
+    const voice = voiceNote, seconds = voiceSeconds; voiceNote = false; voiceSeconds = 0;
     input.value = ''; sendBtn.disabled = true;
-    const r = await fetch('/imessage/send', { method: 'POST', headers: headers({ 'Content-Type': 'application/json' }), body: JSON.stringify({ text, voice }) }).catch(() => null);
+    const r = await fetch('/imessage/send', { method: 'POST', headers: headers({ 'Content-Type': 'application/json' }), body: JSON.stringify({ text, voice, seconds }) }).catch(() => null);
     sendBtn.disabled = false;
     if (!r || r.status >= 400) { input.value = text; toast('Not sent. Try again.'); return; }
     busyUntil = Date.now() + 4000;
@@ -81,12 +81,13 @@
     if (!SR) { toast('Voice needs Safari or Chrome'); return; }
     if (rec) { rec.stop(); return; }
     rec = new SR(); rec.continuous = true; rec.interimResults = true; rec.lang = 'en-US';
+    const startedAt = Date.now();
     let said = '';
     rec.onresult = ev => { said = ''; for (let i = 0; i < ev.results.length; i++) said += ev.results[i][0].transcript; input.value = said; };
     rec.onerror = ev => { toast(ev.error === 'not-allowed' ? 'Allow the microphone to talk' : 'Could not hear that'); };
     rec.onend = () => {
       rec = null; mic.classList.remove('on'); mic.textContent = '🎤';
-      if (input.value.trim()) { voiceNote = true; bar.requestSubmit(); }
+      if (input.value.trim()) { voiceNote = true; voiceSeconds = Math.round((Date.now() - startedAt) / 1000); bar.requestSubmit(); }
     };
     input.value = ''; rec.start(); mic.classList.add('on'); mic.textContent = '■';
   });
