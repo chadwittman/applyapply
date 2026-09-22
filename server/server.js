@@ -58,7 +58,7 @@ for (const method of ['get','post','put','patch','delete']) {
     (req, res, next) => { try { Promise.resolve(handler(req,res,next)).catch(next); } catch (e) { next(e); } }));
 }
 const PORT = process.env.PORT || 5000;
-const VERSION = '0.36.1';
+const VERSION = '0.36.2';
 const IS_PRODUCTION = process.env.NODE_ENV === 'production';
 const APP_ORIGIN = process.env.APP_ORIGIN || 'http://localhost:5000';
 const ALLOWED_WEB_ORIGINS = new Set(
@@ -1046,6 +1046,7 @@ app.get('/credits', async (req, res) => {
 
 app.get('/login', (req, res) => {
   const extId = req.query.ext || '';
+  const returnTo = safeReturnPath(req.query.return);
   res.setHeader('Content-Type', 'text/html');
   res.send(`<!DOCTYPE html>
 <html>
@@ -1083,6 +1084,7 @@ input::placeholder{color:#a8a8a8}
 </div>
 <script>
 const EXT_ID=${scriptJSON(extId)};
+const RETURN_TO=${scriptJSON(returnTo)};
 async function send(){
   const email=document.getElementById('email').value.trim();
   const msg=document.getElementById('msg');
@@ -1090,7 +1092,7 @@ async function send(){
   if(!email){msg.textContent='Enter your email';msg.className='err';return;}
   btn.disabled=true;btn.textContent='Sending…';
   try{
-    const r=await fetch('/auth/request',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({email,ext:EXT_ID})});
+    const r=await fetch('/auth/request',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({email,ext:EXT_ID,return:RETURN_TO||undefined})});
     const j=await r.json();
     if(!r.ok){msg.textContent=j.error||'Error';msg.className='err';btn.disabled=false;btn.textContent='Send link';return;}
     msg.textContent='Check your email.';msg.className='ok';btn.textContent='Link sent';
@@ -1104,6 +1106,7 @@ document.getElementById('email').addEventListener('keydown',e=>{if(e.key==='Ente
 
 app.post('/auth/request', authLimiter, async (req, res) => {
   const { email, ext } = req.body;
+  const returnTo = safeReturnPath(req.body?.return);
   if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
     return res.status(400).json({ error: 'Valid email required' });
   }
@@ -1115,7 +1118,7 @@ app.post('/auth/request', authLimiter, async (req, res) => {
 
 const origin = APP_ORIGIN;
     const extParam = ext ? `&ext=${encodeURIComponent(ext)}` : '';
-    const link = `${origin}/auth/verify?token=${token}${extParam}`;
+    const link = `${origin}/auth/verify?token=${token}${extParam}${returnTo ? `&return=${encodeURIComponent(returnTo)}` : ''}`;
 
     await sendMagicLinkEmail(email.toLowerCase(), link);
     res.json({ ok: true });
@@ -1125,8 +1128,17 @@ const origin = APP_ORIGIN;
   }
 });
 
+// Where to send someone after they sign in. Only a path on this site: it must
+// start with a single "/", so "//evil.example" and "https://..." are refused.
+function safeReturnPath(value) {
+  const v = String(value || '');
+  if (!v || v.length > 2000 || !v.startsWith('/') || v.startsWith('//') || v.startsWith('/\\') || /[\u0000-\u001f]/.test(v)) return '';
+  return v;
+}
+
 app.get('/auth/verify', async (req, res) => {
   const { token, ext } = req.query;
+  const returnTo = safeReturnPath(req.query.return);
   if (!token) return res.status(400).send('Missing token');
 
   const link = await getMagicLink(token);
@@ -1157,11 +1169,13 @@ if (!await useMagicLink(token)) return res.status(400).send('Invalid or already 
     ).catch(() => {});
   }
   const extParam = ext ? `&ext=${encodeURIComponent(ext)}` : '';
-  res.redirect(`/auth/success?session=${session}${extParam}`);
+  const returnParam = returnTo ? `&return=${encodeURIComponent(returnTo)}` : '';
+  res.redirect(`/auth/success?session=${session}${extParam}${returnParam}`);
 });
 
 app.get('/auth/success', (req, res) => {
   const { session, ext } = req.query;
+  const returnTo = safeReturnPath(req.query.return);
   if (!verifySession(session)) return res.status(401).send('Invalid session');
   if (ext && !/^[a-p]{32}$/.test(ext)) return res.status(400).send('Invalid extension');
   let email = '';
@@ -1190,7 +1204,7 @@ h1{font-size:22px;font-weight:700;letter-spacing:-.03em;margin-bottom:8px}
 <a href="/" class="mark">applyapply</a>
 <h1>You're in.</h1>
 <p class="em">${escapeHtml(email)}</p>
-<a href="/setup" class="btn">Set up your profile →</a>
+${returnTo ? `<a href="${escapeHtml(returnTo)}" class="btn" id="continue">Continue to your application →</a>` : '<a href="/setup" class="btn">Set up your profile →</a>'}
 <div id="extStatus"></div>
 <script>
 const SESSION=${scriptJSON(session||'')};
@@ -1198,6 +1212,10 @@ const EXT_ID=${scriptJSON(ext||'')};
 if(SESSION){
   try{localStorage.setItem('aa_session',SESSION);}catch(e){}
 }
+// Signing in from a job link goes straight back to that job, once any
+// extension handshake has had a moment to finish.
+const CONTINUE=document.getElementById('continue');
+if(CONTINUE)setTimeout(function(){location.href=CONTINUE.getAttribute('href');},EXT_ID?1500:600);
 if(EXT_ID&&SESSION){
   const st=document.getElementById('extStatus');
   st.textContent='Connecting extension…';
@@ -5932,6 +5950,8 @@ document.addEventListener('keydown', function(e) {
   if (!session) {
     document.getElementById('loadWrap').style.display = 'none';
     document.getElementById('loginBox').style.display = 'block';
+    // Signing in from the email link in another tab of this browser picks up here.
+    window.addEventListener('storage', function(e) { if (e.key === 'aa_session' && e.newValue) location.reload(); });
     return;
   }
   setStep('Checking cache...', 5);
