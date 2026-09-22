@@ -58,7 +58,7 @@ for (const method of ['get','post','put','patch','delete']) {
     (req, res, next) => { try { Promise.resolve(handler(req,res,next)).catch(next); } catch (e) { next(e); } }));
 }
 const PORT = process.env.PORT || 5000;
-const VERSION = '0.43.0';
+const VERSION = '0.44.0';
 const IS_PRODUCTION = process.env.NODE_ENV === 'production';
 const APP_ORIGIN = process.env.APP_ORIGIN || 'http://localhost:5000';
 const ALLOWED_WEB_ORIGINS = new Set(
@@ -2600,6 +2600,19 @@ async function fetchATSJobText(url) {
     for (const token of greenhouseTokenGuesses(u, parts)) {
       const job = await getJSON(`https://boards-api.greenhouse.io/v1/boards/${encodeURIComponent(token)}/jobs/${encodeURIComponent(ghJid)}`).catch(() => null);
       if (job?.title) { title = job.title; location = job.location?.name || ''; body = plain(job.content); break; }
+    }
+  }
+  if (!body && u.hostname.endsWith('myworkdayjobs.com')) {
+    // .../en-US/<site>/details/<job-path> (or .../<site>/job/<location>/<job-path>)
+    // answers at /wday/cxs/<tenant>/<site>/job/<job-path>.
+    const tenant = u.hostname.split('.')[0];
+    const at = parts.findIndex(p => p === 'details' || p === 'job');
+    const site = at > 0 ? parts[at - 1] : parts[0];
+    const jobPath = parts.slice(at + 1).join('/');
+    if (at > -1 && site && jobPath) {
+      const job = await getJSON(`https://${u.hostname}/wday/cxs/${encodeURIComponent(tenant)}/${encodeURIComponent(site)}/job/${jobPath}`).catch(() => null);
+      const info = job?.jobPostingInfo;
+      if (info?.jobDescription) { title = info.title; location = info.location || ''; body = plain(info.jobDescription); }
     }
   }
   if (!body && u.hostname.endsWith('ashbyhq.com') && parts.length >= 2) {
@@ -6387,4 +6400,4 @@ if (require.main === module) {
     });
 }
 
-module.exports = { app, runScheduledSourcing, prepareKits };
+module.exports = { app, runScheduledSourcing, prepareKits, fetchATSJobText };
