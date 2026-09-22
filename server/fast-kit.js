@@ -92,9 +92,9 @@ Return ONLY valid JSON, no markdown:
   return data;
 }
 
-// Rank every bullet against the job in one Jev request, then keep each role's
-// strongest few, most relevant first. Roles keep their order.
-async function instantResume(apiKey, structure, job, { perRole = 4 } = {}) {
+// Score every bullet's relevance to the job (0 irrelevant .. 3 core) in one
+// Jev request. Used to rank the instant resume and to guide the AI rewrite.
+async function rankBullets(apiKey, structure, job) {
   const flat = [];
   structure.experience.forEach((role, r) => role.bullets.forEach((bullet, b) => flat.push({ r, b, bullet })));
   const questions = {};
@@ -107,6 +107,12 @@ async function instantResume(apiKey, structure, job, { perRole = 4 } = {}) {
     bullets: flat.slice(0, 120).map(f => f.bullet),
   }, questions);
   flat.forEach((item, i) => { item.score = Number(data.answers?.['b' + i]?.score ?? 0); });
+  return flat;
+}
+
+// The candidate's real bullets, strongest few per role, most relevant first.
+async function instantResume(apiKey, structure, job, { perRole = 4 } = {}) {
+  const flat = await rankBullets(apiKey, structure, job);
   const experience = structure.experience.map((role, r) => {
     const ranked = flat.filter(f => f.r === r).sort((a, b) => b.score - a.score);
     // Every role keeps at least two bullets so no job looks empty.
@@ -116,4 +122,4 @@ async function instantResume(apiKey, structure, job, { perRole = 4 } = {}) {
   return { summary: structure.summary, experience, skills: structure.skills };
 }
 
-module.exports = { answerPool, reuseAnswers, resumeStructure, instantResume, resumeHash, NEVER_REUSE };
+module.exports = { answerPool, reuseAnswers, resumeStructure, rankBullets, instantResume, resumeHash, NEVER_REUSE };
