@@ -58,7 +58,7 @@ for (const method of ['get','post','put','patch','delete']) {
     (req, res, next) => { try { Promise.resolve(handler(req,res,next)).catch(next); } catch (e) { next(e); } }));
 }
 const PORT = process.env.PORT || 5000;
-const VERSION = '0.40.1';
+const VERSION = '0.41.0';
 const IS_PRODUCTION = process.env.NODE_ENV === 'production';
 const APP_ORIGIN = process.env.APP_ORIGIN || 'http://localhost:5000';
 const ALLOWED_WEB_ORIGINS = new Set(
@@ -2516,6 +2516,14 @@ async function fetchATSFormQuestions(url) {
 // Greenhouse, Lever and Ashby render postings with JavaScript, so their pages
 // often yield no text to a plain fetch. Their public job APIs return the
 // posting itself; use those first for URLs on those platforms.
+// Board tokens to try for a Greenhouse job embedded on a company's own
+// careers domain (pinterestcareers.com/...?gh_jid=123 -> "pinterest").
+function greenhouseTokenGuesses(u, parts) {
+  const host = u.hostname.replace(/^www\./, '').split('.')[0].toLowerCase();
+  return [...new Set([host, host.replace(/(careers|jobs|hiring|talent)$/, ''), parts[0], (parts[0] || '').replace(/(careers|jobs)$/, '')]
+    .map(t => String(t || '').replace(/[^a-z0-9]/gi, '').toLowerCase()).filter(t => t.length > 2))];
+}
+
 async function fetchATSJobText(url) {
   const u = new URL(url);
   const parts = u.pathname.split('/').filter(Boolean);
@@ -2524,17 +2532,24 @@ async function fetchATSJobText(url) {
   // A whole Ashby board (every posting's description) can run to several MB.
   const getJSON = async api => { const r = await publicFetch(api, { timeout: 15000, maxBytes: 25 * 1024 * 1024 }); return r.ok ? r.json() : null; };
   let title = '', location = '', body = '';
-  if (u.hostname.endsWith('ashbyhq.com') && parts.length >= 2) {
+  const ghJid = u.searchParams.get('gh_jid');
+  if (ghJid && !u.hostname.endsWith('greenhouse.io')) {
+    for (const token of greenhouseTokenGuesses(u, parts)) {
+      const job = await getJSON(`https://boards-api.greenhouse.io/v1/boards/${encodeURIComponent(token)}/jobs/${encodeURIComponent(ghJid)}`).catch(() => null);
+      if (job?.title) { title = job.title; location = job.location?.name || ''; body = plain(job.content); break; }
+    }
+  }
+  if (!body && u.hostname.endsWith('ashbyhq.com') && parts.length >= 2) {
     const board = await getJSON(`https://api.ashbyhq.com/posting-api/job-board/${encodeURIComponent(parts[0])}?includeCompensation=true`);
     const job = board?.jobs?.find(j => j.id === parts[1] || String(j.jobUrl || '').includes(parts[1]));
     if (job) { title = job.title; location = [job.location, job.isRemote ? 'Remote' : '', job.workplaceType].filter(Boolean).join(' · '); body = job.descriptionPlain || plain(job.descriptionHtml); }
-  } else if (u.hostname.endsWith('greenhouse.io')) {
+  } else if (!body && u.hostname.endsWith('greenhouse.io')) {
     const i = parts.indexOf('jobs');
     if (i > 0 && parts[i + 1]) {
       const job = await getJSON(`https://boards-api.greenhouse.io/v1/boards/${encodeURIComponent(parts[0])}/jobs/${encodeURIComponent(parts[i + 1])}`);
       if (job) { title = job.title; location = job.location?.name || ''; body = plain(job.content); }
     }
-  } else if (u.hostname === 'jobs.lever.co' && parts.length >= 2) {
+  } else if (!body && u.hostname === 'jobs.lever.co' && parts.length >= 2) {
     const job = await getJSON(`https://api.lever.co/v0/postings/${encodeURIComponent(parts[0])}/${encodeURIComponent(parts[1])}`);
     if (job) {
       title = job.text; location = [job.categories?.location, job.workplaceType].filter(Boolean).join(' · ');
@@ -2560,9 +2575,12 @@ const r = await publicFetch(url, {
       .replace(/<style[\s\S]*?<\/style>/gi, '')
       .replace(/<[^>]+>/g, ' ')
       .replace(/\s+/g, ' ')
-      .trim()
-      .slice(0, 6000);
-    return text.length > 200 ? text : null;
+      .trim();
+    // Career sites open with menus and location lists. Start where the posting
+    // does, so the model reads requirements rather than navigation.
+    const start = text.search(/about the (role|job|team|position)|what you.ll (do|be doing)|responsibilit|qualificat|who you are|the opportunity|about this role|role overview/i);
+    const body = (start > 0 ? text.slice(Math.max(0, start - 200)) : text).slice(0, 14000);
+    return body.length > 200 ? body : null;
   } catch { return null; }
 }
 
@@ -2941,6 +2959,12 @@ app.post('/generate', apiLimiter, requireCredits('generate'), async (req, res) =
 
   const userEmail = reqUserEmail(req);
 
+  // A posting we could not really read produces an invented kit, so stop
+  // instead: nothing is saved and the credits are refunded.
+  const readable = text => {
+    const t = String(text || '');
+    return t.length >= 400 && /responsib|qualificat|experience|you.ll|we.re looking|requirements|about the role|skills/i.test(t);
+  };
   // If no description provided (URL-prepend flow), scrape page + fetch real ATS questions
   if (!description) {
     [description, form_questions] = await Promise.all([
@@ -2948,6 +2972,10 @@ app.post('/generate', apiLimiter, requireCredits('generate'), async (req, res) =
       form_questions !== undefined ? Promise.resolve(form_questions) : fetchATSFormQuestions(url),
     ]);
     console.log(`[scrape] ${url} — ${description ? description.length + ' chars' : 'no content'} | questions: ${JSON.stringify(form_questions)}`);
+    if (!readable(description)) {
+      console.error(`[scrape] unusable posting text for ${url}`);
+      return res.status(422).json({ error: 'I could not read that job posting, so I did not write a kit (nothing was charged). Open the posting and use the extension, or send the link to the application page itself.' });
+    }
   }
 
   // Return cached application if it exists (unless force regenerate)
@@ -3358,7 +3386,7 @@ Return ONLY valid JSON, no markdown:
   "coverage": {
     "confidence": "<strong | moderate | thin — how well this candidate's real evidence covers what the role asks for>",
     "evidenced": ["<a requirement of this role you could back with specific real experience>"],
-    "gaps": ["<a requirement of this role you could NOT evidence from the resume or the additional evidence>"],
+    "gaps": ["<one short, plain question (under 25 words) asking the candidate about a requirement THIS posting states that their resume and evidence do not cover. Name the requirement in your own words, no quoting. Sound like a colleague asking, e.g. 'Have you run go-to-market for an ad product? What was the launch and how did it land?'. Never restate a topic from the additional evidence, and never name a company or domain the posting does not mention>"],
     "improve": "<one sentence naming the single thing the candidate could tell us that would most strengthen this resume>"
   }
 }`;

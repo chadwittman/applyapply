@@ -64,6 +64,7 @@ module.exports = function conversation({ db, port, signToken, origin, kitLink, r
     return withTyping(email, async () => {
       const r = await api(email, 'POST', '/generate', { url });
       if (r.status === 402) return say(email, `You're out of credits. Top up here: ${origin}/buy`);
+      if (r.status === 422 && r.data?.error) return say(email, r.data.error);
       if (r.status !== 200 || !r.data?.tailored) return say(email, 'I couldn\'t write a kit for that link. Check it opens a job posting, then send it again.');
       const kit = r.data, t = kit.tailored;
       // One text: the link to everything, and the offer to tune the resume.

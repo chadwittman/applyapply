@@ -52,6 +52,16 @@ async function main() {
     }
     throw new Error('Test blocked external fetch: '+url);
   };
+  // Job pages come through public-fetch (its own DNS-pinned client, not fetch).
+  // Serve a realistic posting, and nothing readable for "-unreadable" URLs.
+  const POSTING='<html><body><h1>Product Manager</h1><p>About the role: you will own the roadmap for our platform, from discovery through launch, and decide what we build next. Responsibilities: ship features every week, talk to customers, define success metrics before writing specs, and report outcomes to the leadership team. Qualifications: five years of product experience, strong written communication, comfort with data and experimentation, and a track record of launching products end to end. You will work with engineering and design daily, run planning, and own adoption of what you ship. We are looking for someone who has taken a product from nothing to real, repeated use.</p></body></html>';
+  const realPublicFetch=requireServer('./public-fetch');
+  require.cache[require.resolve(path.resolve(__dirname,'../server/public-fetch'))]={exports:{
+    ...realPublicFetch,
+    publicFetch: async (value)=>/unreadable/.test(value)
+      ? { status:404, ok:false, headers:{}, text:async()=>'Not found', json:async()=>({}) }
+      : { status:200, ok:true, headers:{'content-type':'text/html'}, text:async()=>POSTING, json:async()=>({}) },
+  }};
   server=requireServer('./server').app.listen(0,'127.0.0.1');
   await new Promise(r=>server.once('listening',r)); origin='http://127.0.0.1:'+server.address().port;
   const alice='alice@audit.invalid',bob='bob@audit.invalid';
@@ -108,6 +118,13 @@ async function main() {
     assert.equal(r.data.profile.first_name,''); assert.deepEqual(r.data.tailored.qa,[]); assert.equal(r.data.review_required,true);
     modelResult=base;
   });
+  await check('A posting we cannot read is refused, not invented',async()=>{
+    const owner='unreadable@audit.invalid'; await balance(owner,30);
+    const r=await call('POST','/generate',owner,{url:url+'-unreadable'});
+    assert.equal(r.status,422); assert.match(r.data.error,/could not read that job posting/);
+    assert.equal((await db.getUser(owner)).credits,30);
+    assert.equal(await db.findKit(url+'-unreadable',owner),null);
+  });
   await check('A new kit whose resume cannot be written fails, refunds and saves nothing',async()=>{
     const owner='resumefail@audit.invalid'; await balance(owner,30);
     await db.setProfile(owner,{resume_text:'Synthetic resume',first_name:'Test'},true);
@@ -137,7 +154,8 @@ async function main() {
     assert.equal((await db.getKit(first.data.id,owner)).tailored_resume.version,1);
   });
   await check('Private addresses, mapped IPv6, URL credentials and local ports are blocked',async()=>{
-    const {publicFetch,isPublicAddress}=requireServer('./public-fetch');
+    // The real fetcher, not the posting stub the kit tests use.
+    const {publicFetch,isPublicAddress}=realPublicFetch;
     for(const address of ['127.0.0.1','10.0.0.1','169.254.169.254','::1','::ffff:127.0.0.1']) assert.equal(isPublicAddress(address),false,address);
     assert.equal(isPublicAddress('8.8.8.8'),true);
     await assert.rejects(publicFetch('http://127.0.0.1:9999/secret'));
