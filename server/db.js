@@ -213,6 +213,18 @@ async function initSchema() {
     )
   `);
 
+  // "Make this better" notes from people, and postings we could not read.
+  await q(`
+    CREATE TABLE IF NOT EXISTS feedback (
+      id BIGSERIAL PRIMARY KEY,
+      user_email TEXT,
+      kind TEXT NOT NULL DEFAULT 'idea',
+      message TEXT NOT NULL,
+      context JSONB,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
+
   // Private, expiring links to one kit (/k/<token>), sent to the kit's owner
   // by text so their phone can open the kit without signing in.
   await q(`
@@ -722,6 +734,17 @@ async function saveResumeStructure(userEmail, sourceHash, data) {
   [requireOwner(userEmail), sourceHash, JSON.stringify(data)]);
 }
 
+async function addFeedback({ userEmail = null, kind = 'idea', message, context = null }) {
+  return q1(`INSERT INTO feedback (user_email, kind, message, context) VALUES ($1,$2,$3,$4) RETURNING id, created_at`,
+    [userEmail, kind, String(message).slice(0, 8000), context ? JSON.stringify(context) : null]);
+}
+
+// One report per thing per day is enough to act on.
+async function feedbackSeenToday(kind, fingerprint) {
+  const row = await q1(`SELECT 1 FROM feedback WHERE kind=$1 AND context->>'fingerprint'=$2 AND created_at > NOW() - INTERVAL '24 hours' LIMIT 1`, [kind, fingerprint]);
+  return !!row;
+}
+
 // ── Kit links ─────────────────────────────────────────────────────────────────
 
 // One live link per kit: reuse it while it has at least a week left.
@@ -757,6 +780,14 @@ async function lastChatMeta(userEmail, kind) {
 async function lastChatPrompt(userEmail, kinds) {
   return q1(`SELECT id, meta FROM chat_messages WHERE user_email=$1 AND direction='out' AND meta->>'kind' = ANY($2) ORDER BY id DESC LIMIT 1`, [requireOwner(userEmail), kinds]);
 }
+// Claim a question or offer so two messages arriving together can't both act
+// on it. Returns false if someone already claimed it.
+async function claimChatPrompt(id) {
+  const row = await q1(`UPDATE chat_messages SET meta = jsonb_set(COALESCE(meta,'{}'::jsonb), '{done}', 'true')
+    WHERE id = $1 AND COALESCE(meta->>'done','') <> 'true' RETURNING id`, [id]);
+  return !!row;
+}
+
 async function updateChatMeta(id, meta) {
   await q(`UPDATE chat_messages SET meta=$2 WHERE id=$1`, [id, JSON.stringify(meta)]);
 }
@@ -970,6 +1001,8 @@ async function deleteAccount(userEmail) {
     for (const table of ['user_activity','decisions','evidence','resume_files','schedules','runs','jobs','kits','profiles','purchases','api_keys','resume_structures','chat_messages','kit_shares']) {
       await client.query(`DELETE FROM ${table} WHERE user_email=$1`, [owner]);
     }
+    // Feedback stays so the product can be fixed, but stops being theirs.
+    await client.query(`UPDATE feedback SET user_email=NULL WHERE user_email=$1`, [owner]);
     // magic_links keys on `email`; listing it above made every deletion fail.
     await client.query('DELETE FROM magic_links WHERE email=$1', [owner]);
     await client.query('DELETE FROM stripe_events WHERE email=$1', [owner]);
@@ -1059,8 +1092,8 @@ module.exports = {
   roleKeyFor, cacheKeyFor, getCachedSources, putCachedSource,
   upsertListings, getListings, countListings, getIngestState, recordIngest, withIngestLock,
   createApiKey, listApiKeys, revokeApiKey, emailForApiKey, getResumeStructure, saveResumeStructure, pruneStorage, storageStats,
-  kitShareToken, kitForShare,
-  addChatMessage, getChatMessages, lastChatMeta, lastChatPrompt, updateChatMeta, hasChatHistory, clearChat,
+  kitShareToken, kitForShare, addFeedback, feedbackSeenToday,
+  addChatMessage, getChatMessages, lastChatMeta, lastChatPrompt, claimChatPrompt, updateChatMeta, hasChatHistory, clearChat,
   getUser, getOrCreateUser, addUserCredits, deductUserCredits, chargeCredits, countVoiceNotesToday,
   createMagicLink, getMagicLink, useMagicLink,
 };

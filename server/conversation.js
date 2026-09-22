@@ -15,6 +15,7 @@ const HELP = [
   '• search: look for new roles now',
   '• skip 2 / applied 1: update a match',
   '• rewrite: rewrite the resume for your last kit with your answers',
+  '• redo: write the last kit again from scratch',
   '• status · credits · help',
 ].join('\n');
 
@@ -60,9 +61,9 @@ module.exports = function conversation({ db, port, signToken, origin, kitLink, r
     return row?.meta?.jobs || [];
   }
 
-  async function writeKit(email, url) {
+  async function writeKit(email, url, { force = false } = {}) {
     return withTyping(email, async () => {
-      const r = await api(email, 'POST', '/generate', { url });
+      const r = await api(email, 'POST', '/generate', { url, force });
       if (r.status === 402) return say(email, `You're out of credits. Top up here: ${origin}/buy`);
       if (r.status === 422 && r.data?.error) return say(email, r.data.error);
       if (r.status !== 200 || !r.data?.tailored) return say(email, 'I couldn\'t write a kit for that link. Check it opens a job posting, then send it again.');
@@ -115,8 +116,19 @@ module.exports = function conversation({ db, port, signToken, origin, kitLink, r
       { kind: 'matches', jobs: jobs.map(j => ({ url: j.url, company: j.company, role: j.role })) });
   }
 
+  // Two messages arriving together used to read the same state and both act on
+  // it (asking "1 of 4" twice). One message per person at a time, and each
+  // question is claimed in the database before it is acted on.
+  const queues = new Map();
+  function handle(email, text, options) {
+    const run = (queues.get(email) || Promise.resolve()).catch(() => {}).then(() => handleOne(email, text, options));
+    queues.set(email, run);
+    run.finally(() => { if (queues.get(email) === run) queues.delete(email); });
+    return run;
+  }
+
   // voice: the message was a voice note, already transcribed.
-  async function handle(email, text, { voice = false } = {}) {
+  async function handleOne(email, text, { voice = false } = {}) {
     const message = String(text || '').trim();
     await db.addChatMessage(email, 'in', message, voice ? { voice: true } : null);
     const lower = message.toLowerCase();
@@ -127,11 +139,11 @@ module.exports = function conversation({ db, port, signToken, origin, kitLink, r
     const link = findJobLink(message);
     const command = /^(help|\?|matches|jobs|new|search|status|credits|rewrite|stop|skip \d|applied \d|\d$)/.test(lower);
     if (prompt?.meta?.kind === 'resume_offer' && !prompt.meta.done && /^(y|yes|yeah|yep|sure|ok|okay|go|let'?s go)\b/.test(lower)) {
-      await db.updateChatMeta(prompt.id, { ...prompt.meta, done: true });
+      if (!await db.claimChatPrompt(prompt.id)) return;
       return askGap(email, { ...prompt.meta, open: prompt.meta.gaps, answered: 0 });
     }
     if (prompt?.meta?.kind === 'resume_offer' && !prompt.meta.done && /^(n|no|nope|nah|not now|later)\b/.test(lower)) {
-      await db.updateChatMeta(prompt.id, { ...prompt.meta, done: true });
+      if (!await db.claimChatPrompt(prompt.id)) return;
       return say(email, 'No problem. Your kit is ready as it is. Text "rewrite" anytime to redo the resume.');
     }
     if (prompt?.meta?.kind === 'gap_question' && !prompt.meta.done && !link && !command) {
@@ -139,16 +151,25 @@ module.exports = function conversation({ db, port, signToken, origin, kitLink, r
       let answered = meta.answered || 0;
       const stop = /^(done|that'?s it|finished|stop)\b/.test(lower);
       const skipped = /^(skip|next|pass|no)\b/.test(lower);
+      // A bare "yes" is not an answer; keep the question open and nudge.
+      if (/^(y|yes|yeah|yep|sure|ok|okay|k)[.! ]*$/.test(lower)) {
+        return say(email, `Tell me what you've done there, in your own words, and I'll save it. Or say "skip".`);
+      }
+      if (!await db.claimChatPrompt(prompt.id)) return;
       if (!stop && !skipped) {
         const saved = await api(email, 'POST', '/interview/context', { question: meta.question, answer: message });
         if (saved.status === 200) answered++;
       }
-      await db.updateChatMeta(prompt.id, { ...meta, answered, done: true });
       if (!stop && meta.open.length) return askGap(email, { ...meta, answered });
       if (!answered) return say(email, 'No problem, your kit is ready as it is. Reply yes anytime to tune the resume.');
       return rewriteResume(email, meta, `Got ${answered} answer${answered === 1 ? '' : 's'}.`);
     }
-    if (link) return writeKit(email, link);
+    if (link) return writeKit(email, link, { force: /^redo\b/.test(lower) });
+    if (/^redo\b/.test(lower)) {
+      const last = await db.lastChatPrompt(email, ['kit', 'resume_offer', 'gap_question']);
+      if (!last?.meta?.url) return say(email, 'Send me the job link and I\'ll write it fresh.');
+      return writeKit(email, last.meta.url, { force: true });
+    }
     if (/^(help|\?)$/.test(lower)) return say(email, HELP);
     if (/^(matches|jobs|new)\b/.test(lower)) return matches(email);
     const pick = lower.match(/^(\d)$/);

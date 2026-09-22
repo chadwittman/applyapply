@@ -58,7 +58,7 @@ for (const method of ['get','post','put','patch','delete']) {
     (req, res, next) => { try { Promise.resolve(handler(req,res,next)).catch(next); } catch (e) { next(e); } }));
 }
 const PORT = process.env.PORT || 5000;
-const VERSION = '0.41.0';
+const VERSION = '0.42.0';
 const IS_PRODUCTION = process.env.NODE_ENV === 'production';
 const APP_ORIGIN = process.env.APP_ORIGIN || 'http://localhost:5000';
 const ALLOWED_WEB_ORIGINS = new Set(
@@ -214,7 +214,7 @@ function legalPage(res, { title, desc, path: urlPath, body }) {
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 ${metaHead({ title, desc, path: urlPath })}
 ${LEGAL_STYLE}</head><body><div class="topbar"><a class="logo" href="/">applyapply</a><div class="nav"><a href="/extension">Extension</a><a href="/buy">Credits</a></div></div>
-<main class="wrap">${body}<div class="foot"><a href="/">applyapply.xyz</a> · <a href="/privacy">Privacy</a> · <a href="/terms">Terms</a> · <a href="/agents">Agents &amp; API</a> · <a href="/demo">Demo</a> · <a href="/extension">Extension</a> · <a href="/login">Sign in</a> · <a href="/support">Support</a></div></main></body></html>`);
+<main class="wrap">${body}<div class="foot"><a href="/">applyapply.xyz</a> · <a href="/privacy">Privacy</a> · <a href="/terms">Terms</a> · <a href="/feedback">Make this better</a> · <a href="/agents">Agents &amp; API</a> · <a href="/demo">Demo</a> · <a href="/extension">Extension</a> · <a href="/login">Sign in</a> · <a href="/support">Support</a></div></main></body></html>`);
 }
 
 app.get('/privacy', (req, res) => legalPage(res, {
@@ -307,6 +307,7 @@ app.get('/robots.txt', (req, res) => {
     'Disallow: /sourcing',
     'Disallow: /setup',
     'Disallow: /login',
+    'Allow: /feedback',
     'Disallow: /imessage',
     'Disallow: /auth/',
     'Disallow: /checkout',
@@ -528,7 +529,16 @@ async function sendPurchaseEmail(email, link) {
 
 // ── requireCredits — owner-scoped reservations ────────────────────
 
-const requireCredits = require('./billing')(db, CREDIT_COSTS, authFromRequest);
+// A posting we could not really read produces an invented kit, so it is
+// refused, and a kit already saved from one is rebuilt rather than served.
+function readablePosting(text) {
+  const t = String(text || '');
+  return t.length >= 400 && /responsib|qualificat|experience|you.ll|we.re looking|requirements|about the role|skills/i.test(t);
+}
+// Only kits saved with no posting text at all are rebuilt on sight. A kit
+// whose posting read badly is redone on request ("redo", or Regenerate in the
+// extension), so nobody is charged twice for a kit that is fine.
+const requireCredits = require('./billing')(db, CREDIT_COSTS, authFromRequest, kit => !String(kit?.job_description || '').trim());
 
 function loadAdminSecret() {
   return process.env.APPLYAPPLY_ADMIN_SECRET || null;
@@ -582,6 +592,52 @@ app.get('/demo', demoFile(path.join(DEMO_DIR, 'index.html'), 'html'));
 app.get('/demo/demo.js', demoFile(path.join(DEMO_DIR, 'demo.js'), 'application/javascript'));
 app.get('/demo/content.js', demoFile(path.join(__dirname, '../extension/content.js'), 'application/javascript'));
 app.get('/demo/jspdf.js', demoFile(path.join(__dirname, '../extension/vendor/jspdf.umd.min.js'), 'application/javascript'));
+
+// ── Feedback and alerts ───────────────────────────────────────────────────────
+// Everything people tell us, plus the things the product failed at, land in one
+// table and one inbox, so they can be fixed over time.
+const OPS_EMAIL = process.env.OPS_EMAIL || 'wittman.c@gmail.com';
+async function report({ kind, message, context = null, userEmail = null, fingerprint = null, subject }) {
+  try {
+    if (fingerprint && await db.feedbackSeenToday(kind, fingerprint)) return;
+    await db.addFeedback({ userEmail, kind, message, context: { ...(context || {}), ...(fingerprint ? { fingerprint } : {}) } });
+    const lines = [message, ...Object.entries(context || {}).map(([k, v]) => `${k}: ${typeof v === 'string' ? v : JSON.stringify(v)}`), userEmail ? `from: ${userEmail}` : null].filter(Boolean);
+    await sendEmail(OPS_EMAIL, subject, `<div style="font-family:-apple-system,sans-serif;max-width:560px;line-height:1.6"><h2 style="font-size:16px">${escapeHtml(subject)}</h2><pre style="white-space:pre-wrap;font:inherit">${escapeHtml(lines.join('\n'))}</pre></div>`, lines.join('\n'));
+  } catch (e) { console.error('[report]', e.message); }
+}
+
+app.post('/feedback', apiLimiter, async (req, res) => {
+  const message = String(req.body?.message || '').trim();
+  if (message.length < 4 || message.length > 4000) return res.status(400).json({ error: 'Tell us a little more' });
+  const userEmail = reqUserEmail(req);
+  await report({ kind: 'idea', message, userEmail, subject: 'applyapply: make this better', context: { page: String(req.body?.page || '').slice(0, 300) } });
+  res.json({ ok: true });
+});
+
+app.get('/feedback', (req, res) => legalPage(res, {
+  title: 'Make applyapply better',
+  desc: 'Tell us what is broken, missing or annoying. It goes straight to the person building it.',
+  path: '/feedback',
+  body: `<h1>Make this better</h1>
+<p>What is broken, missing, or annoying? A job link that produced a bad kit, a question that made no sense, something you wish it did. It goes straight to the person building applyapply.</p>
+<form onsubmit="event.preventDefault();sendFeedback()" style="margin-top:22px">
+  <textarea id="fb" rows="7" placeholder="What happened, and what did you expect?" style="width:100%;padding:14px;background:#0a0a0a;border:1px solid #333;color:#fff;font:inherit;font-size:15px;border-radius:8px;resize:vertical"></textarea>
+  <button type="submit" id="fb-btn" style="margin-top:12px;padding:12px 22px;background:#fff;color:#000;border:0;border-radius:8px;font-size:15px;font-weight:700;cursor:pointer;font-family:inherit">Send it</button>
+  <div id="fb-st" style="margin-top:10px;min-height:20px;font-size:14px"></div>
+</form>
+<script>
+function sendFeedback(){
+  var box=document.getElementById('fb'),btn=document.getElementById('fb-btn'),st=document.getElementById('fb-st');
+  var message=box.value.trim();
+  if(message.length<4){st.textContent='Say a bit more and we can act on it.';return;}
+  btn.disabled=true;st.textContent='Sending';
+  var key='';try{key=localStorage.getItem('aa_session')||'';}catch(e){}
+  fetch('/feedback',{method:'POST',headers:key?{'Content-Type':'application/json','x-api-key':key}:{'Content-Type':'application/json'},body:JSON.stringify({message:message,page:document.referrer})})
+    .then(function(r){if(!r.ok)throw 0;box.value='';st.textContent='Got it. Thank you, this is how the product gets fixed.';btn.disabled=false;})
+    .catch(function(){st.textContent='That did not send. Try again, or email wittman.c@gmail.com.';btn.disabled=false;});
+}
+</script>`,
+}));
 
 // ── Kit links ─────────────────────────────────────────────────────────────────
 // /k/<token>: one kit, readable without signing in, for the phone the kit was
@@ -1239,6 +1295,7 @@ setTimeout(function() { var b = document.querySelector('.drole'); startDemo('pro
     <a href="/privacy">Privacy</a>
     <a href="/terms">Terms</a>
     <a href="/support">Support</a>
+    <a href="/feedback">Make this better</a>
     <a href="/agents">Agents</a>
   </div>
 </footer>
@@ -2959,12 +3016,6 @@ app.post('/generate', apiLimiter, requireCredits('generate'), async (req, res) =
 
   const userEmail = reqUserEmail(req);
 
-  // A posting we could not really read produces an invented kit, so stop
-  // instead: nothing is saved and the credits are refunded.
-  const readable = text => {
-    const t = String(text || '');
-    return t.length >= 400 && /responsib|qualificat|experience|you.ll|we.re looking|requirements|about the role|skills/i.test(t);
-  };
   // If no description provided (URL-prepend flow), scrape page + fetch real ATS questions
   if (!description) {
     [description, form_questions] = await Promise.all([
@@ -2972,8 +3023,12 @@ app.post('/generate', apiLimiter, requireCredits('generate'), async (req, res) =
       form_questions !== undefined ? Promise.resolve(form_questions) : fetchATSFormQuestions(url),
     ]);
     console.log(`[scrape] ${url} — ${description ? description.length + ' chars' : 'no content'} | questions: ${JSON.stringify(form_questions)}`);
-    if (!readable(description)) {
+    if (!readablePosting(description)) {
       console.error(`[scrape] unusable posting text for ${url}`);
+      report({ kind: 'unreadable_posting', subject: 'applyapply: could not read a job posting',
+        message: 'A kit was refused because the posting could not be read. Add support for this site, then tell the user it works now.',
+        context: { url, host: new URL(url).hostname, chars: (description || '').length, sample: String(description || '').slice(0, 300) },
+        fingerprint: new URL(url).hostname, userEmail });
       return res.status(422).json({ error: 'I could not read that job posting, so I did not write a kit (nothing was charged). Open the posting and use the extension, or send the link to the application page itself.' });
     }
   }

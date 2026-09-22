@@ -41,7 +41,7 @@ done
 curl -sf --max-time 2 "$APP_ORIGIN/health" >/dev/null
 
 fail=0
-for t in ${AA_TEST_SUITES:-test/isolation.mjs test/kits-and-profiles.mjs test/evidence.mjs test/pages.mjs test/extension-ui.mjs test/source-ui.mjs test/background.cjs test/fast-kit.cjs test/demo.mjs test/url-prefix.mjs test/imessage.mjs test/hardening.cjs}; do
+for t in ${AA_TEST_SUITES:-test/isolation.mjs test/kits-and-profiles.mjs test/evidence.mjs test/pages.mjs test/extension-ui.mjs test/source-ui.mjs test/background.cjs test/fast-kit.cjs test/demo.mjs test/url-prefix.mjs test/feedback.mjs test/imessage.mjs test/hardening.cjs}; do
   echo "═══ $t ═══"
   node "$t" || fail=1
 done

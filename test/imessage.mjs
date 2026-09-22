@@ -10,7 +10,8 @@ const email = 'chat@test.local', outsider = 'outsider@test.local';
 const job1 = 'https://jobs.lever.co/chatco/head-of-product', job2 = 'https://jobs.lever.co/chatco2/director-of-product';
 for (const e of [email, outsider]) await db.getOrCreateUser(e);
 await db.pool.query('UPDATE users SET credits=40 WHERE email=$1', [email]);
-await db.saveKit({ id: 'chat-kit', user_email: email, url: job1, company: 'ChatCo', role: 'Head of Product', fit_score: 9,
+const POSTING = 'About the role: own the product roadmap end to end, from discovery through launch. Responsibilities: ship weekly, talk to customers every week, define the success metric before the spec, and report outcomes to the leadership team. Qualifications: five years of product experience, strong written communication, comfort with data and experimentation, and a track record of launching products end to end. You will work with engineering and design every day, run planning, and own adoption of what you ship.';
+await db.saveKit({ id: 'chat-kit', user_email: email, url: job1, company: 'ChatCo', role: 'Head of Product', fit_score: 9, job_description: POSTING,
   tailored_resume: { name: 'Chat Tester', summary: 'Product leader.', experience: [{ company: 'Parcelworks', title: 'Director of Product', dates: '2022 - Present', bullets: ['Launched Route Assist.'] }], skills: ['SQL'],
     jev_match: { score: 3.2 }, coverage: { confidence: 'moderate', gaps: ['Built a consumer product', 'Shipped a browser extension'] } },
   tailored: { why_role: 'Why: Route Assist taught me trust.', cover_note: 'Hi ChatCo team.', qa: [
@@ -128,7 +129,21 @@ try {
 
 
 
-  const calls = await db.pool.query("SELECT COUNT(*)::int n FROM chat_messages WHERE user_email=$1", [email]);
-  assert.ok(calls.rows[0].n > 10);
+  // Two replies arriving together must not both act on the same question.
+  await db.clearChat(email);
+  await db.saveKit({ id: 'race-kit', user_email: email, url: 'https://jobs.lever.co/raceco/pm', company: 'RaceCo', role: 'PM', fit_score: 7,
+    job_description: POSTING,
+    tailored: { why_role: 'why', cover_note: 'note', qa: [] },
+    tailored_resume: { name: 'R', summary: 's', experience: [], skills: [], jev_match: { score: 3 }, coverage: { confidence: 'thin', gaps: ['Gap one', 'Gap two', 'Gap three'] } } });
+  const post = text => page.evaluate(t => fetch('/imessage/send', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + localStorage.getItem('aa_session') }, body: JSON.stringify({ text: t }) }), text);
+  await post('https://jobs.lever.co/raceco/pm');
+  await page.waitForTimeout(2500);
+  await Promise.all([post('yes'), post('yes')]);
+  await page.waitForTimeout(3000);
+  const outbound = (await db.getChatMessages(email, 0)).filter(m => m.direction === 'out').map(m => m.body);
+  assert.deepEqual(outbound.filter(b => /^\d of 3:/.test(b)).map(b => b.split(':')[0]), ['1 of 3'], 'One question, not two');
+  assert.ok(outbound.some(b => /Tell me what you've done there/.test(b)), 'A bare yes is nudged, not saved as an answer');
+  console.log('PASS: two replies at once cannot ask the same question twice');
+
   await page.screenshot({ path: '/tmp/applyapply-imessage.png' });
 } finally { await browser.close(); await db.pool.end(); }

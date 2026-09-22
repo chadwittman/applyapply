@@ -2,7 +2,9 @@ const crypto = require('crypto');
 const { canonicalUrl } = require('./posting');
 const usage = require('./usage');
 
-module.exports = function billing(db, costs, authenticate) {
+// isStale: a saved kit that should be rebuilt rather than served again (one
+// written when we could not read the posting, say).
+module.exports = function billing(db, costs, authenticate, isStale = () => false) {
   return action => async (req, res, next) => {
     try {
       const auth = authenticate(req);
@@ -12,7 +14,8 @@ module.exports = function billing(db, costs, authenticate) {
         req.body.url = canonicalUrl(req.body.url);
         if (!req.body.force) {
           const kit = await db.findKit(req.body.url, auth.email);
-          if (kit) return res.json(kit);
+          if (kit && !isStale(kit)) return res.json(kit);
+          if (kit) console.log(`[generate] rewriting a kit built without the posting: ${req.body.url}`);
         }
       }
       const key = req.get('Idempotency-Key') || crypto.randomUUID();
