@@ -58,7 +58,7 @@ for (const method of ['get','post','put','patch','delete']) {
     (req, res, next) => { try { Promise.resolve(handler(req,res,next)).catch(next); } catch (e) { next(e); } }));
 }
 const PORT = process.env.PORT || 5000;
-const VERSION = '0.35.2';
+const VERSION = '0.35.3';
 const IS_PRODUCTION = process.env.NODE_ENV === 'production';
 const APP_ORIGIN = process.env.APP_ORIGIN || 'http://localhost:5000';
 const ALLOWED_WEB_ORIGINS = new Set(
@@ -221,7 +221,7 @@ app.get('/privacy', (req, res) => legalPage(res, {
   desc: 'How applyapply collects, uses and protects profile, resume and job-application data.',
   path: '/privacy',
   body: `<h1>Privacy policy</h1><div class="updated">Last updated September 21, 2026</div>
-<p>applyapply helps people find jobs and prepare applications. This policy explains what the applyapply website, server, and browser extension collect and how that information is used.</p>
+<p>applyapply helps people find jobs and prepare applications. It is operated by Pegasus Crypto Holdings, LLC. This policy explains what the applyapply website, server, and browser extension collect and how that information is used.</p>
 <div class="limited"><b>Chrome Web Store Limited Use disclosure:</b> applyapply uses data received from the extension only to provide and improve its single purpose: helping a user review and complete job applications. We do not sell user data, use it for advertising, or transfer it for unrelated purposes.</div>
 <h2>Information we handle</h2>
 <ul><li>Account information, including your email address and magic-link sign-in token.</li><li>Profile and resume information that you choose to provide, such as name, contact details, work history, education, work authorization, target roles, and uploaded resume files.</li><li>Job information you ask us to process, including job URLs, descriptions, application questions, screenshots, and answers entered through the extension.</li><li>Generated application materials, saved answers, pipeline status, credit balance, and basic operational logs needed to run the service.</li><li>Payment and purchase records. Stripe processes card details; applyapply does not receive or store full card numbers.</li></ul>
@@ -266,7 +266,7 @@ app.get('/terms', (req, res) => legalPage(res, {
   desc: 'The terms for using the applyapply website, browser extension and credits.',
   path: '/terms',
   body: `<h1>Terms of Service</h1><div class="updated">Last updated September 21, 2026</div>
-<p>These terms cover your use of the applyapply website, server, and browser extension (together, "applyapply"). By creating an account or using applyapply, you agree to them. If you do not agree, do not use the service.</p>
+<p>These terms cover your use of the applyapply website, server, and browser extension (together, "applyapply"). applyapply is operated by Pegasus Crypto Holdings, LLC ("we", "us"). By creating an account or using applyapply, you agree to these terms. If you do not agree, do not use the service.</p>
 <h2>Who can use applyapply</h2>
 <p>You must be at least 18 years old, or the age of majority where you live, and able to agree to these terms. You sign in with a link sent to your email address, so keep access to that inbox secure. You are responsible for activity on your account.</p>
 <h2>What applyapply does and does not do</h2>
@@ -285,6 +285,8 @@ app.get('/terms', (req, res) => legalPage(res, {
 <p>applyapply is provided "as is" and "as available". To the fullest extent the law allows, we disclaim all warranties, express or implied, including merchantability, fitness for a particular purpose and non-infringement. We do not promise the service will be uninterrupted or error-free.</p>
 <h2>Limitation of liability</h2>
 <p>To the fullest extent the law allows, applyapply is not liable for indirect, incidental, special, consequential or punitive damages, or for lost profits, lost opportunities or lost data. Our total liability for any claim relating to the service is limited to the amount you paid us in the 12 months before the claim arose.</p>
+<h2>Governing law</h2>
+<p>These terms are governed by the laws of the State of Texas, without regard to its conflict-of-law rules. Any dispute relating to applyapply or these terms will be brought in the state or federal courts located in Texas, and you and we consent to their jurisdiction. Nothing here limits rights you have under the consumer protection laws of the place you live.</p>
 <h2>Changes and contact</h2>
 <p>We may update these terms as the product changes. We will update the date above and, for material changes, notify account holders before they take effect. Continuing to use applyapply after a change means you accept the updated terms. Questions can be sent to <a href="mailto:wittman.c@gmail.com">wittman.c@gmail.com</a>.</p>
 `,
