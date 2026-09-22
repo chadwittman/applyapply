@@ -58,7 +58,7 @@ for (const method of ['get','post','put','patch','delete']) {
     (req, res, next) => { try { Promise.resolve(handler(req,res,next)).catch(next); } catch (e) { next(e); } }));
 }
 const PORT = process.env.PORT || 5000;
-const VERSION = '0.38.2';
+const VERSION = '0.39.0';
 const IS_PRODUCTION = process.env.NODE_ENV === 'production';
 const APP_ORIGIN = process.env.APP_ORIGIN || 'http://localhost:5000';
 const ALLOWED_WEB_ORIGINS = new Set(
@@ -613,14 +613,61 @@ app.get('/k/:token/cover-letter.pdf', apiLimiter, async (req, res) => {
   res.type('application/pdf').setHeader('Content-Disposition', `inline; filename="${filename}"`);
   res.send(buffer);
 });
+// A kit link can also save answers to the resume's gap questions and rewrite
+// the resume, acting as the kit's owner. Only questions on this kit's resume
+// are accepted, and rewrites (which cost the usual credits) are capped per link.
+function asOwner(email, method, apiPath, body) {
+  const payload = body ? JSON.stringify(body) : null;
+  const headers = { authorization: 'Bearer ' + jwt.sign({ email }, loadJwtSecret(), { expiresIn: '15m' }), 'content-type': 'application/json',
+    ...(payload ? { 'content-length': Buffer.byteLength(payload) } : {}) };
+  return new Promise(resolve => {
+    const r = require('http').request({ host: '127.0.0.1', port: PORT, path: apiPath, method, headers, timeout: 170000 }, out => {
+      let raw = ''; out.setEncoding('utf8'); out.on('data', c => { raw += c; });
+      out.on('end', () => { let data = null; try { data = JSON.parse(raw); } catch {} resolve({ status: out.statusCode, data }); });
+    });
+    r.on('timeout', () => r.destroy(new Error('timeout')));
+    r.on('error', e => resolve({ status: 0, data: { error: e.message } }));
+    if (payload) r.write(payload);
+    r.end();
+  });
+}
+const linkRewrites = new Map(); // token -> [timestamps] in the last day
+app.post('/k/:token/answer', apiLimiter, async (req, res) => {
+  const found = await sharedKit(req, res); if (!found) return;
+  const cov = found.kit.tailored_resume?.coverage || {};
+  const questions = [...(cov.gaps || []), ...(cov.answered || []).map(a => a.question)];
+  const { question, answer } = req.body || {};
+  if (!questions.includes(question) || typeof answer !== 'string' || !answer.trim() || answer.length > 8000) return res.status(400).json({ error: 'Not a question on this resume' });
+  const r = await asOwner(found.owner, 'POST', '/interview/context', { question, answer: answer.trim() });
+  res.status(r.status === 200 ? 200 : 502).json(r.status === 200 ? { ok: true } : { error: 'Could not save that answer' });
+});
+app.post('/k/:token/rewrite', apiLimiter, async (req, res) => {
+  const found = await sharedKit(req, res); if (!found) return;
+  const recent = (linkRewrites.get(req.params.token) || []).filter(t => Date.now() - t < 86400000);
+  if (recent.length >= 3) return res.status(429).json({ error: 'This link has rewritten the resume three times today. Try again tomorrow.' });
+  linkRewrites.set(req.params.token, [...recent, Date.now()]);
+  const r = await asOwner(found.owner, 'POST', '/resume-tailor', { appId: found.kit.id });
+  if (r.status === 402) return res.status(402).json({ error: 'Out of credits. Top up at applyapply.xyz/buy' });
+  if (r.status !== 200) return res.status(502).json({ error: r.data?.error || 'The resume could not be rewritten. Try again.' });
+  res.json({ ok: true });
+});
 app.get('/k/:token', apiLimiter, async (req, res) => {
   const found = await sharedKit(req, res); if (!found) return;
-  const { kit, profile } = found, t = kit.tailored || {}, base = '/k/' + encodeURIComponent(req.params.token);
+  const { profile } = found, kit = await withAnsweredGaps(found.kit, found.owner), t = kit.tailored || {};
+  const base = '/k/' + encodeURIComponent(req.params.token);
   let n = 0;
-  const copyRow = (label, value) => value ? `<div class="row"><div class="lbl">${escapeHtml(label)}</div><div class="val" id="v${++n}">${escapeHtml(value)}</div><button class="copy" data-copy="v${n}">Copy</button></div>` : '';
-  const block = (label, value) => value ? `<div class="blk"><div class="blk-hd"><div class="q">${escapeHtml(label)}</div><button class="copy" data-copy="v${++n}">Copy</button></div><div class="ans" id="v${n}">${escapeHtml(value)}</div></div>` : '';
+  // Every row and block copies on tap; the Copy label only says so.
+  const copyRow = (label, value) => value ? `<div class="row tap" data-copy="v${++n}"><div class="lbl">${escapeHtml(label)}</div><div class="val" id="v${n}">${escapeHtml(value)}</div><span class="copy">Copy</span></div>` : '';
+  const block = (label, value) => value ? `<div class="blk tap" data-copy="v${++n}"><div class="blk-hd"><div class="q">${escapeHtml(label)}</div><span class="copy">Copy</span></div><div class="ans" id="v${n}">${escapeHtml(value)}</div></div>` : '';
   const blanks = (t.qa || []).filter(x => !x.a).map(x => x.q);
   const expires = new Date(found.expires_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+  const resume = kit.tailored_resume;
+  const resumeText = resume ? [resume.summary, ...(resume.experience || []).map(e => [`${e.company} · ${e.title}${e.dates ? ' · ' + e.dates : ''}`, ...(e.bullets || []).map(b => '• ' + b)].join('\n')), resume.skills?.length ? 'Skills: ' + resume.skills.join(', ') : ''].filter(Boolean).join('\n\n') : '';
+  const labels = ['', 'Weak', 'Limited', 'Solid', 'Strong', 'Exceptional'];
+  const score = resume?.jev_match?.score, was = Number(resume?.previous_match_score);
+  const cov = resume?.coverage || {};
+  const gapItems = [...(cov.answered || []).map(a => ({ q: a.question, a: a.answer })), ...(cov.gaps || []).map(q => ({ q, a: '' }))];
+  const rows = copyRow('First name', profile.first_name) + copyRow('Last name', profile.last_name) + copyRow('Email', profile.email) + copyRow('Phone', profile.phone) + copyRow('LinkedIn', profile.linkedin) + copyRow('Website', profile.website) + copyRow('Location', profile.location);
   res.type('html').send(`<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta name="robots" content="noindex"><title>${escapeHtml(kit.company || 'Your kit')} · applyapply</title><link rel="icon" href="/brand/icon-32.png">
 <style>
@@ -632,35 +679,88 @@ h1{font-size:26px;letter-spacing:-.02em;margin:0 0 4px}.role{font-size:16px;marg
 .files{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:10px}
 .file{display:block;text-align:center;border:1px solid #333;color:#fff;padding:13px 8px;border-radius:12px;text-decoration:none;font-size:15px;font-weight:600}
 h2{font-size:12px;letter-spacing:.1em;text-transform:uppercase;margin:30px 0 10px}
-.row{display:flex;align-items:center;gap:10px;padding:12px 0;border-bottom:1px solid #1a1a1a}
+.tap{cursor:pointer;-webkit-tap-highlight-color:transparent;transition:background .15s}
+.tap:active{background:#1c1c1e}
+.row{display:flex;align-items:center;gap:10px;padding:12px 8px;border-bottom:1px solid #1a1a1a;border-radius:8px}
 .lbl{width:78px;flex:none;font-size:13px}.val{flex:1;min-width:0;font-size:16px;word-break:break-word}
-.copy{flex:none;background:#1c1c1e;color:#fff;border:0;border-radius:9px;padding:9px 13px;font-size:14px;font-weight:600;cursor:pointer;font-family:inherit}
-.copy.ok{background:#15803d}
+.copy{flex:none;background:#1c1c1e;color:#fff;border-radius:9px;padding:8px 12px;font-size:14px;font-weight:600}
+.done .copy{background:#15803d}
 .blk{background:#0d0d0d;border:1px solid #1c1c1c;border-radius:12px;padding:14px;margin-bottom:10px}
 .blk-hd{display:flex;gap:10px;align-items:flex-start;justify-content:space-between;margin-bottom:8px}.q{font-size:14px;font-weight:700;line-height:1.35}
 .ans{font-size:16px;line-height:1.55;white-space:pre-wrap}
+.score{font-size:15px;margin-bottom:12px}
+.gap{border:1px solid #2a2a2a;border-radius:12px;padding:12px;margin-bottom:10px}
+.gap-q{font-size:15px;font-weight:600;line-height:1.4;margin-bottom:8px}
+.gap-row{display:flex;gap:8px;align-items:flex-start}
+.gap textarea{flex:1;min-height:72px;background:#0d0d0d;color:#fff;border:1px solid #333;border-radius:10px;padding:10px;font:inherit;font-size:16px;resize:vertical}
+.mic{flex:none;width:44px;height:44px;border-radius:50%;border:0;background:#fff;color:#000;font-size:18px;cursor:pointer}
+.mic.on{background:#ef4444;color:#fff}
+.st{font-size:13px;min-height:18px;margin-top:6px}
+.rewrite{width:100%;margin-top:6px;background:#fff;color:#000;border:0;border-radius:12px;padding:15px;font-size:17px;font-weight:700;cursor:pointer;font-family:inherit}
+.rewrite:disabled{background:#555;color:#ddd}
 .left li{font-size:16px;line-height:1.6}.foot{margin-top:30px;font-size:13px;line-height:1.5}
 </style></head><body><div class="wrap">
 <div class="brand">applyapply</div>
 <h1>${escapeHtml(kit.company || '')}</h1><div class="role">${escapeHtml(kit.role || '')}</div>
 <a class="open" href="${escapeHtml(kit.url)}" target="_blank" rel="noopener">Open application ↗</a>
 <div class="files">
-${kit.tailored_resume ? `<a class="file" href="${base}/resume.pdf">Resume PDF</a>` : ''}
+${resume ? `<a class="file" href="${base}/resume.pdf">Resume PDF</a>` : ''}
 ${kit.cover_letter || t.cover_note ? `<a class="file" href="${base}/cover-letter.pdf">Cover letter PDF</a>` : ''}
 </div>
-${(() => { const rows = copyRow('First name', profile.first_name) + copyRow('Last name', profile.last_name) + copyRow('Email', profile.email) + copyRow('Phone', profile.phone) + copyRow('LinkedIn', profile.linkedin) + copyRow('Website', profile.website) + copyRow('Location', profile.location); return rows ? '<h2>Your details</h2>' + rows : ''; })()}
+${rows ? '<h2>Your details</h2>' + rows : ''}
 <h2>Answers</h2>
 ${block('Why this role', t.why_role)}${block('Cover note', t.cover_note)}${(t.qa || []).filter(x => x.a).map(x => block(x.q, x.a)).join('')}
 ${blanks.length ? `<h2>Only you can answer</h2><ul class="left">${blanks.map(q => `<li>${escapeHtml(q)}</li>`).join('')}</ul>` : ''}
+${resume ? `<h2>Tailored resume</h2>
+${score ? `<div class="score">Match: ${escapeHtml(labels[Math.round(score)] || 'Reviewed')} ${escapeHtml(Number(score).toFixed(1))}/5${Number.isFinite(was) ? ` · was ${escapeHtml(was.toFixed(1))}` : ''}</div>` : ''}
+${block('Resume', resumeText)}
+${gapItems.length ? `<h2>Make it stronger</h2>
+${gapItems.map((g, i) => `<div class="gap" data-q="${escapeHtml(g.q)}"><div class="gap-q">${escapeHtml(g.q)}</div><div class="gap-row"><textarea id="g${i}" placeholder="Say it or type it. Specifics beat adjectives.">${escapeHtml(g.a)}</textarea><button class="mic" type="button" aria-label="Talk">🎤</button></div><div class="st">${g.a ? 'Saved to your profile' : ''}</div></div>`).join('')}
+<button class="rewrite" id="rewrite">Rewrite resume with my answers · ${CREDIT_COSTS.resume} credits</button><div class="st" id="rewrite-st"></div>` : ''}` : ''}
 <div class="foot">Private link, expires ${escapeHtml(expires)}. Anyone with it can read this kit.</div>
 </div>
 <script>
+var BASE = ${scriptJSON(base)};
 document.addEventListener('click', function (e) {
-  var b = e.target.closest('[data-copy]'); if (!b) return;
-  navigator.clipboard.writeText(document.getElementById(b.getAttribute('data-copy')).textContent).then(function () {
-    b.textContent = 'Copied'; b.classList.add('ok');
-    setTimeout(function () { b.textContent = 'Copy'; b.classList.remove('ok'); }, 1400);
+  var el = e.target.closest('[data-copy]'); if (!el) return;
+  navigator.clipboard.writeText(document.getElementById(el.getAttribute('data-copy')).textContent).then(function () {
+    var label = el.querySelector('.copy'); el.classList.add('done'); if (label) label.textContent = 'Copied';
+    setTimeout(function () { el.classList.remove('done'); if (label) label.textContent = 'Copy'; }, 1400);
   });
+});
+function saveAnswer(box) {
+  var ta = box.querySelector('textarea'), st = box.querySelector('.st'), text = ta.value.trim();
+  if (!text || text === box.getAttribute('data-saved')) return;
+  st.textContent = 'Saving';
+  fetch(BASE + '/answer', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ question: box.getAttribute('data-q'), answer: text }) })
+    .then(function (r) { if (!r.ok) throw 0; box.setAttribute('data-saved', text); st.textContent = 'Saved to your profile'; })
+    .catch(function () { st.textContent = 'Not saved. Tap outside the box to retry.'; });
+}
+[].forEach.call(document.querySelectorAll('.gap'), function (box) {
+  var ta = box.querySelector('textarea'), mic = box.querySelector('.mic'), timer = null, rec = null;
+  box.setAttribute('data-saved', ta.value.trim());
+  ta.addEventListener('input', function () { clearTimeout(timer); timer = setTimeout(function () { saveAnswer(box); }, 900); });
+  ta.addEventListener('blur', function () { clearTimeout(timer); saveAnswer(box); });
+  mic.addEventListener('click', function () {
+    var SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SR) { box.querySelector('.st').textContent = 'Talking needs Safari or Chrome.'; return; }
+    if (rec) { rec.stop(); return; }
+    var start = ta.value ? ta.value + ' ' : '';
+    rec = new SR(); rec.continuous = true; rec.interimResults = true; rec.lang = 'en-US';
+    rec.onresult = function (ev) { var said = ''; for (var i = 0; i < ev.results.length; i++) said += ev.results[i][0].transcript; ta.value = start + said; };
+    rec.onend = function () { rec = null; mic.classList.remove('on'); mic.textContent = '🎤'; saveAnswer(box); };
+    rec.onerror = function () { box.querySelector('.st').textContent = 'Allow the microphone to talk.'; };
+    rec.start(); mic.classList.add('on'); mic.textContent = '■';
+  });
+});
+var rw = document.getElementById('rewrite');
+if (rw) rw.addEventListener('click', function () {
+  var st = document.getElementById('rewrite-st');
+  [].forEach.call(document.querySelectorAll('.gap'), saveAnswer);
+  rw.disabled = true; rw.textContent = 'Rewriting your resume';
+  fetch(BASE + '/rewrite', { method: 'POST' }).then(function (r) { return r.json().then(function (d) { return { ok: r.ok, d: d }; }); })
+    .then(function (x) { if (!x.ok) throw new Error(x.d.error); location.reload(); })
+    .catch(function (e) { rw.disabled = false; rw.textContent = 'Rewrite resume with my answers'; st.textContent = e.message || 'Could not rewrite. Try again.'; });
 });
 </script></body></html>`);
 });
@@ -690,7 +790,7 @@ app.post('/imessage/send', apiLimiter, async (req, res) => {
   const text = String(req.body?.text || '').trim().slice(0, 4000);
   if (!text) return res.status(400).json({ error: 'Type a message' });
   res.status(202).json({ ok: true });
-  chat.handle(email, text).catch(e => { console.error('[chat]', e.message); db.addChatMessage(email, 'out', 'Something went wrong on my side. Try that again.').catch(() => {}); });
+  chat.handle(email, text, { voice: req.body?.voice === true }).catch(e => { console.error('[chat]', e.message); db.addChatMessage(email, 'out', 'Something went wrong on my side. Try that again.').catch(() => {}); });
 });
 app.post('/imessage/reset', async (req, res) => {
   const email = chatUser(req, res); if (!email) return;

@@ -731,10 +731,14 @@ async function addChatMessage(userEmail, direction, body, meta = null) {
     [requireOwner(userEmail), direction, String(body).slice(0, 8000), meta ? JSON.stringify(meta) : null]);
 }
 async function getChatMessages(userEmail, afterId = 0) {
-  return q(`SELECT id, direction, body, created_at FROM chat_messages WHERE user_email=$1 AND id>$2 ORDER BY id LIMIT 500`, [requireOwner(userEmail), Number(afterId) || 0]);
+  return q(`SELECT id, direction, body, created_at, COALESCE((meta->>'voice')::boolean, false) AS voice FROM chat_messages WHERE user_email=$1 AND id>$2 ORDER BY id LIMIT 500`, [requireOwner(userEmail), Number(afterId) || 0]);
 }
 async function lastChatMeta(userEmail, kind) {
   return q1(`SELECT id, meta FROM chat_messages WHERE user_email=$1 AND direction='out' AND meta->>'kind'=$2 ORDER BY id DESC LIMIT 1`, [requireOwner(userEmail), kind]);
+}
+// The most recent message we sent that asked for something specific.
+async function lastChatPrompt(userEmail, kinds) {
+  return q1(`SELECT id, meta FROM chat_messages WHERE user_email=$1 AND direction='out' AND meta->>'kind' = ANY($2) ORDER BY id DESC LIMIT 1`, [requireOwner(userEmail), kinds]);
 }
 async function updateChatMeta(id, meta) {
   await q(`UPDATE chat_messages SET meta=$2 WHERE id=$1`, [id, JSON.stringify(meta)]);
@@ -1039,7 +1043,7 @@ module.exports = {
   upsertListings, getListings, countListings, getIngestState, recordIngest, withIngestLock,
   createApiKey, listApiKeys, revokeApiKey, emailForApiKey, getResumeStructure, saveResumeStructure, pruneStorage, storageStats,
   kitShareToken, kitForShare,
-  addChatMessage, getChatMessages, lastChatMeta, updateChatMeta, hasChatHistory, clearChat,
+  addChatMessage, getChatMessages, lastChatMeta, lastChatPrompt, updateChatMeta, hasChatHistory, clearChat,
   getUser, getOrCreateUser, addUserCredits, deductUserCredits,
   createMagicLink, getMagicLink, useMagicLink,
 };

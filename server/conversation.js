@@ -14,7 +14,7 @@ const HELP = [
   '• 1, 2 or 3: write the kit for that match',
   '• search: look for new roles now',
   '• skip 2 / applied 1: update a match',
-  '• rewrite: tailor the resume for your last kit with AI',
+  '• rewrite: rewrite the resume for your last kit with your answers',
   '• status · credits · help',
 ].join('\n');
 
@@ -75,8 +75,29 @@ module.exports = function conversation({ db, port, signToken, origin, kitLink })
       if (t.cover_note) await say(email, ['Cover note:', t.cover_note]);
       for (const item of (t.qa || []).filter(x => x.a)) await say(email, [item.q, item.a]);
       if (blanks.length) await say(email, `Only you can answer these, so I left them blank:\n${blanks.map(q => '• ' + q).join('\n')}`);
-      await say(email, 'Open the job on your laptop and the extension fills the form from this kit. Text "rewrite" to have AI tailor the resume too.');
+      await offerResumeQuestions(email, kit, link);
     });
+  }
+
+  // After a kit: say how the tailored resume scores and offer to ask about
+  // what it can't show yet. "yes" starts the questions, one at a time.
+  async function offerResumeQuestions(email, kit, link) {
+    const r = kit.tailored_resume, gaps = r?.coverage?.gaps || [];
+    const score = r?.jev_match?.score ? ` It's a ${Number(r.jev_match.score).toFixed(1)}/5 match.` : '';
+    if (!r) return say(email, 'Open the job on your laptop and the extension fills the form from this kit.');
+    if (!gaps.length) return say(email, `Your resume is tailored for this role.${score} It's in the kit as a PDF.`);
+    await say(email, `Your resume is tailored for this role.${score} It doesn't show ${gaps.length === 1 ? 'one thing' : gaps.length + ' things'} this role asks for. Want to answer ${gaps.length === 1 ? 'it' : 'them'} for a stronger custom resume? Reply yes.`,
+      { kind: 'resume_offer', kit_id: kit.id, url: kit.url, link, gaps });
+  }
+
+  async function askGap(email, session) {
+    const [question, ...rest] = session.gaps || [];
+    session.total = session.total || 1;
+    if (!question) {
+      return say(email, `That's all of them. Want me to rewrite your resume with your answers? Reply rewrite (${8} credits).`, { kind: 'rewrite_offer', kit_id: session.kit_id, url: session.url, link: session.link });
+    }
+    await say(email, `${session.total - rest.length} of ${session.total}: ${question}\nReply with what you've done there, or "skip". A voice note works too.`,
+      { kind: 'gap_question', question, gaps: rest, total: session.total, kit_id: session.kit_id, url: session.url, link: session.link });
   }
 
   async function matches(email) {
@@ -87,19 +108,32 @@ module.exports = function conversation({ db, port, signToken, origin, kitLink })
       { kind: 'matches', jobs: jobs.map(j => ({ url: j.url, company: j.company, role: j.role })) });
   }
 
-  async function handle(email, text) {
+  // voice: the message was a voice note, already transcribed.
+  async function handle(email, text, { voice = false } = {}) {
     const message = String(text || '').trim();
-    await db.addChatMessage(email, 'in', message);
+    await db.addChatMessage(email, 'in', message, voice ? { voice: true } : null);
     const lower = message.toLowerCase();
 
-    // A reply to a resume-gap question is saved to the profile as evidence.
-    const pending = await db.lastChatMeta(email, 'gap_question');
+    // What we last asked decides how a reply is read: "yes" to the resume
+    // offer starts the questions; anything else after a question is its answer.
+    const prompt = await db.lastChatPrompt(email, ['resume_offer', 'gap_question', 'rewrite_offer']);
     const link = findJobLink(message);
-    const command = /^(help|\?|matches|jobs|new|search|status|credits|rewrite|stop|skip\b|applied\b|\d$)/.test(lower);
-    if (pending && !pending.meta.answered && !link && !command) {
-      await api(email, 'POST', '/interview/context', { question: pending.meta.question, answer: message });
-      await db.updateChatMeta(pending.id, { ...pending.meta, answered: true });
-      return say(email, 'Saved to your profile. Every future application can use it. Text "rewrite" to rebuild this resume with it.');
+    const command = /^(help|\?|matches|jobs|new|search|status|credits|rewrite|stop|skip \d|applied \d|\d$)/.test(lower);
+    if (prompt?.meta?.kind === 'resume_offer' && !prompt.meta.done && /^(y|yes|yeah|yep|sure|ok|okay|go|let'?s go)\b/.test(lower)) {
+      await db.updateChatMeta(prompt.id, { ...prompt.meta, done: true });
+      return askGap(email, { gaps: prompt.meta.gaps, total: prompt.meta.gaps.length, kit_id: prompt.meta.kit_id, url: prompt.meta.url, link: prompt.meta.link });
+    }
+    if (prompt?.meta?.kind === 'resume_offer' && !prompt.meta.done && /^(n|no|nope|nah|not now|later)\b/.test(lower)) {
+      await db.updateChatMeta(prompt.id, { ...prompt.meta, done: true });
+      return say(email, 'No problem. Your kit is ready as it is. Text "rewrite" anytime to redo the resume.');
+    }
+    if (prompt?.meta?.kind === 'gap_question' && !prompt.meta.answered && !link && !command) {
+      await db.updateChatMeta(prompt.id, { ...prompt.meta, answered: true });
+      if (!/^(skip|next|pass|no)$/.test(lower)) {
+        const saved = await api(email, 'POST', '/interview/context', { question: prompt.meta.question, answer: message });
+        await say(email, saved.status === 200 ? 'Saved to your profile.' : 'I couldn\'t save that one, but let\'s keep going.');
+      }
+      return askGap(email, { gaps: prompt.meta.gaps, total: prompt.meta.total, kit_id: prompt.meta.kit_id, url: prompt.meta.url, link: prompt.meta.link });
     }
     if (link) return writeKit(email, link);
     if (/^(help|\?)$/.test(lower)) return say(email, HELP);
@@ -133,6 +167,7 @@ module.exports = function conversation({ db, port, signToken, origin, kitLink })
     }
     if (/^rewrite\b/.test(lower)) {
       const last = await db.lastChatMeta(email, 'kit');
+      if (prompt?.meta?.kind === 'rewrite_offer' || prompt?.meta?.kind === 'gap_question') await db.updateChatMeta(prompt.id, { ...prompt.meta, answered: true, done: true });
       if (!last?.meta?.kit_id) return say(email, 'Send me a job link first, then text "rewrite".');
       return withTyping(email, async () => {
         const r = await api(email, 'POST', '/resume-tailor', { appId: last.meta.kit_id });
@@ -140,8 +175,9 @@ module.exports = function conversation({ db, port, signToken, origin, kitLink })
         if (r.status !== 200) return say(email, r.data?.error || 'I couldn\'t rewrite the resume.');
         const score = r.data.jev_match?.score, was = r.data.previous_match_score;
         await say(email, `Resume rewritten for this role${score ? `. Match ${score.toFixed(1)}/5${was ? ` (was ${Number(was).toFixed(1)})` : ''}` : ''}. It's in your kit: ${last.meta.link || `${origin}/${last.meta.url}`}`);
-        const gap = r.data.coverage?.gaps?.[0];
-        if (gap) await say(email, `One thing your resume doesn't show: ${gap}\nReply with what you've done there and I'll save it to your profile.`, { kind: 'gap_question', question: gap });
+        const gaps = r.data.coverage?.gaps || [];
+        if (gaps.length) await say(email, `It still doesn't show ${gaps.length === 1 ? 'one thing' : gaps.length + ' things'} this role asks for. Want to answer ${gaps.length === 1 ? 'it' : 'them'}? Reply yes.`,
+          { kind: 'resume_offer', kit_id: last.meta.kit_id, url: last.meta.url, link: last.meta.link, gaps });
       });
     }
     if (/^stop\b/.test(lower)) return say(email, 'Okay. I won\'t text you about searches. Send a job link anytime.');

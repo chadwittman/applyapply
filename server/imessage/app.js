@@ -26,7 +26,7 @@
     const b = document.createElement('div');
     b.className = 'b ' + (m.direction === 'in' ? 'out' : 'in');
     b.dataset.dir = m.direction;
-    b.innerHTML = linkify(m.body);
+    b.innerHTML = (m.voice ? '<span class="voice-tag">🎤 voice note</span><br>' : '') + linkify(m.body);
     // Tap to copy, standing in for long-press → Copy in Messages.
     b.addEventListener('click', e => { if (e.target.tagName === 'A') return; navigator.clipboard.writeText(m.body).then(() => toast('Copied')); });
     thread.appendChild(b);
@@ -58,16 +58,37 @@
     timer = setTimeout(poll, Date.now() < busyUntil ? 700 : 3000);
   }
 
+  let voiceNote = false;
   bar.addEventListener('submit', async e => {
     e.preventDefault();
     const text = input.value.trim();
     if (!text) return;
+    const voice = voiceNote; voiceNote = false;
     input.value = ''; sendBtn.disabled = true;
-    const r = await fetch('/imessage/send', { method: 'POST', headers: headers({ 'Content-Type': 'application/json' }), body: JSON.stringify({ text }) }).catch(() => null);
+    const r = await fetch('/imessage/send', { method: 'POST', headers: headers({ 'Content-Type': 'application/json' }), body: JSON.stringify({ text, voice }) }).catch(() => null);
     sendBtn.disabled = false;
     if (!r || r.status >= 400) { input.value = text; toast('Not sent. Try again.'); return; }
     busyUntil = Date.now() + 4000;
     poll();
+  });
+  // Tap to talk: the browser transcribes as you speak (as the extension does),
+  // and tapping again sends it as a voice note. On the real line, iMessage
+  // voice notes arrive as audio and are transcribed on the server instead.
+  const mic = document.getElementById('mic');
+  let rec = null;
+  mic.addEventListener('click', () => {
+    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SR) { toast('Voice needs Safari or Chrome'); return; }
+    if (rec) { rec.stop(); return; }
+    rec = new SR(); rec.continuous = true; rec.interimResults = true; rec.lang = 'en-US';
+    let said = '';
+    rec.onresult = ev => { said = ''; for (let i = 0; i < ev.results.length; i++) said += ev.results[i][0].transcript; input.value = said; };
+    rec.onerror = ev => { toast(ev.error === 'not-allowed' ? 'Allow the microphone to talk' : 'Could not hear that'); };
+    rec.onend = () => {
+      rec = null; mic.classList.remove('on'); mic.textContent = '🎤';
+      if (input.value.trim()) { voiceNote = true; bar.requestSubmit(); }
+    };
+    input.value = ''; rec.start(); mic.classList.add('on'); mic.textContent = '■';
   });
   input.addEventListener('keydown', e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); bar.requestSubmit(); } });
   resetBtn.addEventListener('click', async () => {
