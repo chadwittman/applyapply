@@ -58,7 +58,7 @@ for (const method of ['get','post','put','patch','delete']) {
     (req, res, next) => { try { Promise.resolve(handler(req,res,next)).catch(next); } catch (e) { next(e); } }));
 }
 const PORT = process.env.PORT || 5000;
-const VERSION = '0.38.1';
+const VERSION = '0.38.2';
 const IS_PRODUCTION = process.env.NODE_ENV === 'production';
 const APP_ORIGIN = process.env.APP_ORIGIN || 'http://localhost:5000';
 const ALLOWED_WEB_ORIGINS = new Set(
@@ -1646,7 +1646,7 @@ app.post('/profile', async (req, res) => {
   await setProfile(auth.email, data, true);
   res.json({ ok: true });
   // Parse a new resume into roles and bullets now, in the background, so the
-  // first kit can rank bullets instantly instead of waiting on the model.
+  // first kit's resume rewrite can use bullet relevance without waiting on it.
   if (data.resume_text && keys && process.env.TYPESAFE_API_KEY && process.env.NODE_ENV !== 'test') {
     fastKit.resumeStructure(db, prompt => callClaude(prompt, 8000, WRITER_MODEL, writerOptions(WRITER_MODEL)), auth.email, data.resume_text)
       .catch(e => console.error('[resume structure]', e.message));
@@ -2971,8 +2971,10 @@ Concrete over abstract: "built a pipeline that drove 4.5x revenue per title as C
       ? fastResume(profile, { company: company || existing?.company || '', role: role || existing?.role || '',
           job_description: jobDescription, tailored: existing?.tailored || {} }, userEmail, existing?.tailored_resume)
           .then(r => { console.log(`[generate] resume ready ${Date.now() - started}ms`); return r; })
-          .catch(e => { console.error('Resume in kit failed:', e.message); return null; })
       : Promise.resolve(null);
+    // Handled when awaited below; this only stops an early rejection from
+    // being reported as unhandled while the kit is still being written.
+    resumePromise.catch(() => {});
     // The kit is written as two calls at once: the letter-style fields in one,
     // the form answers in the other. Each writes about half, so the wait is
     // roughly halved. If every question was answered by reuse, only the first runs.
@@ -2999,8 +3001,9 @@ Concrete over abstract: "built a pipeline that drove 4.5x revenue per title as C
       console.log(`[generate] reused ${reusedAnswers.size} of ${form_questions.length} answers`);
     }
     generated.job_description = jobDescription;
-    // If the new resume failed, keep the one they already had.
-    const resume = await resumePromise || existing?.tailored_resume || null;
+    let resume;
+    try { resume = await resumePromise; }
+    catch (e) { console.error('Resume in kit failed:', e.message); throw new Error('The tailored resume could not be written, so no kit was saved and nothing was charged. Try again.'); }
     if (resume) generated.tailored_resume = { ...resume, company: generated.company, role: generated.role };
     console.log(`[generate] ${Date.now() - started}ms kit+resume`);
     // Save the complete application only after generation succeeds.
@@ -3158,34 +3161,13 @@ async function withAnsweredGaps(kit, userEmail) {
   return { ...kit, tailored_resume: { ...kit.tailored_resume, coverage: { ...cov, gaps, answered } } };
 }
 
-// The kit's resume. A resume already written for this job is kept. Otherwise
-// it is the full AI rewrite (tailored summary and bullets, gaps, match score),
-// which runs alongside the kit and finishes before it (~7s vs ~12s), so it adds
-// no wait. The instant version (the candidate's real bullets ranked by Jev,
-// nothing reworded) is only a fallback so a kit never arrives without one.
+// The kit's resume. A resume already written for this job is kept; otherwise
+// it is the full AI rewrite, which runs alongside the kit and finishes before
+// it. If the rewrite fails, the whole generation fails (and is refunded):
+// a kit never ships with a lesser resume.
 async function fastResume(profile, appData, userEmail, previous = null) {
   if (previous && previous.kind !== 'instant') return previous;
-  try { return await buildTailoredResume(profile, appData, userEmail, previous); }
-  catch (e) { console.error('[resume rewrite] falling back to instant:', e.message); }
-  if (previous) return previous;
-  return instantResumeFor(profile, appData, userEmail);
-}
-
-async function instantResumeFor(profile, appData, userEmail) {
-  const apiKey = process.env.TYPESAFE_API_KEY;
-  if (!apiKey || !userEmail || !appData.job_description) throw new Error('No resume could be built');
-  const structure = await fastKit.resumeStructure(db, prompt => callClaude(prompt, 8000, WRITER_MODEL, writerOptions(WRITER_MODEL)), userEmail, profile.resume_text);
-  const ranked = await fastKit.instantResume(apiKey, structure, { role: appData.role, company: appData.company, description: appData.job_description });
-  const result = {
-    name: `${profile.first_name || ''} ${profile.last_name || ''}`.trim(), company: appData.company, role: appData.role,
-    ...tidyResume(resumeOutput(cleanEmDashes(ranked))), kind: 'instant', version: 1, generated_at: new Date().toISOString(), evidence_used: 0,
-  };
-  result.experience = orderExperience(result.experience);
-  try { result.jev_match = await evaluateResumeMatch(apiKey, appData, result); } catch { result.match_status = 'unavailable'; }
-  const score = result.jev_match?.score;
-  result.coverage = { confidence: score >= 3.5 ? 'strong' : score >= 2.5 ? 'moderate' : 'thin', evidenced: [], gaps: [],
-    improve: 'This is your resume reordered for this job. Rewrite resume has AI tailor the wording.' };
-  return result;
+  return buildTailoredResume(profile, appData, userEmail, previous);
 }
 
 // Kits written 2026-09-21 to 22 got only the instant resume. The first time

@@ -21,13 +21,10 @@ const fastKit = require('../server/fast-kit');
   assert.match(reused.get('Tell us about something you built from scratch.').a, /Route Assist/);
 
   respond = (state) => ({ answers: Object.fromEntries(state.bullets.map((b, i) => ['b' + i, { score: /offsite/.test(b) ? 0.2 : /AI/.test(b) ? 3 : 1.5 }])) });
-  const ranked = await fastKit.instantResume('key', { summary: 's', skills: ['x'], experience: [
-    { company: 'A', title: 'Dir', dates: '2022-', bullets: ['Organized the offsite', 'Ran planning', 'Shipped an AI planner', 'Managed vendors', 'Hired PMs', 'Led pricing'] },
-    { company: 'B', title: 'PM', dates: '2019-2022', bullets: ['Organized the offsite', 'Wrote docs'] }] }, { role: 'PM', description: 'AI' });
-  assert.equal(ranked.experience[0].bullets[0], 'Shipped an AI planner', 'most relevant first');
-  assert.equal(ranked.experience[0].bullets.length, 4, 'strongest four kept');
-  assert.ok(!ranked.experience[0].bullets.includes('Organized the offsite'));
-  assert.equal(ranked.experience[1].bullets.length, 2, 'every role keeps at least two bullets');
+  const scored = await fastKit.rankBullets('key', { experience: [
+    { company: 'A', title: 'Dir', dates: '2022-', bullets: ['Organized the offsite', 'Shipped an AI planner'] },
+    { company: 'B', title: 'PM', dates: '2019-2022', bullets: ['Wrote docs'] }] }, { role: 'PM', description: 'AI' });
+  assert.deepEqual(scored.map(f => [f.r, f.bullet, f.score]), [[0, 'Organized the offsite', 0.2], [0, 'Shipped an AI planner', 3], [1, 'Wrote docs', 1.5]]);
 
   const store = {}; let parses = 0;
   const db = { getResumeStructure: async e => store[e], saveResumeStructure: async (e, h, d) => { store[e] = { source_hash: h, data: d }; } };
@@ -36,5 +33,5 @@ const fastKit = require('../server/fast-kit');
   await fastKit.resumeStructure(db, model, 'u@test', 'resume v1');
   await fastKit.resumeStructure(db, model, 'u@test', 'resume v2');
   assert.equal(parses, 2, 'parsed once per resume text');
-  console.log('PASS: answer reuse, eligibility guard, bullet ranking and resume structure cache');
+  console.log('PASS: answer reuse, eligibility guard, bullet relevance and resume structure cache');
 })().catch(e => { console.error(e); process.exitCode = 1; });

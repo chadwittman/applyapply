@@ -108,6 +108,16 @@ async function main() {
     assert.equal(r.data.profile.first_name,''); assert.deepEqual(r.data.tailored.qa,[]); assert.equal(r.data.review_required,true);
     modelResult=base;
   });
+  await check('A new kit whose resume cannot be written fails, refunds and saves nothing',async()=>{
+    const owner='resumefail@audit.invalid'; await balance(owner,30);
+    await db.setProfile(owner,{resume_text:'Synthetic resume',first_name:'Test'},true);
+    resumeFailure=true;
+    const r=await call('POST','/generate',owner,{url:url+'-resume-fail',description:'Actual job requirements'});
+    resumeFailure=false;
+    assert.equal(r.status,500); assert.match(r.data.error,/resume could not be written/);
+    assert.equal((await db.getUser(owner)).credits,30);
+    assert.equal(await db.findKit(url+'-resume-fail',owner),null);
+  });
   await check('Kit includes resume; a failed resume during regeneration keeps the previous resume',async()=>{
     const owner='resume@audit.invalid'; await balance(owner,100);
     await db.setProfile(owner,{resume_text:'Synthetic resume',first_name:'Test'},true);

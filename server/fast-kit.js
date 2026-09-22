@@ -4,8 +4,8 @@
 //
 // - reuseAnswers: a form question the candidate has already answered well
 //   (in their saved profile answers or an earlier kit) reuses that answer.
-// - instantResume: the candidate's real bullets, ranked against the job.
-//   Nothing is reworded or invented; "Rewrite resume" is the model pass.
+// - rankBullets: how relevant each of the candidate's real bullets is to the
+//   job, which guides the AI resume rewrite.
 const crypto = require('crypto');
 const { evaluate } = require('./typesafe');
 
@@ -110,16 +110,4 @@ async function rankBullets(apiKey, structure, job) {
   return flat;
 }
 
-// The candidate's real bullets, strongest few per role, most relevant first.
-async function instantResume(apiKey, structure, job, { perRole = 4 } = {}) {
-  const flat = await rankBullets(apiKey, structure, job);
-  const experience = structure.experience.map((role, r) => {
-    const ranked = flat.filter(f => f.r === r).sort((a, b) => b.score - a.score);
-    // Every role keeps at least two bullets so no job looks empty.
-    const keep = ranked.filter((f, i) => i < 2 || (i < perRole && f.score >= 1));
-    return { company: role.company, title: role.title, dates: role.dates, bullets: keep.map(f => f.bullet) };
-  });
-  return { summary: structure.summary, experience, skills: structure.skills };
-}
-
-module.exports = { answerPool, reuseAnswers, resumeStructure, rankBullets, instantResume, resumeHash, NEVER_REUSE };
+module.exports = { answerPool, reuseAnswers, resumeStructure, rankBullets, resumeHash, NEVER_REUSE };
