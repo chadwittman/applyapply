@@ -53,12 +53,14 @@ try {
   assert.equal((await bubbles(page)).length, 1, 'The greeting shows once, not on every poll');
   let got = await send(page, 'check this out ' + job1.replace('https://', ''), 'Reply yes');
   assert.equal(got.length, 1, 'One reply, not a wall of messages: ' + JSON.stringify(got));
-  assert.equal(got[0].split('\n\n').length, 4, 'Link and offer in that one message');
+  assert.equal(got[0].split('\n\n').length, 5, 'Link, contents, gaps and offer in that one message');
   assert.match(got[0], /ChatCo, Head of Product \(9\/10 match\)/);
   const kitLink = got[0].match(/https?:\/\/\S+\/k\/[A-Za-z0-9_-]{16}/)?.[0];
   assert.match(got[0], /Your kit: https?:\S+\/k\/[A-Za-z0-9_-]{16}/);
   assert.match(got[0], /tailored resume \(64% match\) and cover letter as PDFs/);
-  assert.match(got[0], /Reply yes and I'll ask 2 quick questions, one at a time, then rewrite it with your answers \(8 credits\)/);
+  // The offer names the gaps: never "2 things" without saying which.
+  assert.match(got[0], /can't show 2 things this posting asks for:\n• Built a consumer product\n• Shipped a browser extension/);
+  assert.match(got[0], /Reply yes and I'll ask about each, one at a time, then rewrite the resume with your answers \(8 credits\)/);
   console.log('PASS: a job link comes back as one reply with the kit link and the resume offer');
   // The kit link opens on a phone that is not signed in, with files to attach.
   assert.ok(kitLink, 'Kit reply carries a /k/ link');

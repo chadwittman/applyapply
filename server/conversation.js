@@ -27,6 +27,10 @@ function findJobLink(text) {
   return bare ? 'https://' + bare[1].replace(/[).,;!?]+$/, '') : null;
 }
 
+// Never say "3 things" without saying which: the person has to know what they
+// are being asked before they answer.
+const listGaps = gaps => gaps.map(g => '• ' + String(g).replace(/\s+/g, ' ').trim()).join('\n');
+
 module.exports = function conversation({ db, port, signToken, origin, kitLink, resumeCost = 8 }) {
   const typing = new Map(); // email -> since (ms); the test page shows dots
 
@@ -79,7 +83,7 @@ module.exports = function conversation({ db, port, signToken, origin, kitLink, r
         `${kit.company || 'This role'}, ${kit.role || ''}${kit.fit_score ? ` (${kit.fit_score}/10 match)` : ''}`,
         `Your kit: ${link}`,
         `Inside: your tailored resume${score ? ` (${Math.round((Number(score) / 5) * 100)}% match)` : ''} and cover letter as PDFs, ${answers ? `${answers} answered question${answers === 1 ? '' : 's'}` : 'your details'}, everything one tap to copy.`,
-        gaps.length ? `Want the resume dialed in for this role? Reply yes and I'll ask ${gaps.length === 1 ? 'one question' : `${gaps.length} quick questions`}, one at a time, then rewrite it with your answers (${resumeCost} credits).` : null,
+        gaps.length ? `Your resume can't show ${gaps.length === 1 ? 'one thing' : `${gaps.length} things`} this posting asks for:\n${listGaps(gaps)}\n\nReply yes and I'll ask ${gaps.length === 1 ? 'about it' : 'about each'}, one at a time, then rewrite the resume with your answers (${resumeCost} credits).` : null,
       ].filter(Boolean);
       await say(email, parts.join('\n\n'), { kind: gaps.length ? 'resume_offer' : 'kit', url: kit.url, kit_id: kit.id, link, gaps });
     });
@@ -108,7 +112,7 @@ module.exports = function conversation({ db, port, signToken, origin, kitLink, r
         ? pct(score) > pct(was) ? `Match ${pct(score)}%, up from ${pct(was)}%.` : `Match ${pct(score)}%, about the same as before.`
         : score ? `Match ${pct(score)}%.` : '';
       await say(email, [note, `Your resume is rewritten${used ? ` using ${used} of your answers` : ''}. ${move}`.trim(), meta.link || `${origin}/${meta.url}`,
-        gaps.length ? `Your answers are saved and in the resume. ${gaps.length === 1 ? 'One more thing' : gaps.length + ' more things'} the posting asks for that it still can't show. Reply yes to add ${gaps.length === 1 ? 'it' : 'them'}.` : null].filter(Boolean).join('\n\n'),
+        gaps.length ? `Your answers are saved and in the resume. ${gaps.length === 1 ? 'One more thing' : gaps.length + ' more things'} the posting asks for that it still can't show:\n${listGaps(gaps)}\n\nReply yes to answer ${gaps.length === 1 ? 'it' : 'them'} too.` : null].filter(Boolean).join('\n\n'),
       { kind: gaps.length ? 'resume_offer' : 'kit', kit_id: meta.kit_id, url: meta.url, link: meta.link, gaps });
     });
   }
