@@ -57,7 +57,7 @@ try {
   const kitLink = got[0].match(/https?:\/\/\S+\/k\/[A-Za-z0-9_-]{16}/)?.[0];
   assert.match(got[0], /Your kit: https?:\S+\/k\/[A-Za-z0-9_-]{16}/);
   assert.match(got[0], /tailored resume \(3\.2\/5\) and cover letter as PDFs/);
-  assert.match(got[0], /Reply yes and I'll send 2 quick questions, then rewrite it with your answers \(8 credits\)/);
+  assert.match(got[0], /Reply yes and I'll ask 2 quick questions, one at a time, then rewrite it with your answers \(8 credits\)/);
   console.log('PASS: a job link comes back as one reply with the kit link and the resume offer');
   // The kit link opens on a phone that is not signed in, with files to attach.
   assert.ok(kitLink, 'Kit reply carries a /k/ link');
@@ -88,15 +88,17 @@ try {
   await phone.screenshot({ path: '/tmp/applyapply-kitlink.png', fullPage: true });
   console.log('PASS: the kit link opens without sign-in, with PDFs, the tailored resume, tap-to-copy and gap answers');
 
-  got = await send(page, 'yes', '2 quick questions');
-  assert.match(got.at(-1), /1\) Built a consumer product[\s\S]*2\) Shipped a browser extension/);
-  // One reply answers both, numbered.
-  got = await send(page, '1) Ran the Tallyhouse consumer app, 200k MAU. 2) Built applyapply, in the Chrome Web Store.', 'resume');
+  got = await send(page, 'yes', '1 of 2');
+  assert.match(got.at(-1), /1 of 2: Built a consumer product/);
+  assert.equal(got.length, 1, 'One question per text');
+  got = await send(page, 'Ran the Tallyhouse consumer app, 200k MAU.', '2 of 2');
+  assert.match(got.at(-1), /2 of 2: Shipped a browser extension/);
   // The rewrite itself needs a real model key, which this server does not have.
+  got = await send(page, 'Built applyapply, in the Chrome Web Store.', 'answers|rewrite');
   const saved = await db.getEvidence(email, { answeredOnly: true });
-  assert.ok(saved.some(r => /200k MAU/.test(r.answer)) && saved.some(r => /Chrome Web Store/.test(r.answer)), 'Both numbered answers saved');
-  assert.match(got.at(-1), /Got 2 answers\.|couldn't rewrite the resume/, 'Answers go straight to the rewrite: ' + JSON.stringify(got));
-  console.log('PASS: all gap questions arrive in one message and a numbered reply answers them');
+  assert.ok(saved.some(r => /200k MAU/.test(r.answer)) && saved.some(r => /Chrome Web Store/.test(r.answer)), 'Both answers saved');
+  assert.match(got.at(-1), /Got 2 answers\.|couldn't rewrite the resume/, 'The last answer starts the rewrite: ' + JSON.stringify(got));
+  console.log('PASS: one question per text, each answered on its own, then the rewrite');
 
   // A voice note (transcribed in the browser on this test line) arrives as text marked as voice.
   await page.evaluate(() => fetch('/imessage/send', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + localStorage.getItem('aa_session') }, body: JSON.stringify({ text: 'status', voice: true, seconds: 20 }) }));
