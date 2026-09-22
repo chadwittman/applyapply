@@ -47,7 +47,8 @@
       const d = await r.json();
       setTyping(false);
       const atBottom = thread.scrollHeight - thread.scrollTop - thread.clientHeight < 80;
-      if (!lastId && !d.messages.length) add({ direction: 'out', body: 'Text me a job link and I\'ll write your application kit. Text "help" for everything else.' });
+      // The greeting shows once, on an empty conversation (it was re-added on every poll).
+      if (!lastId && !d.messages.length && !thread.querySelector('.b')) add({ direction: 'out', body: 'Text me a job link and I\'ll write your application kit. Text "help" for everything else.' });
       for (const m of d.messages) { add(m); lastId = m.id; }
       setTyping(d.typing);
       bar.hidden = false; resetBtn.hidden = false;

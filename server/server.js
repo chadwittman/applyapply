@@ -58,7 +58,7 @@ for (const method of ['get','post','put','patch','delete']) {
     (req, res, next) => { try { Promise.resolve(handler(req,res,next)).catch(next); } catch (e) { next(e); } }));
 }
 const PORT = process.env.PORT || 5000;
-const VERSION = '0.37.0';
+const VERSION = '0.38.0';
 const IS_PRODUCTION = process.env.NODE_ENV === 'production';
 const APP_ORIGIN = process.env.APP_ORIGIN || 'http://localhost:5000';
 const ALLOWED_WEB_ORIGINS = new Set(
@@ -583,11 +583,92 @@ app.get('/demo/demo.js', demoFile(path.join(DEMO_DIR, 'demo.js'), 'application/j
 app.get('/demo/content.js', demoFile(path.join(__dirname, '../extension/content.js'), 'application/javascript'));
 app.get('/demo/jspdf.js', demoFile(path.join(__dirname, '../extension/vendor/jspdf.umd.min.js'), 'application/javascript'));
 
+// ── Kit links ─────────────────────────────────────────────────────────────────
+// /k/<token>: one kit, readable without signing in, for the phone the kit was
+// texted to. The token is 96 random bits, expires after 30 days, and only
+// ever goes to the kit's owner. The job's own form can't be pre-filled from
+// a link, so this page holds everything to paste plus the files to attach.
+const { resumePdf, letterPdf } = require('./pdf');
+async function sharedKit(req, res) {
+  res.setHeader('Cache-Control', 'no-store');
+  res.setHeader('X-Robots-Tag', 'noindex');
+  const found = await db.kitForShare(req.params.token);
+  if (!found) { res.status(404).type('html').send('<meta name="viewport" content="width=device-width,initial-scale=1"><body style="font-family:-apple-system,sans-serif;background:#000;color:#fff;padding:32px;line-height:1.5">This kit link has expired or does not exist. Text the job link again for a new one.</body>'); return null; }
+  const profile = { ...(found.kit.profile || {}), ...Object.fromEntries(Object.entries(await getProfileByUserEmail(found.owner) || {}).filter(([, v]) => v)) };
+  return { ...found, profile };
+}
+app.get('/k/:token/resume.pdf', apiLimiter, async (req, res) => {
+  const found = await sharedKit(req, res); if (!found) return;
+  if (!found.kit.tailored_resume) return res.status(404).send('No resume in this kit');
+  const { buffer, filename } = resumePdf({ ...found.kit.tailored_resume, company: found.kit.company }, found.profile);
+  res.type('application/pdf').setHeader('Content-Disposition', `inline; filename="${filename}"`);
+  res.send(buffer);
+});
+app.get('/k/:token/cover-letter.pdf', apiLimiter, async (req, res) => {
+  const found = await sharedKit(req, res); if (!found) return;
+  const text = found.kit.cover_letter || found.kit.tailored?.cover_note;
+  if (!text) return res.status(404).send('No cover letter in this kit');
+  const { buffer, filename } = letterPdf(text, found.profile, found.kit.company);
+  res.type('application/pdf').setHeader('Content-Disposition', `inline; filename="${filename}"`);
+  res.send(buffer);
+});
+app.get('/k/:token', apiLimiter, async (req, res) => {
+  const found = await sharedKit(req, res); if (!found) return;
+  const { kit, profile } = found, t = kit.tailored || {}, base = '/k/' + encodeURIComponent(req.params.token);
+  let n = 0;
+  const copyRow = (label, value) => value ? `<div class="row"><div class="lbl">${escapeHtml(label)}</div><div class="val" id="v${++n}">${escapeHtml(value)}</div><button class="copy" data-copy="v${n}">Copy</button></div>` : '';
+  const block = (label, value) => value ? `<div class="blk"><div class="blk-hd"><div class="q">${escapeHtml(label)}</div><button class="copy" data-copy="v${++n}">Copy</button></div><div class="ans" id="v${n}">${escapeHtml(value)}</div></div>` : '';
+  const blanks = (t.qa || []).filter(x => !x.a).map(x => x.q);
+  const expires = new Date(found.expires_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+  res.type('html').send(`<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="robots" content="noindex"><title>${escapeHtml(kit.company || 'Your kit')} · applyapply</title><link rel="icon" href="/brand/icon-32.png">
+<style>
+*{box-sizing:border-box}body{margin:0;background:#000;color:#fff;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;-webkit-font-smoothing:antialiased}
+.wrap{max-width:560px;margin:0 auto;padding:calc(20px + env(safe-area-inset-top)) 16px calc(40px + env(safe-area-inset-bottom))}
+.brand{font-size:13px;font-weight:700;margin-bottom:22px}
+h1{font-size:26px;letter-spacing:-.02em;margin:0 0 4px}.role{font-size:16px;margin-bottom:18px}
+.open{display:block;text-align:center;background:#fff;color:#000;padding:15px;font-size:17px;font-weight:700;text-decoration:none;border-radius:12px}
+.files{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:10px}
+.file{display:block;text-align:center;border:1px solid #333;color:#fff;padding:13px 8px;border-radius:12px;text-decoration:none;font-size:15px;font-weight:600}
+h2{font-size:12px;letter-spacing:.1em;text-transform:uppercase;margin:30px 0 10px}
+.row{display:flex;align-items:center;gap:10px;padding:12px 0;border-bottom:1px solid #1a1a1a}
+.lbl{width:78px;flex:none;font-size:13px}.val{flex:1;min-width:0;font-size:16px;word-break:break-word}
+.copy{flex:none;background:#1c1c1e;color:#fff;border:0;border-radius:9px;padding:9px 13px;font-size:14px;font-weight:600;cursor:pointer;font-family:inherit}
+.copy.ok{background:#15803d}
+.blk{background:#0d0d0d;border:1px solid #1c1c1c;border-radius:12px;padding:14px;margin-bottom:10px}
+.blk-hd{display:flex;gap:10px;align-items:flex-start;justify-content:space-between;margin-bottom:8px}.q{font-size:14px;font-weight:700;line-height:1.35}
+.ans{font-size:16px;line-height:1.55;white-space:pre-wrap}
+.left li{font-size:16px;line-height:1.6}.foot{margin-top:30px;font-size:13px;line-height:1.5}
+</style></head><body><div class="wrap">
+<div class="brand">applyapply</div>
+<h1>${escapeHtml(kit.company || '')}</h1><div class="role">${escapeHtml(kit.role || '')}</div>
+<a class="open" href="${escapeHtml(kit.url)}" target="_blank" rel="noopener">Open application ↗</a>
+<div class="files">
+${kit.tailored_resume ? `<a class="file" href="${base}/resume.pdf">Resume PDF</a>` : ''}
+${kit.cover_letter || t.cover_note ? `<a class="file" href="${base}/cover-letter.pdf">Cover letter PDF</a>` : ''}
+</div>
+${(() => { const rows = copyRow('First name', profile.first_name) + copyRow('Last name', profile.last_name) + copyRow('Email', profile.email) + copyRow('Phone', profile.phone) + copyRow('LinkedIn', profile.linkedin) + copyRow('Website', profile.website) + copyRow('Location', profile.location); return rows ? '<h2>Your details</h2>' + rows : ''; })()}
+<h2>Answers</h2>
+${block('Why this role', t.why_role)}${block('Cover note', t.cover_note)}${(t.qa || []).filter(x => x.a).map(x => block(x.q, x.a)).join('')}
+${blanks.length ? `<h2>Only you can answer</h2><ul class="left">${blanks.map(q => `<li>${escapeHtml(q)}</li>`).join('')}</ul>` : ''}
+<div class="foot">Private link, expires ${escapeHtml(expires)}. Anyone with it can read this kit.</div>
+</div>
+<script>
+document.addEventListener('click', function (e) {
+  var b = e.target.closest('[data-copy]'); if (!b) return;
+  navigator.clipboard.writeText(document.getElementById(b.getAttribute('data-copy')).textContent).then(function () {
+    b.textContent = 'Copied'; b.classList.add('ok');
+    setTimeout(function () { b.textContent = 'Copy'; b.classList.remove('ok'); }, 1400);
+  });
+});
+</script></body></html>`);
+});
+
 // ── Text-message test line ────────────────────────────────────────────────────
 // /imessage runs the real conversation engine (server/conversation.js) and
 // shows replies on a phone-style page instead of sending an iMessage. Only
 // accounts in IMESSAGE_TESTERS can use it until the Sendblue line goes live.
-const chat = require('./conversation')({ db, port: PORT, origin: APP_ORIGIN.replace(/\/$/, ''),
+const chat = require('./conversation')({ db, port: PORT, origin: APP_ORIGIN.replace(/\/$/, ''), kitLink: (email, kitId) => db.kitShareToken(email, kitId),
   signToken: email => jwt.sign({ email }, loadJwtSecret(), { expiresIn: '15m' }) });
 const chatTesters = () => new Set(String(process.env.IMESSAGE_TESTERS || 'wittman.c@gmail.com').toLowerCase().split(',').map(e => e.trim()).filter(Boolean));
 function chatUser(req, res) {
@@ -2996,15 +3077,11 @@ Banned patterns:
 - No metaphor or mic-drop final line — end on the clearest concrete sentence`;
 
   try {
-    const r = await providerFetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: { 'x-api-key': keys.key, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
-      body: JSON.stringify({ model: 'claude-sonnet-4-6', max_tokens: 1024, messages: [{ role: 'user', content: prompt }] }),
-    });
-    const data = await r.json();
-    let text = data.content[0].text;
+    let text = await callClaude(prompt, 4000, WRITER_MODEL, writerOptions(WRITER_MODEL));
     // Hard strip em dashes — model sometimes ignores the prompt rule
     text = text.replace(/\s*—\s*/g, '. ').replace(/\.\s*\.\s*/g, '. ').trim();
+    // Kept on the kit so the kit link can offer it as a PDF.
+    await db.saveKit({ ...coverKit, cover_letter: text }).catch(e => console.error('[cover letter save]', e.message));
     res.json({ text });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });

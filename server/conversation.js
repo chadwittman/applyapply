@@ -26,7 +26,7 @@ function findJobLink(text) {
   return bare ? 'https://' + bare[1].replace(/[).,;!?]+$/, '') : null;
 }
 
-module.exports = function conversation({ db, port, signToken, origin }) {
+module.exports = function conversation({ db, port, signToken, origin, kitLink }) {
   const typing = new Map(); // email -> since (ms); the test page shows dots
 
   function api(email, method, path, body) {
@@ -67,7 +67,10 @@ module.exports = function conversation({ db, port, signToken, origin }) {
       if (r.status !== 200 || !r.data?.tailored) return say(email, 'I couldn\'t write a kit for that link. Check it opens a job posting, then send it again.');
       const kit = r.data, t = kit.tailored;
       const blanks = (t.qa || []).filter(x => !x.a).map(x => x.q);
-      await say(email, `${kit.company || 'This role'}, ${kit.role || ''}${kit.fit_score ? `. Match ${kit.fit_score}/10` : ''}. Your kit is ready: ${origin}/${kit.url}\nEach answer below is its own message so you can copy it.`, { kind: 'kit', url: kit.url, kit_id: kit.id });
+      // A private link that opens this kit on the phone without signing in.
+      const token = kitLink ? await kitLink(email, kit.id).catch(() => null) : null;
+      const link = token ? `${origin}/k/${token}` : `${origin}/${kit.url}`;
+      await say(email, `${kit.company || 'This role'}, ${kit.role || ''}${kit.fit_score ? `. Match ${kit.fit_score}/10` : ''}. Your kit, with your resume and cover letter as PDFs: ${link}\nEach answer below is its own message so you can copy it.`, { kind: 'kit', url: kit.url, kit_id: kit.id, link });
       if (t.why_role) await say(email, ['Why this role:', t.why_role]);
       if (t.cover_note) await say(email, ['Cover note:', t.cover_note]);
       for (const item of (t.qa || []).filter(x => x.a)) await say(email, [item.q, item.a]);
@@ -136,7 +139,7 @@ module.exports = function conversation({ db, port, signToken, origin }) {
         if (r.status === 402) return say(email, `You're out of credits. Top up here: ${origin}/buy`);
         if (r.status !== 200) return say(email, r.data?.error || 'I couldn\'t rewrite the resume.');
         const score = r.data.jev_match?.score, was = r.data.previous_match_score;
-        await say(email, `Resume rewritten for this role${score ? `. Match ${score.toFixed(1)}/5${was ? ` (was ${Number(was).toFixed(1)})` : ''}` : ''}. It's in your kit: ${origin}/${last.meta.url}`);
+        await say(email, `Resume rewritten for this role${score ? `. Match ${score.toFixed(1)}/5${was ? ` (was ${Number(was).toFixed(1)})` : ''}` : ''}. It's in your kit: ${last.meta.link || `${origin}/${last.meta.url}`}`);
         const gap = r.data.coverage?.gaps?.[0];
         if (gap) await say(email, `One thing your resume doesn't show: ${gap}\nReply with what you've done there and I'll save it to your profile.`, { kind: 'gap_question', question: gap });
       });

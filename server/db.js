@@ -213,6 +213,19 @@ async function initSchema() {
     )
   `);
 
+  // Private, expiring links to one kit (/k/<token>), sent to the kit's owner
+  // by text so their phone can open the kit without signing in.
+  await q(`
+    CREATE TABLE IF NOT EXISTS kit_shares (
+      token TEXT PRIMARY KEY,
+      user_email TEXT NOT NULL,
+      kit_id TEXT NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      expires_at TIMESTAMPTZ NOT NULL
+    )
+  `);
+  await q(`CREATE INDEX IF NOT EXISTS idx_kit_shares_kit ON kit_shares (user_email, kit_id)`);
+
   // Text-message conversations (the /imessage test line now, Sendblue later).
   await q(`
     CREATE TABLE IF NOT EXISTS chat_messages (
@@ -692,6 +705,25 @@ async function saveResumeStructure(userEmail, sourceHash, data) {
   [requireOwner(userEmail), sourceHash, JSON.stringify(data)]);
 }
 
+// ── Kit links ─────────────────────────────────────────────────────────────────
+
+// One live link per kit: reuse it while it has at least a week left.
+async function kitShareToken(userEmail, kitId, days = 30) {
+  const owner = requireOwner(userEmail);
+  const live = await q1(`SELECT token FROM kit_shares WHERE user_email=$1 AND kit_id=$2 AND expires_at > NOW() + INTERVAL '7 days' ORDER BY expires_at DESC LIMIT 1`, [owner, kitId]);
+  if (live) return live.token;
+  const token = require('crypto').randomBytes(12).toString('base64url');
+  await q(`INSERT INTO kit_shares (token, user_email, kit_id, expires_at) VALUES ($1,$2,$3,NOW() + ($4 || ' days')::interval)`, [token, owner, kitId, String(days)]);
+  return token;
+}
+async function kitForShare(token) {
+  if (typeof token !== 'string' || !/^[A-Za-z0-9_-]{16}$/.test(token)) return null;
+  const share = await q1(`SELECT user_email, kit_id, expires_at FROM kit_shares WHERE token=$1 AND expires_at > NOW()`, [token]);
+  if (!share) return null;
+  const kit = await getKit(share.kit_id, share.user_email);
+  return kit ? { kit, owner: share.user_email, expires_at: share.expires_at } : null;
+}
+
 // ── Chat messages ─────────────────────────────────────────────────────────────
 
 async function addChatMessage(userEmail, direction, body, meta = null) {
@@ -914,7 +946,7 @@ async function deleteAccount(userEmail) {
   try {
     await client.query('BEGIN');
     await client.query('DELETE FROM operation_events WHERE operation_id IN (SELECT id FROM operations WHERE user_email=$1)', [owner]);
-    for (const table of ['user_activity','decisions','evidence','resume_files','schedules','runs','jobs','kits','profiles','purchases','api_keys','resume_structures','chat_messages']) {
+    for (const table of ['user_activity','decisions','evidence','resume_files','schedules','runs','jobs','kits','profiles','purchases','api_keys','resume_structures','chat_messages','kit_shares']) {
       await client.query(`DELETE FROM ${table} WHERE user_email=$1`, [owner]);
     }
     // magic_links keys on `email`; listing it above made every deletion fail.
@@ -1006,6 +1038,7 @@ module.exports = {
   roleKeyFor, cacheKeyFor, getCachedSources, putCachedSource,
   upsertListings, getListings, countListings, getIngestState, recordIngest, withIngestLock,
   createApiKey, listApiKeys, revokeApiKey, emailForApiKey, getResumeStructure, saveResumeStructure, pruneStorage, storageStats,
+  kitShareToken, kitForShare,
   addChatMessage, getChatMessages, lastChatMeta, updateChatMeta, hasChatHistory, clearChat,
   getUser, getOrCreateUser, addUserCredits, deductUserCredits,
   createMagicLink, getMagicLink, useMagicLink,
