@@ -798,6 +798,24 @@ async function clearChat(userEmail) {
   await q(`DELETE FROM chat_messages WHERE user_email=$1`, [requireOwner(userEmail)]);
 }
 
+// Reset for the test line: the conversation and the kits behind it, so the next
+// job link is written from scratch. Profile, saved answers and pipeline stay.
+async function resetTestKits(userEmail) {
+  const owner = requireOwner(userEmail);
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    await client.query(`DELETE FROM kit_versions WHERE kit_id IN (SELECT id FROM kits WHERE user_email=$1)`, [owner]);
+    const kits = await client.query(`DELETE FROM kits WHERE user_email=$1 RETURNING id`, [owner]);
+    await client.query(`DELETE FROM kit_shares WHERE user_email=$1`, [owner]);
+    await client.query(`DELETE FROM chat_messages WHERE user_email=$1`, [owner]);
+    await client.query(`UPDATE jobs SET kit_generated_at=NULL WHERE user_email=$1`, [owner]);
+    await client.query('COMMIT');
+    return kits.rowCount;
+  } catch (e) { await client.query('ROLLBACK').catch(() => {}); throw e; }
+  finally { client.release(); }
+}
+
 // ── API keys ──────────────────────────────────────────────────────────────────
 
 const hashKey = key => require('crypto').createHash('sha256').update(key).digest('hex');
@@ -1093,7 +1111,7 @@ module.exports = {
   upsertListings, getListings, countListings, getIngestState, recordIngest, withIngestLock,
   createApiKey, listApiKeys, revokeApiKey, emailForApiKey, getResumeStructure, saveResumeStructure, pruneStorage, storageStats,
   kitShareToken, kitForShare, addFeedback, feedbackSeenToday,
-  addChatMessage, getChatMessages, lastChatMeta, lastChatPrompt, claimChatPrompt, updateChatMeta, hasChatHistory, clearChat,
+  resetTestKits, addChatMessage, getChatMessages, lastChatMeta, lastChatPrompt, claimChatPrompt, updateChatMeta, hasChatHistory, clearChat,
   getUser, getOrCreateUser, addUserCredits, deductUserCredits, chargeCredits, countVoiceNotesToday,
   createMagicLink, getMagicLink, useMagicLink,
 };

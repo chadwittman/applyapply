@@ -93,7 +93,7 @@
   });
   input.addEventListener('keydown', e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); bar.requestSubmit(); } });
   resetBtn.addEventListener('click', async () => {
-    if (!window.confirm('Clear this test conversation?')) return;
+    if (!window.confirm('Clear this conversation and your saved kits, so the next job link is written from scratch? Your profile, saved answers and pipeline stay.')) return;
     await fetch('/imessage/reset', { method: 'POST', headers: headers() });
     thread.innerHTML = ''; lastId = 0; poll();
   });

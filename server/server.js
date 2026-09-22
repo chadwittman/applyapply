@@ -58,7 +58,7 @@ for (const method of ['get','post','put','patch','delete']) {
     (req, res, next) => { try { Promise.resolve(handler(req,res,next)).catch(next); } catch (e) { next(e); } }));
 }
 const PORT = process.env.PORT || 5000;
-const VERSION = '0.42.0';
+const VERSION = '0.42.1';
 const IS_PRODUCTION = process.env.NODE_ENV === 'production';
 const APP_ORIGIN = process.env.APP_ORIGIN || 'http://localhost:5000';
 const ALLOWED_WEB_ORIGINS = new Set(
@@ -857,8 +857,11 @@ app.post('/imessage/send', apiLimiter, async (req, res) => {
 });
 app.post('/imessage/reset', async (req, res) => {
   const email = chatUser(req, res); if (!email) return;
-  await db.clearChat(email);
-  res.json({ ok: true });
+  // The test line resets what it wrote: the conversation and the kits behind
+  // it, so the next job link is written from scratch.
+  const kits = await db.resetTestKits(email);
+  console.log(`[imessage] reset ${email}: conversation and ${kits} kit(s)`);
+  res.json({ ok: true, kits });
 });
 
 app.get('/', (req, res) => {

@@ -129,8 +129,17 @@ try {
 
 
 
+  // Reset clears the conversation and the kits behind it, so a link is rewritten.
+  assert.ok(await db.findKit(job1, email), 'Kit exists before reset');
+  const reset = await page.evaluate(() => fetch('/imessage/reset', { method: 'POST', headers: { Authorization: 'Bearer ' + localStorage.getItem('aa_session') } }).then(r => r.json()));
+  assert.ok(reset.kits >= 1);
+  assert.equal(await db.findKit(job1, email), null, 'Saved kits are cleared');
+  assert.equal((await db.getChatMessages(email, 0)).length, 0, 'Conversation is cleared');
+  assert.ok((await db.getEvidence(email, { answeredOnly: true })).length > 0, 'Saved answers survive a reset');
+  assert.ok((await db.getJobs(null, 10, email)).length > 0, 'The pipeline survives a reset');
+  console.log('PASS: reset clears the conversation and kits, keeps profile answers and pipeline');
+
   // Two replies arriving together must not both act on the same question.
-  await db.clearChat(email);
   await db.saveKit({ id: 'race-kit', user_email: email, url: 'https://jobs.lever.co/raceco/pm', company: 'RaceCo', role: 'PM', fit_score: 7,
     job_description: POSTING,
     tailored: { why_role: 'why', cover_note: 'note', qa: [] },
