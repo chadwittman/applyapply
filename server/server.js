@@ -58,7 +58,7 @@ for (const method of ['get','post','put','patch','delete']) {
     (req, res, next) => { try { Promise.resolve(handler(req,res,next)).catch(next); } catch (e) { next(e); } }));
 }
 const PORT = process.env.PORT || 5000;
-const VERSION = '0.36.0';
+const VERSION = '0.36.1';
 const IS_PRODUCTION = process.env.NODE_ENV === 'production';
 const APP_ORIGIN = process.env.APP_ORIGIN || 'http://localhost:5000';
 const ALLOWED_WEB_ORIGINS = new Set(
@@ -188,6 +188,7 @@ code{background:#111;border:1px solid #1e1e1e;padding:2px 7px;font-size:13px;fon
 
   <a class="dl" href="/extension.zip" download>Download for Chrome</a>
   <div class="ver">Version ${escapeHtml(version)} &middot; works in Chrome, Edge, Brave and Arc</div>
+  <div class="note" style="margin-top:14px">Not installing today? Put <b>applyapply.xyz/</b> in front of any job posting's link and your kit is written there, no extension needed.</div>
 
   <ol>
     <li>Unzip the download, then move the unzipped folder somewhere permanent &mdash; your home folder is fine. Chrome loads the extension from that folder every time it starts, so moving or deleting it later uninstalls the extension.</li>
@@ -254,6 +255,7 @@ app.get('/support', (req, res) => legalPage(res, {
 <p>applyapply has no passwords. Enter your email on the <a href="/login">sign-in page</a> or in the extension, then open the link we send you. If it does not arrive within a few minutes, check your spam folder or request a new one.</p>
 <h2>Using it on a job application</h2>
 <p>Open the job's application page and click the applyapply toolbar button. The sidebar shows your tailored kit. Fill form fills the fields it can match from your profile and kit; review every field before you submit. applyapply never submits an application for you.</p>
+<p>No extension on the computer you're using? Put <b>applyapply.xyz/</b> in front of the job posting's link, for example <code>applyapply.xyz/jobs.lever.co/acme/head-of-product</code>, and the kit is written on a page you can copy from.</p>
 <h2>Credits</h2>
 <p>New accounts start with free credits. Buy more on the <a href="/buy">credits page</a>; purchases are one-time and never expire. If a generation fails, its credits are returned automatically. If a charge looks wrong, email us with the date and amount.</p>
 <h2>Your data</h2>
@@ -603,6 +605,14 @@ a{text-decoration:none;color:inherit}
 .hero p{font-size:18px;color:#ccc;line-height:1.7;margin-bottom:16px;max-width:500px}
 .hero p+p{margin-bottom:36px}
 .ctas{display:flex;gap:10px;flex-wrap:wrap}
+.url-trick{margin:22px 0 18px;padding:16px 18px;border:1px solid #1e1e1e;background:#070707;overflow-x:auto}
+.url-line{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:14px;color:#fff;white-space:nowrap}
+.url-pre{background:#fff;color:#000;padding:2px 4px;font-weight:700}
+.url-go{display:flex;gap:8px;flex-wrap:wrap}
+.url-go input{flex:1 1 260px;min-width:0;padding:12px 14px;background:#0a0a0a;border:1px solid #333;color:#fff;font-size:14px;font-family:inherit}
+.url-go input:focus{outline:none;border-color:#fff}
+.kbd{display:inline-block;margin-left:6px;padding:0 5px;border:1px solid #bbb;font-size:11px;line-height:16px}
+.url-err{min-height:18px;margin-top:8px;font-size:13px;color:#fca5a5}
 .btn-w{display:inline-block;padding:12px 22px;background:#fff;color:#000;font-size:14px;font-weight:600;border:none;cursor:pointer;letter-spacing:-.01em}
 .btn-w:hover{background:#e5e5e5}
 .btn-g{display:inline-block;padding:12px 22px;background:transparent;color:#aaa;font-size:14px;font-weight:500;border:1px solid #333;cursor:pointer}
@@ -725,6 +735,33 @@ footer{padding:24px 32px;border-top:1px solid #111;display:flex;justify-content:
     </div>
   </div>
 </div>
+
+<hr>
+
+<div class="section">
+  <div class="eyebrow">Any job link</div>
+  <p class="body-l">No extension on this computer? Put <b>applyapply.xyz/</b> in front of a job posting's link and your kit starts writing.</p>
+  <div class="url-trick" aria-hidden="true">
+    <div class="url-line"><span class="url-pre">applyapply.xyz/</span>jobs.lever.co/acme/head-of-product</div>
+  </div>
+  <form class="url-go" onsubmit="event.preventDefault();goJob()">
+    <input id="job-link" type="text" inputmode="url" placeholder="Paste a job link" autocomplete="off" aria-label="Job posting link">
+    <button type="submit" class="btn-w">Write my kit <span class="kbd">↵</span></button>
+  </form>
+  <div id="job-link-err" class="url-err" role="alert"></div>
+</div>
+<script>
+function goJob(){
+  var raw=document.getElementById('job-link').value.trim();
+  var err=document.getElementById('job-link-err');
+  if(!raw){err.textContent='Paste a job posting link first.';return;}
+  var lower=raw.toLowerCase();
+  var link=(lower.indexOf('http://')===0||lower.indexOf('https://')===0)?raw:'https://'+raw.replace(/^[/]+/,'');
+  try{var u=new URL(link);if(u.hostname.indexOf('.')<1)throw 0;}catch(e){err.textContent='That does not look like a link to a job posting.';return;}
+  err.textContent='';
+  location.href='/'+link;
+}
+</script>
 
 <hr>
 

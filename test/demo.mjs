@@ -39,4 +39,17 @@ try {
   assert.deepEqual(errors, []);
   console.log('PASS: demo made no API calls');
   await page.screenshot({ path: '/tmp/applyapply-demo.png' });
+  // The homepage's "any job link" box opens the URL-prefix kit page.
+  const home = await browser.newPage();
+  await home.goto(origin + '/');
+  await home.fill('#job-link', 'not a link');
+  await home.click('.url-go button');
+  assert.match(await home.textContent('#job-link-err'), /does not look like a link/);
+  await home.fill('#job-link', 'jobs.lever.co/acme/head-of-product');
+  await Promise.all([home.waitForURL(/\/https:\/\/jobs\.lever\.co\/acme\/head-of-product$/, { waitUntil: 'commit' }), home.click('.url-go button')]);
+  assert.equal((await home.request.get(home.url())).status(), 200);
+  await home.goto(origin + '/');
+  await home.locator('.url-trick').scrollIntoViewIfNeeded();
+  await home.screenshot({ path: '/tmp/applyapply-urltrick.png' });
+  console.log('PASS: homepage job-link box opens the URL-prefix kit page');
 } finally { await browser.close(); }
