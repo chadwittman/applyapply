@@ -213,6 +213,19 @@ async function initSchema() {
     )
   `);
 
+  // Text-message conversations (the /imessage test line now, Sendblue later).
+  await q(`
+    CREATE TABLE IF NOT EXISTS chat_messages (
+      id BIGSERIAL PRIMARY KEY,
+      user_email TEXT NOT NULL,
+      direction TEXT NOT NULL,
+      body TEXT NOT NULL,
+      meta JSONB,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
+  await q(`CREATE INDEX IF NOT EXISTS idx_chat_messages_user ON chat_messages (user_email, id)`);
+
   // Personal API keys for agents. Only a SHA-256 of the key is stored.
   await q(`
     CREATE TABLE IF NOT EXISTS api_keys (
@@ -679,6 +692,28 @@ async function saveResumeStructure(userEmail, sourceHash, data) {
   [requireOwner(userEmail), sourceHash, JSON.stringify(data)]);
 }
 
+// ── Chat messages ─────────────────────────────────────────────────────────────
+
+async function addChatMessage(userEmail, direction, body, meta = null) {
+  return q1(`INSERT INTO chat_messages (user_email, direction, body, meta) VALUES ($1,$2,$3,$4) RETURNING id`,
+    [requireOwner(userEmail), direction, String(body).slice(0, 8000), meta ? JSON.stringify(meta) : null]);
+}
+async function getChatMessages(userEmail, afterId = 0) {
+  return q(`SELECT id, direction, body, created_at FROM chat_messages WHERE user_email=$1 AND id>$2 ORDER BY id LIMIT 500`, [requireOwner(userEmail), Number(afterId) || 0]);
+}
+async function lastChatMeta(userEmail, kind) {
+  return q1(`SELECT id, meta FROM chat_messages WHERE user_email=$1 AND direction='out' AND meta->>'kind'=$2 ORDER BY id DESC LIMIT 1`, [requireOwner(userEmail), kind]);
+}
+async function updateChatMeta(id, meta) {
+  await q(`UPDATE chat_messages SET meta=$2 WHERE id=$1`, [id, JSON.stringify(meta)]);
+}
+async function hasChatHistory(userEmail) {
+  return !!(await q1(`SELECT 1 FROM chat_messages WHERE user_email=$1 LIMIT 1`, [requireOwner(userEmail)]));
+}
+async function clearChat(userEmail) {
+  await q(`DELETE FROM chat_messages WHERE user_email=$1`, [requireOwner(userEmail)]);
+}
+
 // ── API keys ──────────────────────────────────────────────────────────────────
 
 const hashKey = key => require('crypto').createHash('sha256').update(key).digest('hex');
@@ -869,6 +904,7 @@ async function getAccountExport(userEmail) {
     credit_history: await q('SELECT kind,amount,operation_id,created_at FROM credit_ledger WHERE user_email=$1 ORDER BY created_at DESC', [owner]),
     api_keys: await q('SELECT name,prefix,created_at,last_used_at,revoked_at FROM api_keys WHERE user_email=$1 ORDER BY created_at DESC', [owner]),
     resume_structure: (await q1('SELECT data,created_at FROM resume_structures WHERE user_email=$1', [owner])) || null,
+    text_messages: await q('SELECT direction,body,created_at FROM chat_messages WHERE user_email=$1 ORDER BY id', [owner]),
   };
 }
 
@@ -878,7 +914,7 @@ async function deleteAccount(userEmail) {
   try {
     await client.query('BEGIN');
     await client.query('DELETE FROM operation_events WHERE operation_id IN (SELECT id FROM operations WHERE user_email=$1)', [owner]);
-    for (const table of ['user_activity','decisions','evidence','resume_files','schedules','runs','jobs','kits','profiles','purchases','api_keys','resume_structures']) {
+    for (const table of ['user_activity','decisions','evidence','resume_files','schedules','runs','jobs','kits','profiles','purchases','api_keys','resume_structures','chat_messages']) {
       await client.query(`DELETE FROM ${table} WHERE user_email=$1`, [owner]);
     }
     // magic_links keys on `email`; listing it above made every deletion fail.
@@ -970,6 +1006,7 @@ module.exports = {
   roleKeyFor, cacheKeyFor, getCachedSources, putCachedSource,
   upsertListings, getListings, countListings, getIngestState, recordIngest, withIngestLock,
   createApiKey, listApiKeys, revokeApiKey, emailForApiKey, getResumeStructure, saveResumeStructure, pruneStorage, storageStats,
+  addChatMessage, getChatMessages, lastChatMeta, updateChatMeta, hasChatHistory, clearChat,
   getUser, getOrCreateUser, addUserCredits, deductUserCredits,
   createMagicLink, getMagicLink, useMagicLink,
 };

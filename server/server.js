@@ -58,7 +58,7 @@ for (const method of ['get','post','put','patch','delete']) {
     (req, res, next) => { try { Promise.resolve(handler(req,res,next)).catch(next); } catch (e) { next(e); } }));
 }
 const PORT = process.env.PORT || 5000;
-const VERSION = '0.36.2';
+const VERSION = '0.37.0';
 const IS_PRODUCTION = process.env.NODE_ENV === 'production';
 const APP_ORIGIN = process.env.APP_ORIGIN || 'http://localhost:5000';
 const ALLOWED_WEB_ORIGINS = new Set(
@@ -307,6 +307,7 @@ app.get('/robots.txt', (req, res) => {
     'Disallow: /sourcing',
     'Disallow: /setup',
     'Disallow: /login',
+    'Disallow: /imessage',
     'Disallow: /auth/',
     'Disallow: /checkout',
     'Disallow: /admin/',
@@ -581,6 +582,39 @@ app.get('/demo', demoFile(path.join(DEMO_DIR, 'index.html'), 'html'));
 app.get('/demo/demo.js', demoFile(path.join(DEMO_DIR, 'demo.js'), 'application/javascript'));
 app.get('/demo/content.js', demoFile(path.join(__dirname, '../extension/content.js'), 'application/javascript'));
 app.get('/demo/jspdf.js', demoFile(path.join(__dirname, '../extension/vendor/jspdf.umd.min.js'), 'application/javascript'));
+
+// ── Text-message test line ────────────────────────────────────────────────────
+// /imessage runs the real conversation engine (server/conversation.js) and
+// shows replies on a phone-style page instead of sending an iMessage. Only
+// accounts in IMESSAGE_TESTERS can use it until the Sendblue line goes live.
+const chat = require('./conversation')({ db, port: PORT, origin: APP_ORIGIN.replace(/\/$/, ''),
+  signToken: email => jwt.sign({ email }, loadJwtSecret(), { expiresIn: '15m' }) });
+const chatTesters = () => new Set(String(process.env.IMESSAGE_TESTERS || 'wittman.c@gmail.com').toLowerCase().split(',').map(e => e.trim()).filter(Boolean));
+function chatUser(req, res) {
+  const email = reqUserEmail(req);
+  if (!email) { res.status(401).json({ error: 'Sign in required' }); return null; }
+  if (!chatTesters().has(email.toLowerCase())) { res.status(403).json({ error: 'The text line is in private testing.' }); return null; }
+  return email;
+}
+app.get('/imessage', (req, res) => { res.setHeader('Cache-Control', 'no-store'); res.sendFile(path.join(__dirname, 'imessage', 'index.html')); });
+app.get('/imessage/app.js', (req, res) => { res.setHeader('Cache-Control', 'no-store'); res.type('application/javascript').sendFile(path.join(__dirname, 'imessage', 'app.js')); });
+app.get('/imessage/messages', async (req, res) => {
+  const email = chatUser(req, res); if (!email) return;
+  res.setHeader('Cache-Control', 'no-store');
+  res.json({ messages: await db.getChatMessages(email, req.query.after), typing: chat.isTyping(email) });
+});
+app.post('/imessage/send', apiLimiter, async (req, res) => {
+  const email = chatUser(req, res); if (!email) return;
+  const text = String(req.body?.text || '').trim().slice(0, 4000);
+  if (!text) return res.status(400).json({ error: 'Type a message' });
+  res.status(202).json({ ok: true });
+  chat.handle(email, text).catch(e => { console.error('[chat]', e.message); db.addChatMessage(email, 'out', 'Something went wrong on my side. Try that again.').catch(() => {}); });
+});
+app.post('/imessage/reset', async (req, res) => {
+  const email = chatUser(req, res); if (!email) return;
+  await db.clearChat(email);
+  res.json({ ok: true });
+});
 
 app.get('/', (req, res) => {
   res.setHeader('Content-Type', 'text/html');
@@ -5999,6 +6033,7 @@ if (require.main === module) {
             const complete = op.status === 'succeeded';
             const added = op.result?.added || 0;
             const kitsReady = complete && added ? await prepareKits(op.user_email, op.result?.run_id || op.id).catch(e => { console.error('[auto kits]', e.message); return 0; }) : 0;
+            if (complete) chat.notifySearchDone(op.user_email, added).catch(e => console.error('[chat notify]', e.message));
             const preferences = await db.getProfileByUserEmail(op.user_email);
             if (complete && added === 0 && preferences?.search_mode === 'selective') return;
             const scheduled = op.payload?.trigger === 'scheduled';
