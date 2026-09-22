@@ -407,6 +407,11 @@ async function main() {
     assert.ok(pruned.listings>=1);
     const left=(await db.pool.query("SELECT url FROM listings WHERE url IN ('https://ledger.test/ancient','https://ledger.test/new-pm')")).rows.map(r=>r.url);
     assert.deepEqual(left,['https://ledger.test/new-pm']);
+    // An old posting still on the board at the last full refresh stays listed and unpruned.
+    await db.upsertListings('Sequoia job board',[{url:'https://ledger.test/old-but-open',company:'Seq',role:'Product Manager',posted_at:'2025-02-01T00:00:00Z'}]);
+    assert.equal((await db.pruneStorage()).listings,0);
+    assert.ok((await db.getListings(['Sequoia job board'],0)).some(r=>r.url==='https://ledger.test/old-but-open'),'Still-open old job is currently listed');
+    assert.ok(!(await db.getListings(['Sequoia job board'],24)).some(r=>r.url==='https://ledger.test/old-but-open'),'but not in the last 24 hours');
     const exported=await db.getAccountExport('agent@audit.invalid');
     for (const k of ['runs','credit_history','api_keys','resume_structure']) assert.ok(k in exported,k);
     assert.ok(exported.api_keys.length && !('key_hash' in exported.api_keys[0]),'Key metadata exported without the hash');

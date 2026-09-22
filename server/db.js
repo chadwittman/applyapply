@@ -746,16 +746,24 @@ async function upsertListings(source, jobs) {
 }
 
 // lookbackHours 24: listings posted in the window (or, with no posting date,
-// first seen in it). 0: everything posted or seen in the last 45 days.
+// first seen in it). 0, "all currently listed": posted in the last 45 days, or
+// still on the board at its last weekly full refresh (seen in the last 8
+// days), however long ago it was first posted.
+const CURRENT_POSTED_DAYS = 45, CURRENT_SEEN_DAYS = 8;
 async function getListings(sources, lookbackHours) {
-  const hours = lookbackHours === 24 ? 24 : 45 * 24;
+  if (lookbackHours !== 24) {
+    return q(`
+      SELECT * FROM listings
+      WHERE source = ANY($1) AND (COALESCE(posted_at, first_seen) >= NOW() - ($2 || ' days')::interval OR last_seen >= NOW() - ($3 || ' days')::interval)
+      ORDER BY COALESCE(posted_at, first_seen) DESC`, [sources, String(CURRENT_POSTED_DAYS), String(CURRENT_SEEN_DAYS)]);
+  }
   // Date-only stamps count from the start of the day the window opens.
   return q(`
     SELECT * FROM listings
     WHERE source = ANY($1) AND (
-      (posted_precision = 'day' AND posted_at >= date_trunc('day', (NOW() - ($2 || ' hours')::interval) AT TIME ZONE 'UTC') AT TIME ZONE 'UTC')
-      OR (posted_precision IS DISTINCT FROM 'day' AND COALESCE(posted_at, first_seen) >= NOW() - ($2 || ' hours')::interval))
-    ORDER BY COALESCE(posted_at, first_seen) DESC`, [sources, String(hours)]);
+      (posted_precision = 'day' AND posted_at >= date_trunc('day', (NOW() - INTERVAL '24 hours') AT TIME ZONE 'UTC') AT TIME ZONE 'UTC')
+      OR (posted_precision IS DISTINCT FROM 'day' AND COALESCE(posted_at, first_seen) >= NOW() - INTERVAL '24 hours'))
+    ORDER BY COALESCE(posted_at, first_seen) DESC`, [sources]);
 }
 
 async function countListings(sources) {
@@ -779,12 +787,14 @@ async function recordIngest(source, { ok, count = null, error = null, full = fal
 }
 
 // The database lives on a small volume, and the ledger adds thousands of rows
-// a day, so every ingest prunes what no run can use any more: listings posted
-// (or first seen) over 60 days ago and not seen in a week, stale shared cache,
-// and run progress logs older than 30 days (run results are kept).
+// a day, so every ingest prunes what no run can use any more: listings that
+// "all currently listed" can no longer return (same rule as getListings),
+// stale shared cache, and run progress logs older than 30 days (run results
+// are kept).
 async function pruneStorage() {
   const counts = {};
-  counts.listings = (await q(`DELETE FROM listings WHERE COALESCE(posted_at, first_seen) < NOW() - INTERVAL '60 days' AND last_seen < NOW() - INTERVAL '7 days' RETURNING 1`)).length;
+  counts.listings = (await q(`DELETE FROM listings WHERE COALESCE(posted_at, first_seen) < NOW() - ($1 || ' days')::interval AND last_seen < NOW() - ($2 || ' days')::interval RETURNING 1`,
+    [String(CURRENT_POSTED_DAYS), String(CURRENT_SEEN_DAYS)])).length;
   counts.source_cache = (await q(`DELETE FROM source_cache WHERE fetched_at < NOW() - INTERVAL '3 days' RETURNING 1`)).length;
   counts.operation_events = (await q(`DELETE FROM operation_events WHERE created_at < NOW() - INTERVAL '30 days' RETURNING 1`)).length;
   return counts;
