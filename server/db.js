@@ -798,20 +798,27 @@ async function clearChat(userEmail) {
   await q(`DELETE FROM chat_messages WHERE user_email=$1`, [requireOwner(userEmail)]);
 }
 
-// Reset for the test line: the conversation and the kits behind it, so the next
-// job link is written from scratch. Profile, saved answers and pipeline stay.
+// Reset for the test line: the conversation and only the kits it wrote (the
+// ones recorded in its own messages), so the next job link starts from
+// scratch. Kits made in the extension or on the site are untouched, as are the
+// profile, saved answers and pipeline.
 async function resetTestKits(userEmail) {
   const owner = requireOwner(userEmail);
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
-    await client.query(`DELETE FROM kit_versions WHERE kit_id IN (SELECT id FROM kits WHERE user_email=$1)`, [owner]);
-    const kits = await client.query(`DELETE FROM kits WHERE user_email=$1 RETURNING id`, [owner]);
-    await client.query(`DELETE FROM kit_shares WHERE user_email=$1`, [owner]);
+    const ids = (await client.query(`SELECT DISTINCT meta->>'kit_id' AS id FROM chat_messages WHERE user_email=$1 AND meta->>'kit_id' IS NOT NULL`, [owner])).rows.map(r => r.id);
+    let removed = 0;
+    if (ids.length) {
+      await client.query(`DELETE FROM kit_versions WHERE user_email=$1 AND kit_id = ANY($2)`, [owner, ids]);
+      await client.query(`DELETE FROM kit_shares WHERE user_email=$1 AND kit_id = ANY($2)`, [owner, ids]);
+      const urls = (await client.query(`DELETE FROM kits WHERE user_email=$1 AND id = ANY($2) RETURNING url`, [owner, ids])).rows.map(r => r.url);
+      removed = urls.length;
+      if (urls.length) await client.query(`UPDATE jobs SET kit_generated_at=NULL WHERE user_email=$1 AND url = ANY($2)`, [owner, urls]);
+    }
     await client.query(`DELETE FROM chat_messages WHERE user_email=$1`, [owner]);
-    await client.query(`UPDATE jobs SET kit_generated_at=NULL WHERE user_email=$1`, [owner]);
     await client.query('COMMIT');
-    return kits.rowCount;
+    return removed;
   } catch (e) { await client.query('ROLLBACK').catch(() => {}); throw e; }
   finally { client.release(); }
 }
