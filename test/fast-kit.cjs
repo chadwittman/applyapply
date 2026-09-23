@@ -20,6 +20,19 @@ const fastKit = require('../server/fast-kit');
   assert.deepEqual([...reused.keys()], ['Tell us about something you built from scratch.'], 'only confident matches reused; eligibility never asked');
   assert.match(reused.get('Tell us about something you built from scratch.').a, /Route Assist/);
 
+  // A correction beats a saved answer, which would otherwise be submitted
+  // verbatim without any model ever reading it.
+  const exitPool = fastKit.answerPool([
+    { question: 'What is your proudest outcome?', answer: 'I sold three companies before founding this one.' },
+    { question: 'What do you do best?', answer: 'Zero to one product work with small teams.' }], []);
+  respond = (state, questions) => questions.conflict
+    ? { answers: { conflict: { probability: /sold three/.test(state.saved_answer) ? 0.93 : 0.04 } } }
+    : { answers: { pick: { choice: 'a0', confidence: 0.99 } } };
+  const guarded = await fastKit.reuseAnswers('key', ['Tell us what you do best.'], exitPool, { facts: ['I have never sold a company.'] });
+  assert.match(guarded.get('Tell us what you do best.').a, /Zero to one/, 'the contradicted answer is not offered for reuse');
+  const kept = await fastKit.dropContradicted('key', exitPool, []);
+  assert.equal(kept.length, 2, 'no corrections, no extra calls or filtering');
+
   // Relevance and strength are judged separately, then turned into a decision.
   const scores = { 'Organized the offsite': [0.2, 0.3], 'Shipped an AI planner': [3, 3], 'Grew revenue 4x at 200k users': [0.4, 3], 'Ran the weekly product review': [2, 1] };
   respond = (state) => ({ answers: Object.fromEntries(state.bullets.flatMap((b, i) => [['fit' + i, { score: scores[b][0] }], ['impact' + i, { score: scores[b][1] }]])) });

@@ -3189,7 +3189,8 @@ app.post('/generate', apiLimiter, requireCredits('generate'), async (req, res) =
   // picks it in a few hundred ms); the model writes only the rest.
   const reusedAnswers = Array.isArray(form_questions) && form_questions.length && userEmail && process.env.TYPESAFE_API_KEY
     ? await fastKit.reuseAnswers(process.env.TYPESAFE_API_KEY, form_questions,
-        fastKit.answerPool(await db.getEvidence(userEmail, { answeredOnly: true }).catch(() => []), await db.getKits(userEmail).catch(() => [])))
+        fastKit.answerPool(await db.getEvidence(userEmail, { answeredOnly: true }).catch(() => []), await db.getKits(userEmail).catch(() => [])),
+        { facts: (await db.getFacts(userEmail).catch(() => [])).map(f => f.text) })
     : new Map();
   const questionsToWrite = Array.isArray(form_questions) ? form_questions.filter(q => !reusedAnswers.has(q)) : form_questions;
   const qaInstruction = Array.isArray(form_questions) && form_questions.length > 0 && !questionsToWrite.length

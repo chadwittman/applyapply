@@ -31,9 +31,27 @@ function answerPool(evidenceRows, kits) {
   return pool.slice(0, 300);
 }
 
-async function reuseAnswers(apiKey, questions, pool, { minConfidence = 0.85 } = {}) {
+// A reused answer is submitted verbatim and never passes a model, so a
+// correction cannot catch it there. One judgment per saved answer, before it
+// is offered for reuse, drops the ones a correction contradicts.
+async function dropContradicted(apiKey, pool, facts) {
+  if (!apiKey || !facts.length || !pool.length) return pool;
+  const kept = await Promise.all(pool.map(async item => {
+    try {
+      const data = await evaluate(apiKey, { corrections: facts, saved_answer: item.a }, {
+        conflict: { type: 'noul', instructions: 'The candidate wrote `corrections` about themselves, and they are true. Does `saved_answer` state or imply something a correction denies or contradicts?' },
+      });
+      return Number(data.answers?.conflict?.probability) >= 0.6 ? null : item;
+    } catch (e) { console.error('[corrections check]', e.message); return item; }
+  }));
+  return kept.filter(Boolean);
+}
+
+async function reuseAnswers(apiKey, questions, pool, { minConfidence = 0.85, facts = [] } = {}) {
   const reused = new Map();
   if (!apiKey || !pool.length) return reused;
+  pool = await dropContradicted(apiKey, pool, facts);
+  if (!pool.length) return reused;
   await Promise.all((questions || []).map(async question => {
     if (typeof question !== 'string' || NEVER_REUSE.test(question)) return;
     // Code narrows the pool to the likeliest few; Jev makes the call.
@@ -128,4 +146,5 @@ async function judgeBullets(apiKey, structure, job) {
   return batch;
 }
 
-module.exports = { answerPool, reuseAnswers, resumeStructure, judgeBullets, resumeHash, NEVER_REUSE };
+module.exports = {
+  dropContradicted, answerPool, reuseAnswers, resumeStructure, judgeBullets, resumeHash, NEVER_REUSE };
