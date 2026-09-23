@@ -138,6 +138,20 @@ async function initSchema() {
   `);
   await q(`CREATE INDEX IF NOT EXISTS idx_evidence_user ON evidence (user_email)`);
 
+  // Corrections. A resume, a bio and a pile of answers all get read at once,
+  // and the writing can land on a claim the candidate never made ("sold three
+  // companies"). These are the candidate's own short statements of what is
+  // true, and they outrank every other source in the prompts.
+  await q(`
+    CREATE TABLE IF NOT EXISTS facts (
+      id SERIAL PRIMARY KEY,
+      user_email TEXT NOT NULL,
+      text TEXT NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
+  await q(`CREATE INDEX IF NOT EXISTS idx_facts_user ON facts (user_email)`);
+
   // Small key/value store for settings that must outlive a deploy. The sourcing
   // schedule lived in logs/schedule.json on the ephemeral disk, so every deploy
   // reset it to disabled and silently stopped the nightly run.
@@ -713,6 +727,25 @@ async function deleteEvidence(userEmail, id) {
   await q(`DELETE FROM evidence WHERE id = $1 AND user_email = $2`, [id, userEmail]);
 }
 
+// ── Facts (corrections) ───────────────────────────────────────────────────────
+
+async function getFacts(userEmail) {
+  if (!userEmail) return [];
+  return q(`SELECT id, text, created_at FROM facts WHERE user_email = $1 ORDER BY created_at`, [userEmail]);
+}
+
+async function addFact(userEmail, text) {
+  const clean = String(text || '').trim().replace(/\s+/g, ' ').slice(0, 600);
+  if (!clean) return null;
+  const dupe = await q1(`SELECT id, text, created_at FROM facts WHERE user_email = $1 AND lower(text) = lower($2)`, [userEmail, clean]);
+  if (dupe) return dupe;
+  return q1(`INSERT INTO facts (user_email, text) VALUES ($1,$2) RETURNING id, text, created_at`, [userEmail, clean]);
+}
+
+async function deleteFact(userEmail, id) {
+  await q(`DELETE FROM facts WHERE id = $1 AND user_email = $2`, [id, userEmail]);
+}
+
 // ── Resume file ───────────────────────────────────────────────────────────────
 
 async function saveResumeFile(userEmail, filename, mime, buffer) {
@@ -1110,6 +1143,7 @@ async function getAccountExport(userEmail) {
     jobs: await q('SELECT * FROM jobs WHERE user_email=$1 ORDER BY found_at DESC', [owner]),
     kits: await q('SELECT id,url,data,created_at,updated_at FROM kits WHERE user_email=$1 ORDER BY updated_at DESC', [owner]),
     evidence: await q('SELECT question,answer,theme,job_url,created_at,updated_at FROM evidence WHERE user_email=$1 ORDER BY updated_at DESC', [owner]),
+    facts: await q('SELECT text,created_at FROM facts WHERE user_email=$1 ORDER BY created_at', [owner]),
     schedules: await q('SELECT hour,minute,frequency,enabled,sources,lookback_hours,auto_kits,last_run_at,updated_at FROM schedules WHERE user_email=$1', [owner]),
     runs: await q('SELECT id,date,run_at,sources,found,added,excluded,detail FROM runs WHERE user_email=$1 ORDER BY run_at DESC', [owner]),
     credit_history: await q('SELECT kind,amount,operation_id,created_at FROM credit_ledger WHERE user_email=$1 ORDER BY created_at DESC', [owner]),
@@ -1125,7 +1159,7 @@ async function deleteAccount(userEmail) {
   try {
     await client.query('BEGIN');
     await client.query('DELETE FROM operation_events WHERE operation_id IN (SELECT id FROM operations WHERE user_email=$1)', [owner]);
-    for (const table of ['user_activity','decisions','evidence','resume_files','schedules','runs','jobs','kits','profiles','purchases','api_keys','resume_structures','chat_messages','kit_shares','agent_connects','oauth_codes']) {
+    for (const table of ['user_activity','decisions','evidence','facts','resume_files','schedules','runs','jobs','kits','profiles','purchases','api_keys','resume_structures','chat_messages','kit_shares','agent_connects','oauth_codes']) {
       await client.query(`DELETE FROM ${table} WHERE user_email=$1`, [owner]);
     }
     // Feedback stays so the product can be fixed, but stops being theirs.
@@ -1213,6 +1247,7 @@ module.exports = {
   starterCredits, saveKit, getKit, findKit, getKitVersions, getKits, deleteKit, deleteKitsForUser, countKits,
   saveResumeFile, getResumeFile, getResumeFileMeta,
   getEvidence, addEvidenceQuestions, addAnsweredEvidence, setEvidenceAnswer, deleteEvidence,
+  getFacts, addFact, deleteFact,
   getSetting, setSetting,
   getSchedule, setSchedule, getDueSchedules, markScheduleRun, getAllEnabledSchedules,
   getAccountExport, deleteAccount,

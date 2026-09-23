@@ -17,7 +17,7 @@ export STRIPE_SECRET_KEY="sk_test_fake"
 export PORT="${AA_TEST_PORT:-$(node -e 'const s=require("net").createServer();s.listen(0,"127.0.0.1",()=>{console.log(s.address().port);s.close()})')}"
 export APP_ORIGIN="http://localhost:$PORT"
 export NODE_ENV=test
-export IMESSAGE_TESTERS="${IMESSAGE_TESTERS:-chat@test.local}"
+export IMESSAGE_TESTERS="${IMESSAGE_TESTERS:-chat@test.local,facts@test.local}"
 # Suites assume new accounts start empty; the starter grant has its own check.
 export STARTER_CREDITS="${STARTER_CREDITS:-0}"
 if [[ -z "${AA_CHROME:-}" && -x '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' ]]; then
@@ -41,7 +41,7 @@ done
 curl -sf --max-time 2 "$APP_ORIGIN/health" >/dev/null
 
 fail=0
-for t in ${AA_TEST_SUITES:-test/isolation.mjs test/kits-and-profiles.mjs test/evidence.mjs test/pages.mjs test/extension-ui.mjs test/source-ui.mjs test/background.cjs test/fast-kit.cjs test/ats-urls.cjs test/aeo.mjs test/agent-onboarding.mjs test/oauth.mjs test/demo.mjs test/url-prefix.mjs test/feedback.mjs test/imessage.mjs test/hardening.cjs}; do
+for t in ${AA_TEST_SUITES:-test/isolation.mjs test/kits-and-profiles.mjs test/evidence.mjs test/pages.mjs test/extension-ui.mjs test/source-ui.mjs test/background.cjs test/fast-kit.cjs test/ats-urls.cjs test/aeo.mjs test/agent-onboarding.mjs test/oauth.mjs test/demo.mjs test/url-prefix.mjs test/feedback.mjs test/facts.mjs test/imessage.mjs test/hardening.cjs}; do
   echo "═══ $t ═══"
   node "$t" || fail=1
 done

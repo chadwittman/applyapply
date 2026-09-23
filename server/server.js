@@ -58,7 +58,7 @@ for (const method of ['get','post','put','patch','delete']) {
     (req, res, next) => { try { Promise.resolve(handler(req,res,next)).catch(next); } catch (e) { next(e); } }));
 }
 const PORT = process.env.PORT || 5000;
-const VERSION = '0.50.0';
+const VERSION = '0.51.0';
 const IS_PRODUCTION = process.env.NODE_ENV === 'production';
 const APP_ORIGIN = process.env.APP_ORIGIN || 'http://localhost:5000';
 const ALLOWED_WEB_ORIGINS = new Set(
@@ -2172,6 +2172,17 @@ Numbers beat adjectives. Name the companies."></textarea>
   </div>
 </div>
 
+<div class="sec" id="factsSec">
+  <div class="sec-label">Corrections</div>
+  <div style="font-size:13px;color:#fff;margin-bottom:12px;line-height:1.7">One line each, about you. Every application, tailored resume and answer is written against these first, so they beat your resume, your bio and your saved answers. Use them to kill a claim that keeps showing up — "I have never sold a company" — or to state something true that your resume does not say.</div>
+  <div id="factsList"></div>
+  <div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap">
+    <input id="factText" maxlength="600" placeholder="I have never sold a company." style="flex:1 1 260px;padding:9px 11px;background:#0a0a0a;border:1px solid #333;color:#fff;font-family:inherit">
+    <button type="button" onclick="addFact()" style="padding:9px 16px;background:#fff;color:#000;border:none;font-weight:600;cursor:pointer;font-family:inherit">Add correction</button>
+  </div>
+  <div class="hint" id="factStatus" style="margin-top:8px;min-height:16px"></div>
+</div>
+
 <div class="sec" id="evidence">
   <div class="sec-label">Your answers</div>
   <div class="hint" style="margin-bottom:10px;line-height:1.7">Your resume was written for the roles you held. If you're targeting something different, the work that matters most is often missing from it entirely. These questions dig it out, and every answer feeds every future application and tailored resume.</div>
@@ -2276,6 +2287,34 @@ async function load(){
 load();
 loadInterview();
 showResumeFile();
+loadFacts();
+
+// Corrections: saved on their own, not with the profile form, so a correction
+// is in effect the moment it is typed rather than after a Save.
+async function loadFacts(){
+  const key=getKey();const list=document.getElementById('factsList');if(!key||!list)return;
+  const r=await fetch('/facts',{headers:{'x-api-key':key}});if(!r.ok)return;
+  const d=await r.json();
+  list.innerHTML=(d.facts||[]).map(function(f){
+    return '<div style="display:flex;gap:10px;align-items:flex-start;padding:8px 0;border-bottom:1px solid #1a1a1a;font-size:14px;color:#fff"><span style="flex:1;line-height:1.5">'+escHtml(f.text)+'</span><button type="button" data-id="'+escHtml(f.id)+'" onclick="removeFact(this.dataset.id)" style="padding:3px 8px;background:none;border:1px solid #333;color:#e5e5e5;cursor:pointer;font-family:inherit">Remove</button></div>';
+  }).join('');
+}
+async function addFact(){
+  const key=getKey();const input=document.getElementById('factText');const st=document.getElementById('factStatus');
+  const text=input.value.trim();
+  if(!key){st.textContent='Sign in first.';return;}
+  if(!text)return;
+  st.textContent='Saving…';
+  const r=await fetch('/facts',{method:'POST',headers:{'content-type':'application/json','x-api-key':key},body:JSON.stringify({text})});
+  const d=await r.json().catch(function(){return {};});
+  if(!r.ok){st.textContent=d.error||'Could not save that.';return;}
+  input.value='';st.textContent='Saved. Every application from here on is written against it.';loadFacts();
+}
+async function removeFact(id){
+  const key=getKey();if(!key)return;
+  await fetch('/facts/'+encodeURIComponent(id),{method:'DELETE',headers:{'x-api-key':key}});
+  document.getElementById('factStatus').textContent='';loadFacts();
+}
 
 function esc(t){return String(t==null?'':t).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
 
@@ -3170,7 +3209,7 @@ Logistics questions (start date or availability, office or in-person days, timel
   const prompt = `Generate a job application for ${candidateName} applying to this role.${noteInstruction}
 
 CANDIDATE BACKGROUND:
-${bio}${await evidenceBlock(userEmail)}
+${bio}${await evidenceBlock(userEmail)}${await factsBlock(userEmail)}
 
 CANDIDATE'S STATED SALARY EXPECTATION: ${salaryAsk || 'not specified — infer a reasonable ask from the role level and any range in the posting'}
 
@@ -3511,7 +3550,7 @@ Follow those decisions:
   const prompt = `Rewrite this candidate's resume experience for ${target}.
 
 ORIGINAL RESUME — the primary source of real facts (companies, titles, dates, numbers). Do not invent, merge, or drop any role. Do not invent a number, metric, or outcome that appears in neither the resume nor the additional evidence below:
-${profile.resume_text.slice(0, 6000)}${await evidenceBlock(userEmail)}
+${profile.resume_text.slice(0, 6000)}${await evidenceBlock(userEmail)}${await factsBlock(userEmail)}
 
 WHY THIS ROLE / WHAT TO EMPHASIZE (from an earlier pass on this same application):
 ${t.why_role || t.headline || 'No additional context — use judgment based on the role title.'}
@@ -3600,6 +3639,19 @@ app.post('/resume-tailor', requireCredits('resume'), async (req, res) => {
 
 // Interview answers are the candidate's own words about real work, so they are
 // safe to treat as source material — same standing as the resume, not invention.
+// Corrections the candidate wrote themselves. A resume plus a bio plus a pile
+// of answers can imply something that is not true, and once it is in one
+// generated kit it tends to survive into the next. These outrank every other
+// source, including the resume, and a claim they contradict must not be
+// written at all — not softened, not hedged.
+async function factsBlock(userEmail) {
+  if (!userEmail) return '';
+  const rows = await db.getFacts(userEmail).catch(() => []);
+  if (!rows.length) return '';
+  return `\n\nCORRECTIONS FROM THE CANDIDATE — these are true and they OVERRIDE every other source below, including the resume, the bio and the saved answers. Where a source implies something a correction denies, leave that claim out entirely rather than rewording it:\n` +
+    rows.map(r => `- ${r.text}`).join('\n');
+}
+
 async function evidenceBlock(userEmail) {
   if (!userEmail) return '';
   const rows = await db.getEvidence(userEmail, { answeredOnly: true }).catch(() => []);
@@ -3652,7 +3704,7 @@ RESUME:
 ${(profile.resume_text || '').slice(0, 5000) || '(none uploaded)'}
 
 BIO:
-${profile.bio || '(none)'}
+${profile.bio || '(none)'}${await factsBlock(userEmail)}
 
 ${asked.length ? `ALREADY ASKED — do not repeat these or ask a near-duplicate:\n${asked.map(a => `- ${a}`).join('\n')}` : ''}
 
@@ -3710,6 +3762,33 @@ app.delete('/interview/:id', async (req, res) => {
   const userEmail = reqUserEmail(req);
   if (!userEmail) return res.status(401).json({ error: 'Sign in required' });
   await db.deleteEvidence(userEmail, req.params.id);
+  res.json({ ok: true });
+});
+
+// ── Corrections ──────────────────────────────────────────────────────────────
+// One line each, free to add, and read by every generation afterwards. This is
+// how a candidate kills a claim the writing keeps making about them.
+
+app.get('/facts', async (req, res) => {
+  const userEmail = reqUserEmail(req);
+  if (!userEmail) return res.status(401).json({ error: 'Sign in required' });
+  res.json({ facts: await db.getFacts(userEmail) });
+});
+
+app.post('/facts', async (req, res) => {
+  const userEmail = reqUserEmail(req);
+  if (!userEmail) return res.status(401).json({ error: 'Sign in required' });
+  const text = String(req.body?.text || '').trim();
+  if (!text) return res.status(400).json({ error: 'text required' });
+  if (text.length > 600) return res.status(400).json({ error: 'Keep a correction under 600 characters — one fact per line.' });
+  const row = await db.addFact(userEmail, text);
+  res.json({ ok: true, fact: row });
+});
+
+app.delete('/facts/:id', async (req, res) => {
+  const userEmail = reqUserEmail(req);
+  if (!userEmail) return res.status(401).json({ error: 'Sign in required' });
+  await db.deleteFact(userEmail, req.params.id);
   res.json({ ok: true });
 });
 
@@ -4058,6 +4137,10 @@ app.get('/openapi.json', (req, res) => {
       '/cover-letter': { post: { summary: 'Write a full cover letter (costs ' + CREDIT_COSTS.cover_letter + ' credits)', requestBody: json('The kit', { appId: { type: 'string' } }, ['appId']), responses: ok('The letter') } },
       '/interview': { get: { summary: 'Everything the person has told us about their work', responses: ok('Saved answers') } },
       '/interview/context': { post: { summary: "Save the person's answer to a question", requestBody: json('Question and answer', { question: { type: 'string' }, answer: { type: 'string' } }, ['question', 'answer']), responses: ok('Saved') } },
+      '/facts': {
+        get: { summary: "The person's corrections: statements about themselves that override their resume, bio and saved answers everywhere", responses: ok('Corrections') },
+        post: { summary: 'Record a correction, applied to every kit, resume and answer written afterwards', requestBody: json('The correction', { text: { type: 'string' } }, ['text']), responses: ok('Saved') },
+      },
       '/feedback': { post: { summary: 'Report something broken or missing in applyapply', requestBody: json('The report', { message: { type: 'string' } }, ['message']), responses: ok('Received') } },
     },
   });

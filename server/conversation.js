@@ -15,6 +15,8 @@ const HELP = [
   '• search: look for new roles now',
   '• skip 2 / applied 1: update a match',
   '• rewrite: rewrite the resume for your last kit with your answers',
+  '• remember <fact>: a correction every future application is written against',
+  '• corrections: what I have on record (forget 2 removes one)',
   '• redo: write the last kit again from scratch',
   '• status · credits · help',
 ].join('\n');
@@ -146,7 +148,7 @@ module.exports = function conversation({ db, port, signToken, origin, kitLink, r
     // offer starts the questions; anything else after a question is its answer.
     const prompt = await db.lastChatPrompt(email, ['resume_offer', 'gap_question']);
     const link = findJobLink(message);
-    const command = /^(help|\?|matches|jobs|new|search|status|credits|rewrite|stop|skip \d|applied \d|\d$)/.test(lower);
+    const command = /^(help|\?|matches|jobs|new|search|status|credits|rewrite|stop|skip \d|applied \d|remember\b|correction\b|corrections\b|forget \d|\d$)/.test(lower);
     if (prompt?.meta?.kind === 'resume_offer' && !prompt.meta.done && /^(y|yes|yeah|yep|sure|ok|okay|go|let'?s go)\b/.test(lower)) {
       if (!await db.claimChatPrompt(prompt.id)) return;
       return askGap(email, { ...prompt.meta, open: prompt.meta.gaps, answered: 0 });
@@ -181,6 +183,29 @@ module.exports = function conversation({ db, port, signToken, origin, kitLink, r
       const last = await db.lastChatPrompt(email, ['kit', 'resume_offer', 'gap_question']);
       if (!last?.meta?.url) return say(email, 'Send me the job link and I\'ll write it fresh.');
       return writeKit(email, last.meta.url, { force: true });
+    }
+    // Corrections. Said once, applied to everything afterwards: this is how
+    // someone kills a claim the writing keeps making about them.
+    if (/^corrections?$/.test(lower)) {
+      const r = await api(email, 'GET', '/facts');
+      const facts = r.data?.facts || [];
+      if (!facts.length) return say(email, 'Nothing on record yet. Text "remember: I have never sold a company" and I\'ll apply it to everything.');
+      return say(email, 'What I have on record:\n' + facts.map((f, i) => `${i + 1}. ${f.text}`).join('\n') + '\n\nText "forget 1" to drop one.');
+    }
+    // "corrections" alone is the list, handled above; "correction: ..." records one.
+    const remember = message.match(/^(?:remember|correction)\b\s*[:,-]?\s+([\s\S]+)/i);
+    if (remember) {
+      const r = await api(email, 'POST', '/facts', { text: remember[1].trim() });
+      if (r.status !== 200) return say(email, r.data?.error || 'I couldn\'t save that one.');
+      return say(email, 'Got it. Every kit, resume and answer from here on is written against that.');
+    }
+    const forget = lower.match(/^forget\s+(\d+)$/);
+    if (forget) {
+      const r = await api(email, 'GET', '/facts');
+      const fact = (r.data?.facts || [])[Number(forget[1]) - 1];
+      if (!fact) return say(email, 'Text "corrections" to see the list, then pick a number.');
+      await api(email, 'DELETE', '/facts/' + fact.id, null);
+      return say(email, `Dropped: ${fact.text}`);
     }
     if (/^(help|\?)$/.test(lower)) return say(email, HELP);
     if (/^(matches|jobs|new)\b/.test(lower)) return matches(email);

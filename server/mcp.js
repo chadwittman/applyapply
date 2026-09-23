@@ -45,6 +45,9 @@ const TOOLS = [
   { name: 'rewrite_resume', description: 'Rewrite the tailored resume for a job using everything the person has told us, and report the new match. Costs credits (see list_sources pricing in get_account). Ask them first.', inputSchema: { type: 'object', required: ['url'], properties: { url: str('The job URL') } } },
   { name: 'list_saved_answers', description: 'Everything the person has told us about their work, saved from earlier questions. Free. Read this before asking them something they have already answered.', inputSchema: { type: 'object', properties: {} } },
   { name: 'send_feedback', description: 'Report something broken or missing in applyapply (a job link that produced a bad kit, a wrong question). It reaches the people building it.', inputSchema: { type: 'object', required: ['message'], properties: { message: str('What happened, and what was expected') } } },
+  { name: 'list_corrections', description: 'The user\'s corrections: short statements about themselves that override their resume, bio and saved answers in every piece of writing. Read these before writing anything about the user.', inputSchema: { type: 'object', properties: {} } },
+  { name: 'add_correction', description: 'Record a correction the user states about themselves, e.g. that a claim appearing in their applications is not true. It applies to every kit, tailored resume and answer from then on. Use it whenever the user contradicts something in their own materials.', inputSchema: { type: 'object', required: ['text'], properties: { text: str('One plain sentence in the user\'s own terms, e.g. "I have never sold a company."') } } },
+  { name: 'remove_correction', description: 'Drop a correction by its id, from list_corrections.', inputSchema: { type: 'object', required: ['id'], properties: { id: str('The correction id') } } },
   { name: 'set_job_status', description: 'Move a pipeline job to a status, e.g. applied after the user submits.', inputSchema: { type: 'object', required: ['url', 'status'], properties: {
     url: str('The job URL as it appears in the pipeline'), status: str('New status', { enum: ['new', 'reviewed', 'applying', 'applied', 'skipped', 'rejected'] }),
   } } },
@@ -124,6 +127,9 @@ module.exports = function mountMcp(app, { db, port, limiter, sourceNames }) {
     },
     list_saved_answers: req => call(req, 'GET', '/interview'),
     send_feedback: (req, args) => call(req, 'POST', '/feedback', { message: args.message, page: 'mcp' }),
+    list_corrections: req => call(req, 'GET', '/facts'),
+    add_correction: (req, args) => call(req, 'POST', '/facts', { text: args.text }),
+    remove_correction: (req, args) => call(req, 'DELETE', '/facts/' + encodeURIComponent(args.id)),
   };
 
   async function handle(req, msg) {
