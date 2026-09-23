@@ -156,8 +156,11 @@ module.exports = function mountMcp(app, { db, port, limiter, sourceNames }) {
 
   app.post('/mcp', limiter, async (req, res) => {
     if (!req.apiKeyEmail) {
-      res.setHeader('WWW-Authenticate', 'Bearer realm="applyapply", error="invalid_token"');
-      return res.status(401).json({ jsonrpc: '2.0', id: null, error: { code: -32001, message: 'Create an API key at https://applyapply.xyz/setup and send it as Authorization: Bearer <key>' } });
+      // RFC 9728: point at the metadata so a connector UI can start its sign-in
+      // instead of asking the person to paste a key.
+      const origin = `${req.protocol}://${req.get('host')}`;
+      res.setHeader('WWW-Authenticate', `Bearer realm="applyapply", error="invalid_token", resource_metadata="${origin}/.well-known/oauth-protected-resource"`);
+      return res.status(401).json({ jsonrpc: '2.0', id: null, error: { code: -32001, message: `Sign in through ${origin}/.well-known/oauth-protected-resource, or create an API key at ${origin}/setup and send it as Authorization: Bearer <key>` } });
     }
     const batch = Array.isArray(req.body);
     const replies = (await Promise.all((batch ? req.body : [req.body]).map(m => handle(req, m)))).filter(Boolean);

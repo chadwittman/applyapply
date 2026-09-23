@@ -58,7 +58,7 @@ for (const method of ['get','post','put','patch','delete']) {
     (req, res, next) => { try { Promise.resolve(handler(req,res,next)).catch(next); } catch (e) { next(e); } }));
 }
 const PORT = process.env.PORT || 5000;
-const VERSION = '0.48.0';
+const VERSION = '0.49.0';
 const IS_PRODUCTION = process.env.NODE_ENV === 'production';
 const APP_ORIGIN = process.env.APP_ORIGIN || 'http://localhost:5000';
 const ALLOWED_WEB_ORIGINS = new Set(
@@ -359,6 +359,8 @@ app.get('/robots.txt', (req, res) => {
     'Disallow: /login',
     'Allow: /feedback',
     'Disallow: /imessage',
+    'Disallow: /oauth/',
+    'Disallow: /connect',
     'Disallow: /auth/',
     'Disallow: /checkout',
     'Disallow: /admin/',
@@ -3858,6 +3860,8 @@ const requireSession = (req, res) => {
   return email;
 };
 
+require('./oauth')(app, { db, origin: APP_ORIGIN.replace(/\/$/, ''), limiter: apiLimiter, escapeHtml, scriptJSON,
+  page: (res, options) => legalPage(res, options), requireSession });
 const { TOOLS: MCP_TOOLS } = require('./mcp')(app, { db, port: PORT, limiter: apiLimiter, sourceNames: () => ACTIVE_SOURCES.map(s => s.name) });
 
 app.get('/agents', (req, res) => {
@@ -3881,6 +3885,7 @@ curl -X POST ${origin}/agent/token -H "Content-Type: application/json" -d '{"cod
 <h2>2. Set up the account</h2>
 <p>New accounts start with free credits. Call <code>get_account</code> first: it says what is missing. A resume matters most, since every tailored resume is built from it, so send its full text with <code>update_profile</code> along with target roles and location. Buying more credits needs a card, so an agent cannot do it: when the balance runs out the API answers 402 with a link for the person.</p>
 <h2>3. Connect over MCP</h2>
+<p>In an assistant with a connectors screen (Claude, ChatGPT, Grok and others), add a custom connector and paste <code>${origin}/mcp</code>. It signs you in here, you approve once, and its tools appear. Nothing to copy.</p>
 <p>Claude Code:</p>
 ${code(`claude mcp add --transport http applyapply ${origin}/mcp --header "Authorization: Bearer aa_live_..."`)}
 <p>Any client that takes an MCP config file:</p>
@@ -3977,7 +3982,7 @@ app.get('/llms.txt', (req, res) => {
 
 ## For agents
 
-An agent can request its own key: POST ${origin}/agent/connect returns a short code, the person approves it at ${origin}/connect, and POST ${origin}/agent/token returns the key (a person can also create one at ${origin}/setup). Then use MCP at ${origin}/mcp (bearer token) or the HTTP API at ${origin}/openapi.json. Buying credits needs a card and stays with the person; new accounts start with free credits. Tools cover searching current listings, running a job search, writing and fetching kits, rewriting resumes, saving the person's answers, and the pipeline.
+Assistants with a connectors screen (Claude, ChatGPT, Grok) can add ${origin}/mcp directly: it runs OAuth 2.1 with dynamic client registration, so the person signs in and approves once. A terminal agent can instead request its own key: POST ${origin}/agent/connect returns a short code, the person approves it at ${origin}/connect, and POST ${origin}/agent/token returns the key (a person can also create one at ${origin}/setup). Then use MCP at ${origin}/mcp (bearer token) or the HTTP API at ${origin}/openapi.json. Buying credits needs a card and stays with the person; new accounts start with free credits. Tools cover searching current listings, running a job search, writing and fetching kits, rewriting resumes, saving the person's answers, and the pipeline.
 
 ## Pages
 

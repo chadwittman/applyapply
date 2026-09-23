@@ -251,6 +251,29 @@ async function initSchema() {
   `);
   await q(`CREATE INDEX IF NOT EXISTS idx_chat_messages_user ON chat_messages (user_email, id)`);
 
+  // Assistants that install applyapply through their own connector UI: each
+  // registers itself, then the person approves it in an OAuth sign-in. The
+  // access token they receive is an ordinary personal API key.
+  await q(`
+    CREATE TABLE IF NOT EXISTS oauth_clients (
+      client_id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      redirect_uris JSONB NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
+  await q(`
+    CREATE TABLE IF NOT EXISTS oauth_codes (
+      code TEXT PRIMARY KEY,
+      client_id TEXT NOT NULL,
+      user_email TEXT NOT NULL,
+      redirect_uri TEXT NOT NULL,
+      code_challenge TEXT NOT NULL,
+      api_key TEXT NOT NULL,
+      expires_at TIMESTAMPTZ NOT NULL
+    )
+  `);
+
   // An agent asking to be connected: it shows the person a short code, they
   // approve it while signed in, and the agent collects its key once.
   await q(`
@@ -862,6 +885,36 @@ async function revokeApiKey(userEmail, id) {
   return rows.length > 0;
 }
 
+// ── Assistants installing applyapply (OAuth) ──────────────────────────────────
+
+async function registerOauthClient(name, redirectUris) {
+  const clientId = 'aac_' + require('crypto').randomBytes(16).toString('hex');
+  await q(`INSERT INTO oauth_clients (client_id, name, redirect_uris) VALUES ($1,$2,$3)`,
+    [clientId, String(name || 'An assistant').slice(0, 120), JSON.stringify(redirectUris)]);
+  return { clientId, name, redirectUris };
+}
+async function getOauthClient(clientId) {
+  return q1(`SELECT client_id, name, redirect_uris FROM oauth_clients WHERE client_id=$1`, [String(clientId || '').slice(0, 100)]);
+}
+// The code carries the key the assistant will get, so nothing is issued until
+// it proves it started the request (PKCE) at the token endpoint.
+async function createOauthCode({ clientId, userEmail, redirectUri, codeChallenge, apiKey }) {
+  const code = require('crypto').randomBytes(24).toString('base64url');
+  await q(`INSERT INTO oauth_codes (code, client_id, user_email, redirect_uri, code_challenge, api_key, expires_at)
+    VALUES ($1,$2,$3,$4,$5,$6, NOW() + INTERVAL '5 minutes')`,
+  [code, clientId, requireOwner(userEmail), redirectUri, codeChallenge, apiKey]);
+  return code;
+}
+// Read first, spend only on success: a client that retries after a network
+// hiccup should not find its code already burned.
+async function peekOauthCode(code) {
+  return q1(`SELECT code, client_id, user_email, redirect_uri, code_challenge, api_key FROM oauth_codes WHERE code=$1 AND expires_at > NOW()`, [String(code || '').slice(0, 200)]);
+}
+async function spendOauthCode(code) {
+  const row = await q1(`DELETE FROM oauth_codes WHERE code=$1 AND expires_at > NOW() RETURNING api_key`, [String(code || '').slice(0, 200)]);
+  return !!row;
+}
+
 // ── Connecting an agent ───────────────────────────────────────────────────────
 
 const CONNECT_MINUTES = 15;
@@ -988,6 +1041,7 @@ async function pruneStorage() {
     [String(CURRENT_POSTED_DAYS), String(CURRENT_SEEN_DAYS)])).length;
   counts.source_cache = (await q(`DELETE FROM source_cache WHERE fetched_at < NOW() - INTERVAL '3 days' RETURNING 1`)).length;
   counts.agent_connects = (await q(`DELETE FROM agent_connects WHERE expires_at < NOW() RETURNING 1`)).length;
+  counts.oauth_codes = (await q(`DELETE FROM oauth_codes WHERE expires_at < NOW() RETURNING 1`)).length;
   counts.operation_events = (await q(`DELETE FROM operation_events WHERE created_at < NOW() - INTERVAL '30 days' RETURNING 1`)).length;
   return counts;
 }
@@ -1071,7 +1125,7 @@ async function deleteAccount(userEmail) {
   try {
     await client.query('BEGIN');
     await client.query('DELETE FROM operation_events WHERE operation_id IN (SELECT id FROM operations WHERE user_email=$1)', [owner]);
-    for (const table of ['user_activity','decisions','evidence','resume_files','schedules','runs','jobs','kits','profiles','purchases','api_keys','resume_structures','chat_messages','kit_shares','agent_connects']) {
+    for (const table of ['user_activity','decisions','evidence','resume_files','schedules','runs','jobs','kits','profiles','purchases','api_keys','resume_structures','chat_messages','kit_shares','agent_connects','oauth_codes']) {
       await client.query(`DELETE FROM ${table} WHERE user_email=$1`, [owner]);
     }
     // Feedback stays so the product can be fixed, but stops being theirs.
@@ -1164,7 +1218,7 @@ module.exports = {
   getAccountExport, deleteAccount,
   roleKeyFor, cacheKeyFor, getCachedSources, putCachedSource,
   upsertListings, getListings, countListings, getIngestState, recordIngest, withIngestLock,
-  createApiKey, listApiKeys, revokeApiKey, emailForApiKey, createAgentConnect, getAgentConnect, approveAgentConnect, claimAgentConnect, getResumeStructure, saveResumeStructure, pruneStorage, storageStats,
+  createApiKey, listApiKeys, revokeApiKey, emailForApiKey, registerOauthClient, getOauthClient, createOauthCode, peekOauthCode, spendOauthCode, createAgentConnect, getAgentConnect, approveAgentConnect, claimAgentConnect, getResumeStructure, saveResumeStructure, pruneStorage, storageStats,
   kitShareToken, kitForShare, addFeedback, feedbackSeenToday,
   resetTestKits, addChatMessage, getChatMessages, lastChatMeta, lastChatPrompt, claimChatPrompt, updateChatMeta, hasChatHistory, clearChat,
   getUser, getOrCreateUser, addUserCredits, deductUserCredits, chargeCredits, countVoiceNotesToday,
