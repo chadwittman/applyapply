@@ -26,7 +26,8 @@ const { publicFetch } = require('./public-fetch');
 const { SYSTEM, applicationOutput, mappingsOutput, resumeOutput } = require('./ai-output');
 const fastKit = require('./fast-kit');
 const fieldMap = require('./field-map');
-const { FUNCTION_NAMES, BANDS, targetPreferences, classify } = require('./roles');
+const { FUNCTION_NAMES, BANDS, targetPreferences } = require('./roles');
+const { classifierFor } = require('./title-class');
 const { evaluateResumeMatch } = require('./typesafe');
 const scriptJSON = value => JSON.stringify(value).replace(/</g, '\\u003c');
 const usage = require('./usage');
@@ -60,7 +61,7 @@ for (const method of ['get','post','put','patch','delete']) {
     (req, res, next) => { try { Promise.resolve(handler(req,res,next)).catch(next); } catch (e) { next(e); } }));
 }
 const PORT = process.env.PORT || 5000;
-const VERSION = '0.55.0';
+const VERSION = '0.56.0';
 const IS_PRODUCTION = process.env.NODE_ENV === 'production';
 const APP_ORIGIN = process.env.APP_ORIGIN || 'http://localhost:5000';
 const ALLOWED_WEB_ORIGINS = new Set(
@@ -3231,17 +3232,27 @@ function reqUserEmail(req) {
 
 // A job row carries what its title is, so the pipeline can filter by function
 // and level without a second request or a classifier in the browser.
-const withClass = rows => rows.map(j => {
-  const c = classify(j.role || '');
-  return { ...j, fns: c.functions, band: c.seniority };
-});
+let classCache = { at: 0, map: new Map() };
+async function titleClasses() {
+  if (Date.now() - classCache.at < 60000) return classCache.map;
+  const map = await db.getTitleClasses().catch(() => classCache.map);
+  classCache = { at: Date.now(), map };
+  return map;
+}
+const withClass = async rows => {
+  const place = classifierFor(await titleClasses());
+  return rows.map(j => {
+    const c = place(j.role || '');
+    return { ...j, fns: c.functions, band: c.seniority };
+  });
+};
 
 app.get('/sourced', async (req, res) => {
   const userEmail = reqUserEmail(req);
   if (!userEmail) return res.status(401).json({ error: 'Sign in required' });
   try {
     const status = req.query.status || null;
-    res.json(withClass(await db.getJobs(status, 200, userEmail)));
+    res.json(await withClass(await db.getJobs(status, 200, userEmail)));
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -3278,7 +3289,7 @@ app.get('/runs/:id/jobs', async (req, res) => {
   const userEmail = reqUserEmail(req);
   if (!userEmail) return res.status(401).json({ error: 'Sign in required' });
   try {
-    res.json(withClass(await db.getJobsForRun(req.params.id, userEmail)));
+    res.json(await withClass(await db.getJobsForRun(req.params.id, userEmail)));
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -5952,7 +5963,7 @@ app.get('/pipeline', async (req, res) => {
   const allJobs = userEmail ? await db.getJobs(null, 2000, userEmail) : [];
   // Each row carries what its title is, so the page can filter by function and
   // level without asking the server again.
-  const jobsJson = scriptJSON(withClass(allJobs));
+  const jobsJson = scriptJSON(await withClass(allJobs));
 
   res.send(`<!DOCTYPE html><html><head><meta charset="utf-8">${metaHead({title:'Pipeline — applyapply', desc:'Everything sourced for you, and what is left to work through.', path:'/pipeline', noindex:true})}
 <style>

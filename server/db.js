@@ -220,6 +220,18 @@ async function initSchema() {
     )
   `);
   await q(`CREATE INDEX IF NOT EXISTS idx_listings_source_posted ON listings (source, COALESCE(posted_at, first_seen) DESC)`);
+  // What a job title is, decided once and kept. Titles repeat across thousands
+  // of postings, so this is the difference between classifying every listing
+  // on every run and classifying each distinct wording exactly once.
+  await q(`
+    CREATE TABLE IF NOT EXISTS title_classes (
+      title_key TEXT PRIMARY KEY,
+      functions TEXT NOT NULL DEFAULT '',
+      band TEXT,
+      decided_by TEXT NOT NULL DEFAULT 'rules',
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
   // The candidate's resume split into roles and bullets, verbatim, keyed by a
   // hash of the resume text so a new upload rebuilds it.
   await q(`
@@ -750,6 +762,35 @@ async function deleteFact(userEmail, id) {
   await q(`DELETE FROM facts WHERE id = $1 AND user_email = $2`, [id, userEmail]);
 }
 
+
+// ── Title classes ─────────────────────────────────────────────────────────────
+
+async function getTitleClasses() {
+  const rows = await q(`SELECT title_key, functions, band, decided_by FROM title_classes`);
+  return new Map(rows.map(r => [r.title_key, { functions: r.functions ? r.functions.split(',') : [], band: r.band || null, decidedBy: r.decided_by }]));
+}
+
+async function saveTitleClasses(entries) {
+  for (const e of entries) {
+    await q(`INSERT INTO title_classes (title_key, functions, band, decided_by) VALUES ($1,$2,$3,$4)
+             ON CONFLICT (title_key) DO UPDATE SET functions = EXCLUDED.functions, band = EXCLUDED.band, decided_by = EXCLUDED.decided_by`,
+      [e.key, (e.functions || []).join(','), e.band || null, e.decidedBy || 'rules']);
+  }
+  return entries.length;
+}
+
+// Distinct titles in the ledger that nothing has decided on yet.
+async function unclassifiedTitles(limit = 4000) {
+  // Newest wording first. A plain DISTINCT with a LIMIT returns the same rows
+  // every run, so once the ledger outgrows the limit the titles arriving today
+  // would never be reached.
+  const rows = await q(`
+    SELECT role FROM (
+      SELECT role, MAX(COALESCE(posted_at, first_seen)) AS seen FROM listings WHERE role <> '' GROUP BY role
+    ) t ORDER BY seen DESC NULLS LAST LIMIT $1`, [limit]);
+  return rows.map(r => r.role);
+}
+
 // ── Resume file ───────────────────────────────────────────────────────────────
 
 async function saveResumeFile(userEmail, filename, mime, buffer) {
@@ -1256,7 +1297,7 @@ module.exports = {
   getSchedule, setSchedule, getDueSchedules, markScheduleRun, getAllEnabledSchedules,
   getAccountExport, deleteAccount,
   roleKeyFor, cacheKeyFor, getCachedSources, putCachedSource,
-  upsertListings, getListings, countListings, getIngestState, recordIngest, withIngestLock,
+  upsertListings, getListings, countListings, getTitleClasses, saveTitleClasses, unclassifiedTitles, getIngestState, recordIngest, withIngestLock,
   createApiKey, listApiKeys, revokeApiKey, emailForApiKey, registerOauthClient, getOauthClient, createOauthCode, peekOauthCode, spendOauthCode, createAgentConnect, getAgentConnect, approveAgentConnect, claimAgentConnect, getResumeStructure, saveResumeStructure, pruneStorage, storageStats,
   kitShareToken, kitForShare, addFeedback, feedbackSeenToday,
   resetTestKits, addChatMessage, getChatMessages, lastChatMeta, lastChatPrompt, claimChatPrompt, updateChatMeta, hasChatHistory, clearChat,

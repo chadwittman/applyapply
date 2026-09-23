@@ -148,17 +148,17 @@ function targetPreferences(profile) {
 // Recall is set by the function and the level. An exact title the person asked
 // for always gets through, whatever the classifier thinks, so the list stays a
 // safety valve rather than a cage.
-function targetMatcher(profile) {
+function targetMatcher(profile, classifier = classify) {
   const prefs = targetPreferences(profile);
   const titles = roleMatcher(prefs.titles);
   const test = title => {
     if (titles.test(title)) return true;
     if (!prefs.functions.length) return false;
-    const c = classify(title);
+    const c = classifier(title);
     if (!c.functions.some(f => prefs.functions.includes(f))) return false;
     return !prefs.bands.length || prefs.bands.includes(c.seniority);
   };
-  return { ...prefs, test, classify };
+  return { ...prefs, test, classify: classifier };
 }
 
 module.exports.classify = classify;

@@ -7,6 +7,7 @@ const fs = require('fs');
 const path = require('path');
 const { saveSourceRun, pool, getSeenUrls, getProfileByUserEmail, cacheKeyFor, roleKeyFor, getCachedSources, putCachedSource,
   upsertListings, getListings, countListings, getIngestState, recordIngest, withIngestLock, pruneStorage } = require('./server/db');
+const dbModule = require('./server/db');
 const { FEEDS, fetchFeed } = require('./server/feeds');
 const { canonicalUrl } = require('./server/posting');
 const { publicFetch } = require('./server/public-fetch');
@@ -875,6 +876,12 @@ async function ingestAll({ force = false } = {}) {
   for (const name of LEDGER_SOURCES) {
     try { await ingestSource(name, { force }); } catch { failures++; }
   }
+  // Decide the new titles once, here, where it is a background job nobody is
+  // waiting on. Every search afterwards reads the decision.
+  try {
+    const { classifyNewTitles } = require('./server/title-class');
+    await classifyNewTitles(dbModule, loadTypeSafeKey(), await dbModule.unclassifiedTitles(), { log });
+  } catch (e) { log('   title classification skipped: ' + e.message); }
   try { const pruned = await pruneStorage(); log('   pruned ' + JSON.stringify(pruned)); }
   catch (e) { log('   prune failed: ' + e.message); }
   if (failures === LEDGER_SOURCES.length) throw new Error('Every source failed to ingest');
@@ -902,7 +909,9 @@ async function main() {
     // the exact titles they thought to type. An explicit title still always
     // gets through; JAA_TARGET_ROLES (the one-off role picker) still wins.
     if (!process.env.JAA_TARGET_ROLES && profile) {
-      const matcher=targetMatcher(profile);
+      const { classifierFor }=require('./server/title-class');
+      const classes=await dbModule.getTitleClasses().catch(()=>new Map());
+      const matcher=targetMatcher(profile, classifierFor(classes));
       if (matcher.functions.length || profile.target_roles) {
         ROLE_TITLES=profile.target_roles || matcher.functions.join(', ');
         ROLE_RE=matcher;
