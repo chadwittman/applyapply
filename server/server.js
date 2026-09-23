@@ -26,6 +26,7 @@ const { publicFetch } = require('./public-fetch');
 const { SYSTEM, applicationOutput, mappingsOutput, resumeOutput } = require('./ai-output');
 const fastKit = require('./fast-kit');
 const fieldMap = require('./field-map');
+const { FUNCTION_NAMES, BANDS, targetPreferences, classify } = require('./roles');
 const { evaluateResumeMatch } = require('./typesafe');
 const scriptJSON = value => JSON.stringify(value).replace(/</g, '\\u003c');
 const usage = require('./usage');
@@ -59,7 +60,7 @@ for (const method of ['get','post','put','patch','delete']) {
     (req, res, next) => { try { Promise.resolve(handler(req,res,next)).catch(next); } catch (e) { next(e); } }));
 }
 const PORT = process.env.PORT || 5000;
-const VERSION = '0.54.0';
+const VERSION = '0.55.0';
 const IS_PRODUCTION = process.env.NODE_ENV === 'production';
 const APP_ORIGIN = process.env.APP_ORIGIN || 'http://localhost:5000';
 const ALLOWED_WEB_ORIGINS = new Set(
@@ -1893,7 +1894,12 @@ app.get('/profile', async (req, res) => {
   if (!auth) return res.status(401).json({ error: 'Sign in required' });
   if (auth.type === 'local') return res.json(isLocalMode(req) ? LOCAL_PROFILE : {});
   const profile = await getProfileByUserEmail(auth.email);
-  res.json(profile ? Object.fromEntries(DB_PROFILE_FIELDS.map(k => [k,profile[k] || ''])) : {});
+  if (!profile) return res.json({});
+  const fields = Object.fromEntries(DB_PROFILE_FIELDS.map(k => [k, profile[k] || '']));
+  // What the saved titles imply, for an account that predates function
+  // targeting. Shown as a starting point, never written without a save.
+  const derived = targetPreferences(profile);
+  res.json({ ...fields, ...(derived.derived ? { derived_functions: derived.functions.join(', '), derived_seniority: derived.bands.join(', ') } : {}) });
 });
 
 app.post('/profile', async (req, res) => {
@@ -2204,25 +2210,25 @@ Numbers beat adjectives. Name the companies."></textarea>
 
 <section class="panel" id="panel-search" hidden>
   <div class="grp">
-    <div class="grp-label">Target roles</div>
+    <div class="grp-label">What to search for</div>
     <div class="field">
-      <label>Career type</label>
-      <select id="career_type">
-        <option value="">— select —</option>
-        <option value="product">Product (Head of Product, PM, CPO)</option>
-        <option value="growth">Growth (Head of Growth, Growth PM, GTM)</option>
-        <option value="engineering">Engineering (Head of Eng, Staff Eng, CTO)</option>
-        <option value="design">Design (Head of Design, Product Design)</option>
-        <option value="marketing">Marketing (Head of Marketing, CMO)</option>
-        <option value="operations">Operations (COO, Head of Ops)</option>
-        <option value="sales">Sales (VP Sales, Head of Sales)</option>
-        <option value="data">Data / Analytics (Head of Data, Staff DS)</option>
-      </select>
+      <label>Functions</label>
+      <div class="role-pick" id="functionPick"><button type="button" class="role-pill" data-fn="product" onclick="togglePick(this,'target_functions')">Product management</button><button type="button" class="role-pill" data-fn="growth" onclick="togglePick(this,'target_functions')">Growth</button><button type="button" class="role-pill" data-fn="marketing" onclick="togglePick(this,'target_functions')">Marketing</button><button type="button" class="role-pill" data-fn="design" onclick="togglePick(this,'target_functions')">Design</button><button type="button" class="role-pill" data-fn="engineering" onclick="togglePick(this,'target_functions')">Engineering</button><button type="button" class="role-pill" data-fn="data" onclick="togglePick(this,'target_functions')">Data &amp; analytics</button><button type="button" class="role-pill" data-fn="operations" onclick="togglePick(this,'target_functions')">Operations</button><button type="button" class="role-pill" data-fn="sales" onclick="togglePick(this,'target_functions')">Sales</button></div>
+      <input id="target_functions" type="hidden"/>
     </div>
     <div class="field">
-      <label>Titles the agent searches for</label>
+      <label>Levels</label>
+      <div class="role-pick" id="seniorityPick"><button type="button" class="role-pill" data-fn="ic" onclick="togglePick(this,'target_seniority')">Individual contributor</button><button type="button" class="role-pill" data-fn="senior" onclick="togglePick(this,'target_seniority')">Senior / Staff</button><button type="button" class="role-pill" data-fn="lead" onclick="togglePick(this,'target_seniority')">Lead / Manager</button><button type="button" class="role-pill" data-fn="director" onclick="togglePick(this,'target_seniority')">Director / Head</button><button type="button" class="role-pill" data-fn="exec" onclick="togglePick(this,'target_seniority')">VP and above</button></div>
+      <input id="target_seniority" type="hidden"/>
+      <div class="hint" id="levelHint"></div>
+    </div>
+  </div>
+  <div class="grp">
+    <div class="grp-label">Titles to prioritise <span style="font-weight:400;text-transform:none;letter-spacing:0;opacity:.7">optional</span></div>
+    <div class="field">
       <div class="role-pick">${PRESET_ROLES.map(r => `<button type="button" class="role-pill" onclick="toggleRole(this)">${r}</button>`).join('')}</div>
       <input id="target_roles" placeholder="Head of Product, VP of Product, Founding PM"/>
+      <div class="hint">These always reach you, whatever the levels above say. Leave it empty and the functions decide.</div>
     </div>
   </div>
   <div class="grp">
@@ -2315,7 +2321,7 @@ Numbers beat adjectives. Name the companies."></textarea>
 </div>
 
 <script>
-const FIELDS=['first_name','last_name','email','phone','location','work_authorization','sponsorship','linkedin','github','twitter','website','current_employer','school','salary','bio','career_type','target_roles','location_pref','search_mode','resume_text'];
+const FIELDS=['first_name','last_name','email','phone','location','work_authorization','sponsorship','linkedin','github','twitter','website','current_employer','school','salary','bio','career_type','target_roles','target_functions','target_seniority','location_pref','search_mode','resume_text'];
 function getKey(){
   const params=new URLSearchParams(location.search);
   return params.get('token')||localStorage.getItem('aa_session')||'';
@@ -2371,7 +2377,14 @@ async function load(){
     const p=await r.json();
     authEl.textContent=p.email?'Signed in as '+p.email:'Signed in';
     for(const f of FIELDS)setField(f,p[f]);
+    // An account from before functions existed still has titles: show what
+    // those imply, so the tab is never blank and the search never narrows.
+    if(!document.getElementById('target_functions').value && p.derived_functions)
+      document.getElementById('target_functions').value=p.derived_functions;
+    if(!document.getElementById('target_seniority').value && p.derived_seniority)
+      document.getElementById('target_seniority').value=p.derived_seniority;
     syncRolePills();
+    syncPicks();
   }catch(e){authEl.textContent='Could not load profile.';}
 }
 
@@ -2407,6 +2420,28 @@ function toggleRole(btn){
   input.value=picked.concat(custom).join(', ');
   markDirty();
 }
+// Functions and levels are pill sets backed by a hidden comma list, so they
+// save with the rest of the profile and need no separate plumbing.
+function togglePick(btn,fieldId){
+  btn.classList.toggle('on');
+  const picked=[].slice.call(document.querySelectorAll('#'+(fieldId==='target_functions'?'functionPick':'seniorityPick')+' .role-pill.on')).map(function(b){return b.dataset.fn;});
+  document.getElementById(fieldId).value=picked.join(', ');
+  markDirty();
+  paintLevelHint();
+}
+function syncPicks(){
+  for (const [fieldId,wrap] of [['target_functions','functionPick'],['target_seniority','seniorityPick']]){
+    const have=(document.getElementById(fieldId).value||'').split(',').map(function(x){return x.trim();}).filter(Boolean);
+    document.querySelectorAll('#'+wrap+' .role-pill').forEach(function(b){b.classList.toggle('on',have.indexOf(b.dataset.fn)>=0);});
+  }
+  paintLevelHint();
+}
+function paintLevelHint(){
+  const el=document.getElementById('levelHint');if(!el)return;
+  const picked=(document.getElementById('target_seniority').value||'').trim();
+  el.textContent=picked?'':'Every level of the functions above.';
+}
+
 function syncRolePills(){
   var input=document.getElementById('target_roles');
   if(!input)return;
@@ -3194,12 +3229,19 @@ function reqUserEmail(req) {
   return null;
 }
 
+// A job row carries what its title is, so the pipeline can filter by function
+// and level without a second request or a classifier in the browser.
+const withClass = rows => rows.map(j => {
+  const c = classify(j.role || '');
+  return { ...j, fns: c.functions, band: c.seniority };
+});
+
 app.get('/sourced', async (req, res) => {
   const userEmail = reqUserEmail(req);
   if (!userEmail) return res.status(401).json({ error: 'Sign in required' });
   try {
     const status = req.query.status || null;
-    res.json(await db.getJobs(status, 200, userEmail));
+    res.json(withClass(await db.getJobs(status, 200, userEmail)));
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -3236,8 +3278,7 @@ app.get('/runs/:id/jobs', async (req, res) => {
   const userEmail = reqUserEmail(req);
   if (!userEmail) return res.status(401).json({ error: 'Sign in required' });
   try {
-    const rows = await db.getJobsForRun(req.params.id, userEmail);
-    res.json(rows);
+    res.json(withClass(await db.getJobsForRun(req.params.id, userEmail)));
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -5909,7 +5950,9 @@ app.get('/pipeline', async (req, res) => {
   // its own list with the session it holds.
   const userEmail = reqUserEmail(req);
   const allJobs = userEmail ? await db.getJobs(null, 2000, userEmail) : [];
-  const jobsJson = scriptJSON(allJobs);
+  // Each row carries what its title is, so the page can filter by function and
+  // level without asking the server again.
+  const jobsJson = scriptJSON(withClass(allJobs));
 
   res.send(`<!DOCTYPE html><html><head><meta charset="utf-8">${metaHead({title:'Pipeline — applyapply', desc:'Everything sourced for you, and what is left to work through.', path:'/pipeline', noindex:true})}
 <style>
@@ -5930,6 +5973,10 @@ a{text-decoration:none;color:inherit}
 /* Left list pane */
 .pl-left{width:256px;flex-shrink:0;border-right:1px solid #111;display:flex;flex-direction:column}
 .pl-filters{padding:10px 12px;border-bottom:1px solid #111;display:flex;gap:5px;flex-wrap:wrap}
+.pl-facets{align-items:center}
+.pl-facets[hidden]{display:none}
+.pf-search{flex:1 1 150px;min-width:120px;padding:5px 9px;background:#0a0a0a;border:1px solid #222;color:#fff;font-family:inherit;font-size:12px;outline:none}
+.pf-search:focus{border-color:#555}
 .pf{padding:4px 9px;background:transparent;color:#b9b9b9;border:1px solid #181818;font-size:11px;cursor:pointer;font-family:inherit;transition:color .1s,border-color .1s}
 .pf:hover{color:#e6e6e6;border-color:#9a9a9a}
 .pf.on{color:#fff;border-color:#b9b9b9;background:#111}
@@ -6023,6 +6070,7 @@ a{text-decoration:none;color:inherit}
 <div class="pl-wrap">
   <div class="pl-left">
     <div class="pl-filters" id="pl-filters"></div>
+    <div class="pl-filters pl-facets" id="pl-facets" hidden></div>
     <div class="pl-list" id="pl-list"></div>
   </div>
   <div class="pl-right" id="pl-right">
@@ -6099,7 +6147,7 @@ function loadJobs(){
       .then(function(rows){
         if(!rows) return;
         JOBS=rows;
-        renderFilters(); renderList();
+        renderFilters(); renderFacets(); renderList();
         // The coverage strip is hidden until something fills it, and
         // loadCoverage is skipped in this view.
         var cov=document.getElementById('cov');
@@ -6120,7 +6168,7 @@ function loadJobs(){
     .then(function(rows){
       if(!rows||!rows.length) return;
       JOBS=rows;
-      renderFilters();
+      renderFilters(); renderFacets();
       renderList();
     }).catch(function(){});
 }
@@ -6171,12 +6219,59 @@ function setFilter(f) {
   filter = f;
   selIdx = -1;
   renderFilters();
+  renderFacets();
   renderList();
   loadCoverage();
 }
 
+// Sourcing is deliberately wide now, so the narrowing happens here: by what a
+// role is, and by anything you can type. Only offered when there is something
+// to narrow, so a single-function pipeline stays a single row of buttons.
+var FN_LABELS = {product:'Product',growth:'Growth',marketing:'Marketing',design:'Design',engineering:'Engineering',data:'Data',operations:'Operations',sales:'Sales'};
+var BAND_LABELS = {ic:'IC',senior:'Senior',lead:'Lead',director:'Director',exec:'VP+'};
+var fnFilter = '', bandFilter = '', textFilter = '';
+
+function renderFacets() {
+  var host = document.getElementById('pl-facets');
+  if (!host) return;
+  var inStatus = filter === 'all' ? JOBS : JOBS.filter(function(j){ return j.status===filter; });
+  var fns = {}, bands = {};
+  inStatus.forEach(function(j){
+    (j.fns||[]).forEach(function(f){ fns[f]=(fns[f]||0)+1; });
+    if (j.band) bands[j.band]=(bands[j.band]||0)+1;
+  });
+  var fnKeys = Object.keys(fns).sort(function(a,b){return fns[b]-fns[a];});
+  var bandKeys = Object.keys(bands).sort(function(a,b){return BANDS_ORDER.indexOf(a)-BANDS_ORDER.indexOf(b);});
+  if (fnKeys.length < 2 && bandKeys.length < 2 && !textFilter) { host.innerHTML=''; host.hidden=true; return; }
+  host.hidden = false;
+  host.innerHTML =
+    (fnKeys.length > 1 ? fnKeys.map(function(f){
+      return '<button class="pf' + (fnFilter===f?' on':'') + '" data-fn="' + f + '">' + (FN_LABELS[f]||f) + '<span class="pf-n">' + fns[f] + '</span></button>';
+    }).join('') : '')
+    + (bandKeys.length > 1 ? bandKeys.map(function(b){
+      return '<button class="pf' + (bandFilter===b?' on':'') + '" data-band="' + b + '">' + (BAND_LABELS[b]||b) + '<span class="pf-n">' + bands[b] + '</span></button>';
+    }).join('') : '')
+    + '<input id="pl-search" class="pf-search" placeholder="Filter by company or title" value="' + esc(textFilter) + '">';
+  host.querySelectorAll('[data-fn]').forEach(function(b){
+    b.addEventListener('click', function(){ fnFilter = fnFilter===b.dataset.fn ? '' : b.dataset.fn; selIdx=-1; renderFacets(); renderList(); });
+  });
+  host.querySelectorAll('[data-band]').forEach(function(b){
+    b.addEventListener('click', function(){ bandFilter = bandFilter===b.dataset.band ? '' : b.dataset.band; selIdx=-1; renderFacets(); renderList(); });
+  });
+  var box = document.getElementById('pl-search');
+  if (box) box.addEventListener('input', function(){
+    textFilter = box.value; selIdx=-1; renderList();
+  });
+}
+var BANDS_ORDER = ['ic','senior','lead','director','exec'];
+
 function getFiltered() {
-  return filter === 'all' ? JOBS.slice() : JOBS.filter(function(j){ return j.status===filter; });
+  var rows = filter === 'all' ? JOBS.slice() : JOBS.filter(function(j){ return j.status===filter; });
+  if (fnFilter) rows = rows.filter(function(j){ return (j.fns||[]).indexOf(fnFilter) >= 0; });
+  if (bandFilter) rows = rows.filter(function(j){ return j.band === bandFilter; });
+  var q = textFilter.trim().toLowerCase();
+  if (q) rows = rows.filter(function(j){ return ((j.company||'') + ' ' + (j.role||'')).toLowerCase().indexOf(q) >= 0; });
+  return rows;
 }
 
 function renderList() {
@@ -6277,11 +6372,11 @@ async function doAction(status) {
       listItems.splice(selIdx, 1);
       var goTo = nextIdx < listItems.length ? nextIdx : nextIdx - 1;
       renderListOnly();
-      renderFilters();
+      renderFilters(); renderFacets();
       if (listItems.length) selectItem(Math.max(0, goTo));
     }, 210);
   } else {
-    renderFilters();
+    renderFilters(); renderFacets();
     renderDetail(j);
   }
 }
@@ -6348,7 +6443,7 @@ fetch('/credits',{headers:plAuth()}).then(function(r){return r.ok?r.json():{};})
   if (el && b !== null) { el.textContent = b + ' cr'; el.style.color = b < 20 ? '#92400e' : '#555'; }
 }).catch(function(){});
 
-renderFilters();
+renderFilters(); renderFacets();
 renderList();
 // Viewing one run has its own claim line; the 30-day coverage line would
 // resolve later and overwrite it.

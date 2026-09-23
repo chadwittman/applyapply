@@ -14,7 +14,7 @@ const { SYSTEM } = require('./server/ai-output');
 const { evaluate: evaluateTypeSafe } = require('./server/typesafe');
 const crypto = require('crypto');
 const { selectiveMatch } = require('./server/search-preferences');
-const { roleMatcher } = require('./server/roles');
+const { roleMatcher, targetMatcher } = require('./server/roles');
 
 // Board results are identical for everyone; Google results vary only by role
 // titles. Sharing them means one fetch serves every user who wants that
@@ -898,9 +898,18 @@ async function main() {
   if (!SOURCE_USER_EMAIL && process.env.JAA_PREFETCH_ONLY!=='1') throw new Error('Sourcing owner is required');
   if (SOURCE_USER_EMAIL) {
     const profile=await getProfileByUserEmail(SOURCE_USER_EMAIL);
-    if (profile?.target_roles && !process.env.JAA_TARGET_ROLES) {
-      ROLE_TITLES=profile.target_roles;
-      ROLE_RE=roleMatcher(ROLE_TITLES);
+    // Recall comes from the function and level the person targets, not from
+    // the exact titles they thought to type. An explicit title still always
+    // gets through; JAA_TARGET_ROLES (the one-off role picker) still wins.
+    if (!process.env.JAA_TARGET_ROLES && profile) {
+      const matcher=targetMatcher(profile);
+      if (matcher.functions.length || profile.target_roles) {
+        ROLE_TITLES=profile.target_roles || matcher.functions.join(', ');
+        ROLE_RE=matcher;
+        console.log(`   targeting ${matcher.functions.join(', ') || 'listed titles only'}`
+          + (matcher.bands.length ? ` at ${matcher.bands.join('/')}` : '')
+          + (matcher.derived ? ' (derived from your saved titles)' : ''));
+      }
     }
     SOURCE_LOCATION=profile?.location || '';
     SOURCE_LOCATION_PREF=profile?.location_pref || 'remote';

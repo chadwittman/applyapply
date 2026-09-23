@@ -4,7 +4,7 @@
 // credits, validation, idempotency and ownership behave exactly as they do in
 // the product. search_listings reads the shared public ledger directly.
 const http = require('http');
-const { roleMatcher } = require('./roles');
+const { roleMatcher, targetMatcher, FUNCTION_NAMES, BANDS } = require('./roles');
 
 const PROTOCOL_VERSIONS = ['2025-06-18', '2025-03-26', '2024-11-05'];
 const str = (description, extra = {}) => ({ type: 'string', description, ...extra });
@@ -14,7 +14,9 @@ const TOOLS = [
   { name: 'get_profile', description: 'Your saved profile: contact details, target roles, location preference, work authorization, background.', inputSchema: { type: 'object', properties: {} } },
   { name: 'update_profile', description: 'Update profile fields. Only the fields you pass change.', inputSchema: { type: 'object', properties: {
     first_name: str('First name'), last_name: str('Last name'), phone: str('Phone'), linkedin: str('LinkedIn URL'), location: str('City, region'),
-    location_pref: str('Where you will work', { enum: ['remote', 'hybrid', 'any'] }), target_roles: str('Comma-separated job titles, e.g. "Head of Product, Director of Product"'),
+    location_pref: str('Where you will work', { enum: ['remote', 'hybrid', 'any'] }), target_roles: str('Comma-separated job titles to prioritise, e.g. "Head of Product, Director of Product". Optional: these boost and always get through, but targeting is set by target_functions.'),
+    target_functions: str('Comma-separated job functions to search, the main targeting control: ' + FUNCTION_NAMES.join(', ')),
+    target_seniority: str('Comma-separated levels to accept: ' + BANDS.join(', ') + '. Empty means any level.'),
     salary: str('Minimum annual base salary in USD'), work_authorization: str('Authorized to work in the US', { enum: ['', 'yes', 'no'] }),
     sponsorship: str('Needs visa sponsorship', { enum: ['', 'yes', 'no'] }), bio: str('Background the application writer uses: experience, achievements, numbers'),
     resume: str('The full text of the person\'s resume, as they wrote it. Every tailored resume is built from this, so paste it verbatim rather than summarising.'),
@@ -81,9 +83,14 @@ module.exports = function mountMcp(app, { db, port, limiter, sourceNames }) {
 
   async function searchListings(req, args) {
     const profile = await db.getProfileByUserEmail(req.apiKeyEmail);
-    const roles = args.roles || profile?.target_roles || '';
-    if (!roles) throw new Error('No roles to match: pass roles or set target_roles with update_profile');
-    const matcher = roleMatcher(roles);
+    // Exact titles when the caller names them; otherwise the account's own
+    // function and level targeting, which does not depend on the caller
+    // guessing every wording a company might use.
+    const matcher = args.roles ? roleMatcher(args.roles) : targetMatcher(profile || {});
+    const roles = args.roles || (matcher.functions?.length
+      ? matcher.functions.join(', ') + (matcher.bands?.length ? ' at ' + matcher.bands.join('/') : '')
+      : profile?.target_roles || '');
+    if (!roles) throw new Error('Nothing to match: pass roles, or set target_functions with update_profile');
     const rows = await db.getListings(sourceNames(), args.window === 'all_current' ? 0 : 24);
     const limit = Math.min(100, Math.max(1, Number(args.limit) || 25));
     const hits = rows.filter(r => matcher.test(r.role) && (!args.remote_only || r.remote === true || /remote/i.test(r.location)));
@@ -95,7 +102,7 @@ module.exports = function mountMcp(app, { db, port, limiter, sourceNames }) {
   const handlers = {
     get_account: async req => {
       const [account, profile] = await Promise.all([call(req, 'GET', '/auth/me'), call(req, 'GET', '/profile').catch(() => ({}))]);
-      const missing = [!profile?.resume_text && 'resume', !profile?.target_roles && 'target_roles', !profile?.location && 'location'].filter(Boolean);
+      const missing = [!profile?.resume_text && 'resume', !(profile?.target_functions || profile?.target_roles) && 'target_functions', !profile?.location && 'location'].filter(Boolean);
       return { ...account, ready_to_apply: !missing.length, missing, kit_costs_credits: 10 };
     },
     get_profile: req => call(req, 'GET', '/profile'),

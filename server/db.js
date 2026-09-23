@@ -51,6 +51,10 @@ async function initSchema() {
   await q(`ALTER TABLE profiles ADD COLUMN IF NOT EXISTS resume_text TEXT`);
   await q(`ALTER TABLE profiles ADD COLUMN IF NOT EXISTS sponsorship TEXT`);
   await q(`ALTER TABLE profiles ADD COLUMN IF NOT EXISTS search_mode TEXT NOT NULL DEFAULT 'active'`);
+  // Targeting by function and level rather than by exact title: a person picks
+  // "product" and "director" instead of listing every wording of it.
+  await q(`ALTER TABLE profiles ADD COLUMN IF NOT EXISTS target_functions TEXT`);
+  await q(`ALTER TABLE profiles ADD COLUMN IF NOT EXISTS target_seniority TEXT`);
   await q(`CREATE INDEX IF NOT EXISTS idx_profiles_user_email ON profiles (user_email)`);
 
   await q(`
@@ -505,7 +509,7 @@ async function getDecisionSummary(userEmail) {
 // ── Profiles ──────────────────────────────────────────────────────────────────
 
 const PROFILE_FIELDS = ['first_name','last_name','email','phone','linkedin','github','twitter','website',
-  'location','work_authorization','sponsorship','salary','current_employer','school','bio','career_type','target_roles','location_pref','search_mode','resume_text'];
+  'location','work_authorization','sponsorship','salary','current_employer','school','bio','career_type','target_roles','target_functions','target_seniority','location_pref','search_mode','resume_text'];
 
 async function getProfile(apiKey) {
   return q1(`SELECT * FROM profiles WHERE api_key = $1`, [apiKey]);

@@ -37,8 +37,12 @@ const rpc = async (name, args = {}) => {
 };
 const before = await rpc('get_account');
 assert.equal(before.ready_to_apply, false);
-assert.deepEqual(before.missing, ['resume', 'target_roles', 'location']);
-await rpc('update_profile', { resume: 'Jordan Rivera\nParcelworks, Director of Product', target_roles: 'Head of Product', location: 'Denver, CO' });
+assert.deepEqual(before.missing, ['resume', 'target_functions', 'location']);
+// Targeting is a function and a level, so an agent does not have to guess
+// every title a company might post. An exact title still satisfies it.
+await rpc('update_profile', { resume: 'Jordan Rivera\nParcelworks, Director of Product', target_functions: 'product', target_seniority: 'director, exec', location: 'Denver, CO' });
+const listed = await rpc('search_listings', {});
+assert.match(listed.roles, /product/, 'the search reports what it targeted');
 const after = await rpc('get_account');
 assert.equal(after.ready_to_apply, true, 'An agent can set the resume itself');
 assert.equal((await db.getProfileByUserEmail(person)).resume_text.includes('Parcelworks'), true);
