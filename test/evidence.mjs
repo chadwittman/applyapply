@@ -23,12 +23,16 @@ const page = await ctx.newPage();
 const errs = []; page.on('pageerror', e => errs.push(e.message));
 await page.goto(B + '/setup', { waitUntil: 'networkidle' });
 await page.waitForTimeout(2000);
+// Answers live behind their own tab now; the hash remembers it across reloads.
+await page.locator('.tab[data-panel="answers"]').click();
+await page.waitForTimeout(300);
 
 let pass = 0, fail = 0;
 const ok = (n, c, d = '') => { c ? pass++ : fail++; console.log(`  ${c ? 'PASS' : 'FAIL'}  ${n}${d ? '  — ' + d : ''}`); };
 
 const areas = await page.locator('#interviewList textarea').count();
 ok('both questions rendered', areas === 2, `got ${areas}`);
+await page.locator('.tab[data-panel="you"]').click();
 ok('resume on file is visible', await page.locator('#resumeFileRow').isVisible());
 ok('resume has view and download actions', await page.locator('#resumeView').count() === 1 && await page.locator('#resumeDownload').count() === 1);
 const download = await Promise.all([
@@ -36,6 +40,7 @@ const download = await Promise.all([
   page.locator('#resumeDownload').click(),
 ]);
 ok('resume download is authenticated', download[0].suggestedFilename() === 'alice-resume.pdf', download[0].suggestedFilename());
+await page.locator('.tab[data-panel="answers"]').click();
 const saveBtns = await page.locator('#interviewList button', { hasText: 'Save answer' }).count();
 ok('no per-answer Save button', saveBtns === 0, `got ${saveBtns}`);
 const mics = await page.locator('#interviewList button', { hasText: 'Speak it' }).count();

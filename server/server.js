@@ -58,7 +58,7 @@ for (const method of ['get','post','put','patch','delete']) {
     (req, res, next) => { try { Promise.resolve(handler(req,res,next)).catch(next); } catch (e) { next(e); } }));
 }
 const PORT = process.env.PORT || 5000;
-const VERSION = '0.51.1';
+const VERSION = '0.52.0';
 const IS_PRODUCTION = process.env.NODE_ENV === 'production';
 const APP_ORIGIN = process.env.APP_ORIGIN || 'http://localhost:5000';
 const ALLOWED_WEB_ORIGINS = new Set(
@@ -1990,38 +1990,53 @@ app.get('/resume/meta', async (req, res) => {
 
 // ── Setup page ────────────────────────────────────────────────────────────────
 
+// The profile page. Five tabs rather than one long scroll: what the writing
+// reads about you, what to search for, the answers you have given, the
+// corrections that outrank them, and the account itself. Profile fields save
+// together from a bar that appears when something changes; answers and
+// corrections save themselves.
 app.get('/setup', (req, res) => {
   res.setHeader('Content-Type', 'text/html');
   res.send(`<!DOCTYPE html>
 <html>
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 ${metaHead({title:'Profile — applyapply', desc:'Your background, target roles and resume. This is what the AI reads.', path:'/setup', noindex:true})}
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
-body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#000;color:#fff;padding:0;-webkit-font-smoothing:antialiased}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#000;color:#fff;-webkit-font-smoothing:antialiased;padding-bottom:96px}
 a{text-decoration:none;color:inherit}
-.nav{display:flex;justify-content:space-between;align-items:center;padding:18px 32px;border-bottom:1px solid #111}
+.nav{display:flex;justify-content:space-between;align-items:center;padding:18px 24px;border-bottom:1px solid #111}
 .nav-logo{font-size:13px;font-weight:700;letter-spacing:-.02em}
 .nav-right{display:flex;gap:16px;align-items:center}
 .nav-link{font-size:13px;color:#fff}
 .nav-link:hover{opacity:.7}
-.wrap{max-width:600px;margin:0 auto;padding:48px 32px 80px}
+.wrap{max-width:640px;margin:0 auto;padding:40px 24px 40px}
 h1{font-size:20px;font-weight:700;letter-spacing:-.03em;margin-bottom:6px}
-.auth-status{font-size:13px;margin-bottom:40px}
+.auth-status{font-size:13px;margin-bottom:26px}
 .auth-status a{color:#fff;text-decoration:underline}
-.sec{margin-bottom:36px;padding-bottom:36px;border-bottom:1px solid #111}
-.sec:last-of-type{border-bottom:none}
-.sec-label{font-size:11px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;margin-bottom:16px}
+.tabs{display:flex;gap:2px;overflow-x:auto;border-bottom:1px solid #1a1a1a;margin-bottom:30px;scrollbar-width:none}
+.tabs::-webkit-scrollbar{display:none}
+.tab{flex:none;padding:11px 14px;background:none;border:0;border-bottom:2px solid transparent;color:#8f8f8f;font-family:inherit;font-size:14px;cursor:pointer;white-space:nowrap}
+.tab:hover{color:#fff}
+.tab.on{color:#fff;border-bottom-color:#fff;font-weight:600}
+.tab .count{font-size:12px;margin-left:5px;opacity:.7}
+@media(max-width:480px){.tab{padding:11px 9px;font-size:13px}.wrap{padding:28px 16px 40px}.savebar{padding-left:16px;padding-right:16px}}
+.panel[hidden]{display:none}
+.grp{margin-bottom:34px}
+.grp:last-child{margin-bottom:0}
+.grp-label{font-size:11px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;margin-bottom:14px}
+.lead{font-size:14px;line-height:1.6;margin-bottom:16px}
 .row{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+@media(max-width:560px){.row{grid-template-columns:1fr}}
 .field{margin-bottom:14px}
 label{display:block;font-size:13px;margin-bottom:5px}
 input,textarea,select{width:100%;padding:9px 12px;background:#0a0a0a;border:1px solid #222;color:#fff;font-size:14px;outline:none;font-family:inherit}
 input:focus,textarea:focus,select:focus{border-color:#555}
 input::placeholder,textarea::placeholder{color:#a8a8a8}
 select option{background:#111}
-textarea{min-height:200px;resize:vertical;line-height:1.65}
+textarea{min-height:170px;resize:vertical;line-height:1.65}
 .role-pick{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px}
 .role-pill{padding:4px 9px;background:#0a0a0a;border:1px solid #222;color:#8f8f8f;font-size:11px;cursor:pointer;font-family:inherit}
 .role-pill:hover{border-color:#555;color:#ccc}
@@ -2029,18 +2044,45 @@ textarea{min-height:200px;resize:vertical;line-height:1.65}
 .resume-file{display:flex;align-items:center;gap:10px;font-size:12px;color:#b9b9b9;margin-top:10px}
 .resume-file a{color:#60a5fa;text-decoration:underline;cursor:pointer}
 .resume-actions{display:flex;gap:12px;flex-shrink:0}
-.resume-drop{border:1px solid #222;padding:24px;text-align:center;cursor:pointer;transition:border-color .15s;margin-bottom:0}
+.resume-drop{border:1px solid #222;padding:24px;text-align:center;cursor:pointer;transition:border-color .15s}
 .resume-drop:hover,.resume-drop.drag{border-color:#fff}
 .resume-drop-label{font-size:15px;font-weight:600;margin-bottom:4px}
 .resume-drop-browse{cursor:pointer;text-decoration:underline}
 #resumeStatus{margin-top:10px;font-size:13px;min-height:16px}
-.save-row{display:flex;align-items:center;gap:16px;margin-top:4px}
 .btn{padding:10px 20px;background:#fff;color:#000;border:none;font-size:14px;font-weight:600;cursor:pointer;font-family:inherit}
 .btn:hover{background:#e5e5e5}
 .btn:disabled{opacity:.3;cursor:not-allowed}
-#status{font-size:13px;min-height:16px}
+.btn-ghost{padding:7px 12px;background:#0a0a0a;border:1px solid #2a2a2a;color:#fff;font-size:12px;cursor:pointer;font-family:inherit}
+.btn-ghost:hover{border-color:#555}
+.btn-ghost:disabled{opacity:.4;cursor:not-allowed}
+.btn-danger{border-color:#6b2222;color:#fca5a5}
+.actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:16px}
+.chips{display:flex;gap:6px;flex-wrap:wrap;margin:14px 0 18px}
+.chip{padding:5px 11px;background:#0a0a0a;border:1px solid #222;color:#8f8f8f;font-family:inherit;font-size:12px;cursor:pointer}
+.chip:hover{color:#fff;border-color:#555}
+.chip.on{background:#fff;color:#000;border-color:#fff;font-weight:600}
+.cards{display:flex;flex-direction:column;gap:8px}
+.card{border:1px solid #1e1e1e;background:#080808}
+.card.open{border-color:#3a3a3a}
+.card-head{width:100%;display:flex;gap:10px;align-items:flex-start;padding:13px 14px;background:none;border:0;color:#fff;font-family:inherit;font-size:14px;text-align:left;cursor:pointer}
+.card-head:hover{background:#0d0d0d}
+.dot{width:7px;height:7px;border-radius:50%;background:#3a3a3a;margin-top:6px;flex:none}
+.card[data-state="done"] .dot{background:#4ade80}
+.card-q{flex:1;min-width:0;line-height:1.45}
+.card-prev{display:block;font-size:12px;color:#9a9a9a;margin-top:4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.card-body{padding:0 14px 14px}
+.card-body textarea{min-height:92px}
+.card-foot{display:flex;gap:10px;align-items:center;margin-top:8px}
+.card-foot .del{margin-left:auto}
+.empty{font-size:14px;padding:18px 0}
+.fact{display:flex;gap:12px;align-items:flex-start;padding:11px 0;border-bottom:1px solid #1a1a1a;font-size:14px;line-height:1.5}
+.keyrow{display:flex;gap:10px;align-items:center;padding:8px 0;border-bottom:1px solid #1a1a1a;font-size:13px}
+.hint{font-size:12px;min-height:14px}
+#status{font-size:13px}
 #status.ok{color:#4ade80}#status.err{color:#f87171}
-.nav-links-footer{margin-top:32px;font-size:13px}
+.savebar{position:fixed;left:0;right:0;bottom:0;background:rgba(0,0,0,.95);border-top:1px solid #222;padding:12px 24px calc(12px + env(safe-area-inset-bottom));display:flex;justify-content:flex-end;align-items:center;gap:14px;z-index:20}
+.savebar[hidden]{display:none}
+.nav-links-footer{margin-top:34px;font-size:13px}
 .nav-links-footer a:hover{opacity:.7}
 </style>
 </head>
@@ -2057,219 +2099,240 @@ textarea{min-height:200px;resize:vertical;line-height:1.65}
 <h1>Your profile</h1>
 <p class="auth-status" id="authStatus"></p>
 
-<div class="sec">
-  <div class="sec-label">Resume</div>
-  <div class="resume-drop" id="resumeDrop">
-    <input type="file" id="resumeFile" accept=".pdf" style="display:none"/>
-    <textarea id="resume_text" style="display:none"></textarea>
-    <div class="resume-drop-label">Drop your resume PDF here, or <span class="resume-drop-browse" onclick="document.getElementById('resumeFile').click()">browse</span></div>
-    <div id="resumeStatus"></div>
-  </div>
-  <div class="resume-file" id="resumeFileRow" style="display:none">
-    <span id="resumeFileName"></span>
-    <span class="resume-actions">
-      <a href="#" id="resumeView">View</a>
-      <a href="#" id="resumeDownload">Download</a>
-    </span>
-  </div>
+<div class="tabs" id="tabs">
+  <button type="button" class="tab on" data-panel="you">You</button>
+  <button type="button" class="tab" data-panel="search">Search</button>
+  <button type="button" class="tab" data-panel="answers">Answers<span class="count" id="countAnswers"></span></button>
+  <button type="button" class="tab" data-panel="corrections">Corrections<span class="count" id="countFacts"></span></button>
+  <button type="button" class="tab" data-panel="account">Account</button>
 </div>
 
-<div class="sec">
-  <div class="sec-label">Contact</div>
-  <div class="row">
-    <div class="field"><label>First name</label><input id="first_name"/></div>
-    <div class="field"><label>Last name</label><input id="last_name"/></div>
+<section class="panel" id="panel-you">
+  <div class="grp">
+    <div class="grp-label">Resume</div>
+    <div class="resume-drop" id="resumeDrop">
+      <input type="file" id="resumeFile" accept=".pdf" style="display:none"/>
+      <textarea id="resume_text" style="display:none"></textarea>
+      <div class="resume-drop-label">Drop your resume PDF here, or <span class="resume-drop-browse" onclick="document.getElementById('resumeFile').click()">browse</span></div>
+      <div id="resumeStatus"></div>
+    </div>
+    <div class="resume-file" id="resumeFileRow" style="display:none">
+      <span id="resumeFileName"></span>
+      <span class="resume-actions">
+        <a href="#" id="resumeView">View</a>
+        <a href="#" id="resumeDownload">Download</a>
+      </span>
+    </div>
   </div>
-  <div class="row">
-    <div class="field"><label>Email</label><input id="email" type="email"/></div>
-    <div class="field"><label>Phone</label><input id="phone" placeholder="555-555-5555"/></div>
-  </div>
-  <div class="row">
-    <div class="field"><label>Location</label><input id="location" placeholder="Austin, TX"/></div>
-    <div class="field"><label>Need visa sponsorship?</label><select id="sponsorship"><option value="">Unknown</option><option value="yes">Yes</option><option value="no">No</option></select></div>
-    <div class="field"><label>Authorized to work in the US?</label><select id="work_authorization"><option value="">Unknown</option><option value="yes">Yes</option><option value="no">No</option></select></div>
-  </div>
-</div>
 
-<div class="sec">
-  <div class="sec-label">Links</div>
-  <div class="row">
-    <div class="field"><label>LinkedIn</label><input id="linkedin" placeholder="https://linkedin.com/in/..."/></div>
-    <div class="field"><label>GitHub</label><input id="github" placeholder="https://github.com/..."/></div>
+  <div class="grp">
+    <div class="grp-label">Contact</div>
+    <div class="row">
+      <div class="field"><label>First name</label><input id="first_name"/></div>
+      <div class="field"><label>Last name</label><input id="last_name"/></div>
+    </div>
+    <div class="row">
+      <div class="field"><label>Email</label><input id="email" type="email"/></div>
+      <div class="field"><label>Phone</label><input id="phone" placeholder="555-555-5555"/></div>
+    </div>
+    <div class="row">
+      <div class="field"><label>Location</label><input id="location" placeholder="Austin, TX"/></div>
+      <div class="field"><label>Authorized to work in the US?</label><select id="work_authorization"><option value="">Unknown</option><option value="yes">Yes</option><option value="no">No</option></select></div>
+    </div>
+    <div class="row">
+      <div class="field"><label>Need visa sponsorship?</label><select id="sponsorship"><option value="">Unknown</option><option value="yes">Yes</option><option value="no">No</option></select></div>
+      <div class="field"><label>Annual base salary target</label><input id="salary" placeholder="250000 — numbers only"/></div>
+    </div>
   </div>
-  <div class="row">
-    <div class="field"><label>Twitter / X</label><input id="twitter" placeholder="https://x.com/..."/></div>
-    <div class="field"><label>Portfolio</label><input id="website" placeholder="https://..."/></div>
-  </div>
-</div>
 
-<div class="sec">
-  <div class="sec-label">Professional</div>
-  <div class="row">
-    <div class="field"><label>Current employer</label><input id="current_employer"/></div>
-    <div class="field"><label>School / degree</label><input id="school" placeholder="University of Wisconsin"/></div>
+  <div class="grp">
+    <div class="grp-label">Links</div>
+    <div class="row">
+      <div class="field"><label>LinkedIn</label><input id="linkedin" placeholder="https://linkedin.com/in/..."/></div>
+      <div class="field"><label>GitHub</label><input id="github" placeholder="https://github.com/..."/></div>
+    </div>
+    <div class="row">
+      <div class="field"><label>Twitter / X</label><input id="twitter" placeholder="https://x.com/..."/></div>
+      <div class="field"><label>Portfolio</label><input id="website" placeholder="https://..."/></div>
+    </div>
+    <div class="row">
+      <div class="field"><label>Current employer</label><input id="current_employer"/></div>
+      <div class="field"><label>School / degree</label><input id="school" placeholder="University of Wisconsin"/></div>
+    </div>
   </div>
-  <div class="field">
-    <label>Annual base salary target (USD)</label>
-    <input id="salary" placeholder="250000"/>
-    <div class="hint">Numbers only.</div>
-  </div>
-</div>
 
-<div class="sec">
-  <div class="sec-label">Job search</div>
-  <div class="field">
-    <label>Career type</label>
-    <select id="career_type">
-      <option value="">— select —</option>
-      <option value="product">Product (Head of Product, PM, CPO)</option>
-      <option value="growth">Growth (Head of Growth, Growth PM, GTM)</option>
-      <option value="engineering">Engineering (Head of Eng, Staff Eng, CTO)</option>
-      <option value="design">Design (Head of Design, Product Design)</option>
-      <option value="marketing">Marketing (Head of Marketing, CMO)</option>
-      <option value="operations">Operations (COO, Head of Ops)</option>
-      <option value="sales">Sales (VP Sales, Head of Sales)</option>
-      <option value="data">Data / Analytics (Head of Data, Staff DS)</option>
-    </select>
-  </div>
-  <div class="field">
-    <label>Target role titles</label>
-    <div class="role-pick">${PRESET_ROLES.map(r => `<button type="button" class="role-pill" onclick="toggleRole(this)">${r}</button>`).join('')}</div>
-    <input id="target_roles" placeholder="Head of Product, VP of Product, Founding PM"/>
-    <div class="hint">Click the titles you want, or type your own. The sourcing agent searches for these exact titles, so leaving this empty gives poor results.</div>
-  </div>
-  <div class="field">
-    <label>Location preference</label>
-    <select id="location_pref">
-      <option value="remote">Remote only</option>
-      <option value="hybrid">Open to hybrid (in my city)</option>
-      <option value="any">Any (remote, hybrid, or on-site)</option>
-    </select>
-    <div class="hint">Hybrid uses your Location field above.</div>
-  </div>
-  <div class="field">
-    <label>Job search mode</label>
-    <select id="search_mode">
-      <option value="active">Actively looking</option>
-      <option value="selective">Selective: only standout opportunities</option>
-    </select>
-    <div class="hint">Selective requires a strong role match and an explicit annual USD base-pay range reaching your salary target. Unconfirmed pay is excluded.</div>
-  </div>
-</div>
+  <div class="grp">
+    <div class="grp-label">Bio</div>
+    <div class="field">
+      <textarea id="bio" placeholder="What have you built, who for, and what did it drive?
 
-<div class="sec">
-  <div class="sec-label">Background</div>
-  <div class="field">
-    <label>Bio</label>
-    <textarea id="bio" placeholder="Tell your story. What have you built, who for, what did it drive?
-
-Your current role — company name, what you built, concrete outcomes.
-Prior companies or exits — names, scale, what happened.
-Your edge — 2-3 things you're uniquely good at.
+Current role — company, what you built, concrete outcomes.
+Prior companies — names, scale, what happened.
+Your edge — two or three things you are uniquely good at.
 
 Numbers beat adjectives. Name the companies."></textarea>
-    <div class="hint">The better this is, the better every application will be.</div>
+    </div>
   </div>
-</div>
+</section>
 
-<div class="sec" id="factsSec">
-  <div class="sec-label">Corrections</div>
-  <div style="font-size:13px;color:#fff;margin-bottom:12px;line-height:1.7">One line each, about you. Every application, tailored resume and answer is written against these first, so they beat your resume, your bio and your saved answers. Use them to kill a claim that keeps showing up — "I have never sold a company" — or to state something true that your resume does not say.</div>
-  <div id="factsList"></div>
-  <div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap">
-    <input id="factText" maxlength="600" placeholder="I have never sold a company." style="flex:1 1 260px;padding:9px 11px;background:#0a0a0a;border:1px solid #333;color:#fff;font-family:inherit">
-    <button type="button" onclick="addFact()" style="padding:9px 16px;background:#fff;color:#000;border:none;font-weight:600;cursor:pointer;font-family:inherit">Add correction</button>
+<section class="panel" id="panel-search" hidden>
+  <div class="grp">
+    <div class="grp-label">Target roles</div>
+    <div class="field">
+      <label>Career type</label>
+      <select id="career_type">
+        <option value="">— select —</option>
+        <option value="product">Product (Head of Product, PM, CPO)</option>
+        <option value="growth">Growth (Head of Growth, Growth PM, GTM)</option>
+        <option value="engineering">Engineering (Head of Eng, Staff Eng, CTO)</option>
+        <option value="design">Design (Head of Design, Product Design)</option>
+        <option value="marketing">Marketing (Head of Marketing, CMO)</option>
+        <option value="operations">Operations (COO, Head of Ops)</option>
+        <option value="sales">Sales (VP Sales, Head of Sales)</option>
+        <option value="data">Data / Analytics (Head of Data, Staff DS)</option>
+      </select>
+    </div>
+    <div class="field">
+      <label>Titles the agent searches for</label>
+      <div class="role-pick">${PRESET_ROLES.map(r => `<button type="button" class="role-pill" onclick="toggleRole(this)">${r}</button>`).join('')}</div>
+      <input id="target_roles" placeholder="Head of Product, VP of Product, Founding PM"/>
+    </div>
   </div>
-  <div class="hint" id="factStatus" style="margin-top:8px;min-height:16px"></div>
-</div>
+  <div class="grp">
+    <div class="grp-label">Where and when</div>
+    <div class="field">
+      <label>Location preference</label>
+      <select id="location_pref">
+        <option value="remote">Remote only</option>
+        <option value="hybrid">Open to hybrid, in my city</option>
+        <option value="any">Any: remote, hybrid or on-site</option>
+      </select>
+    </div>
+    <div class="field">
+      <label>Search mode</label>
+      <select id="search_mode">
+        <option value="active">Actively looking — show me everything that fits</option>
+        <option value="selective">Selective — only a strong match with stated pay reaching my target</option>
+      </select>
+    </div>
+  </div>
+</section>
 
-<div class="sec" id="evidence">
-  <div class="sec-label">Your answers</div>
-  <div class="hint" style="margin-bottom:10px;line-height:1.7">Your resume was written for the roles you held. If you're targeting something different, the work that matters most is often missing from it entirely. These questions dig it out, and every answer feeds every future application and tailored resume.</div>
-  <div id="evidenceSummary" style="font-size:13px;color:#fff;margin-bottom:14px;min-height:18px"></div>
+<section class="panel" id="panel-answers" hidden>
+  <div class="lead" id="evidenceSummary"></div>
+  <div class="chips" id="answerFilters">
+    <button type="button" class="chip on" data-filter="all">All</button>
+    <button type="button" class="chip" data-filter="open">Needs an answer</button>
+    <button type="button" class="chip" data-filter="done">Answered</button>
+  </div>
+  <div id="ownForm" hidden style="border:1px solid #333;padding:14px;margin-bottom:14px">
+    <div class="field"><label>What should we know about?</label><input id="ownQ" placeholder="Have you run paid acquisition?"/></div>
+    <div class="field"><label>Your answer</label><textarea id="ownA" style="min-height:92px" placeholder="Your own words. What you owned, what shipped, what moved."></textarea></div>
+    <div class="actions" style="margin-top:0">
+      <button type="button" class="btn-ghost" onclick="saveOwn()">Save answer</button>
+      <button type="button" class="btn-ghost" onclick="toggleOwn(false)">Cancel</button>
+      <span class="hint" id="ownStatus"></span>
+    </div>
+  </div>
   <div id="interviewList"></div>
-  <button type="button" id="genQBtn" onclick="generateQuestions()" style="padding:9px 16px;background:#0a0a0a;border:1px solid #333;color:#fff;font-size:13px;cursor:pointer;font-family:inherit">Find my gaps &amp; ask me — ${CREDIT_COSTS.interview} credits</button>
-  <div class="hint" id="interviewStatus" style="margin-top:8px;min-height:16px"></div>
-</div>
+  <div class="actions">
+    <button type="button" class="btn-ghost" id="genQBtn" onclick="generateQuestions()">Find my gaps and ask me — ${CREDIT_COSTS.interview} credits</button>
+    <button type="button" class="btn-ghost" onclick="toggleOwn(true)">Add my own</button>
+  </div>
+  <div class="hint" id="interviewStatus" style="margin-top:10px"></div>
+</section>
 
-<div class="save-row">
-  <button class="btn" id="saveBtn" onclick="save()">Save profile</button>
-  <div id="status"></div>
-</div>
-<div class="sec" style="margin-top:34px;border-top:1px solid #222;padding-top:22px">
-  <div class="sec-label">Agent access &nbsp;<a href="/agents" style="color:#fff;font-weight:400;text-transform:none;letter-spacing:0">Docs →</a></div>
-  <div style="display:flex;gap:8px;margin:10px 0 12px;flex-wrap:wrap">
-    <input id="keyName" placeholder="Key name, e.g. Claude" maxlength="80" style="flex:1 1 200px;padding:8px 10px;background:#0a0a0a;border:1px solid #333;color:#fff;font-family:inherit">
-    <button type="button" onclick="createKey()" style="padding:8px 14px;background:#fff;color:#000;border:none;font-weight:600;cursor:pointer;font-family:inherit">Create API key</button>
+<section class="panel" id="panel-corrections" hidden>
+  <div class="lead">Short statements about you that beat your resume, your bio and your answers everywhere applyapply writes. Use one to kill a claim that keeps showing up, or to state something true your resume does not say.</div>
+  <div id="factsList"></div>
+  <div class="actions">
+    <input id="factText" maxlength="600" placeholder="I left Dolly in 2024, not 2023." style="flex:1 1 260px"/>
+    <button type="button" class="btn" onclick="addFact()">Add</button>
   </div>
-  <div id="newKey" style="display:none;border:1px solid #2f6f5e;padding:12px;margin-bottom:12px">
-    <div style="font-size:12px;color:#fff;margin-bottom:6px">Copy this key now. It is not shown again.</div>
-    <pre id="newKeyConfig" style="white-space:pre-wrap;word-break:break-all;font-size:12px;color:#e5e5e5;margin:0 0 8px"></pre>
-    <button type="button" onclick="navigator.clipboard.writeText(document.getElementById('newKeyConfig').textContent);this.textContent='Copied'" style="padding:6px 10px;background:#111;border:1px solid #444;color:#fff;cursor:pointer">Copy</button>
+  <div class="hint" id="factStatus" style="margin-top:10px"></div>
+</section>
+
+<section class="panel" id="panel-account" hidden>
+  <div class="grp">
+    <div class="grp-label">Agent access &nbsp;<a href="/agents" style="font-weight:400;text-transform:none;letter-spacing:0;text-decoration:underline">Docs</a></div>
+    <div class="actions" style="margin-top:0;margin-bottom:12px">
+      <input id="keyName" placeholder="Key name, e.g. Claude" maxlength="80" style="flex:1 1 200px"/>
+      <button type="button" class="btn" onclick="createKey()">Create key</button>
+    </div>
+    <div id="newKey" style="display:none;border:1px solid #2f6f5e;padding:12px;margin-bottom:12px">
+      <div style="font-size:12px;margin-bottom:6px">Copy this key now. It is not shown again.</div>
+      <pre id="newKeyConfig" style="white-space:pre-wrap;word-break:break-all;font-size:12px;color:#e5e5e5;margin:0 0 8px"></pre>
+      <button type="button" class="btn-ghost" onclick="navigator.clipboard.writeText(document.getElementById('newKeyConfig').textContent);this.textContent='Copied'">Copy</button>
+    </div>
+    <div id="keyList"></div>
   </div>
-  <div id="keyList"></div>
-</div>
-<div class="sec" style="margin-top:34px;border-top:1px solid #222;padding-top:22px">
-  <div class="sec-label">Privacy</div>
-  <div class="hint" style="margin-bottom:12px">Your data is used to run applyapply for you. Download a copy or permanently delete this account and its stored profile, resume, answers, jobs, kits, and schedule.</div>
-  <button type="button" id="exportBtn" onclick="exportData()" style="padding:8px 12px;background:#111;border:1px solid #444;color:#fff;cursor:pointer">Download my data</button>
-  <button type="button" onclick="deleteAccount()" style="padding:8px 12px;background:none;border:1px solid #6b2222;color:#fca5a5;cursor:pointer;margin-left:8px">Delete account</button>
-  <div id="privacyStatus" class="hint" style="margin-top:10px"></div>
-</div>
+  <div class="grp">
+    <div class="grp-label">Your data</div>
+    <div class="lead">Used to run applyapply for you and nothing else. Take a copy, or delete the account and everything in it.</div>
+    <div class="actions" style="margin-top:0">
+      <button type="button" class="btn-ghost" id="exportBtn" onclick="exportData()">Download my data</button>
+      <button type="button" class="btn-ghost btn-danger" onclick="deleteAccount()">Delete account</button>
+    </div>
+    <div class="hint" id="privacyStatus" style="margin-top:10px"></div>
+  </div>
+</section>
+
 <div class="nav-links-footer">
   <a href="/pipeline">View pipeline →</a> &nbsp;·&nbsp; <a href="/sourcing">Run sourcing →</a>
 </div>
 </div>
 
+<div class="savebar" id="saveBar" hidden>
+  <div id="status"></div>
+  <button class="btn" id="saveBtn" onclick="save()">Save changes</button>
+</div>
+
 <script>
 const FIELDS=['first_name','last_name','email','phone','location','work_authorization','sponsorship','linkedin','github','twitter','website','current_employer','school','salary','bio','career_type','target_roles','location_pref','search_mode','resume_text'];
-
 function getKey(){
   const params=new URLSearchParams(location.search);
   return params.get('token')||localStorage.getItem('aa_session')||'';
 }
-async function loadKeys(){
-  const key=getKey();const list=document.getElementById('keyList');if(!key||!list)return;
-  const r=await fetch('/api-keys',{headers:{'x-api-key':key}});if(!r.ok)return;
-  const keys=await r.json();
-  list.innerHTML=keys.map(k=>'<div style="display:flex;gap:10px;align-items:center;padding:6px 0;border-bottom:1px solid #1a1a1a;font-size:13px;color:#fff"><span style="flex:1">'+escHtml(k.name)+' <code style="color:#e5e5e5">'+escHtml(k.prefix)+'…</code></span><span style="font-size:12px;color:#e5e5e5">'+(k.last_used_at?'used '+new Date(k.last_used_at).toLocaleDateString():'never used')+'</span><button type="button" data-id="'+escHtml(k.id)+'" onclick="revokeKey(this.dataset.id)" style="padding:4px 8px;background:none;border:1px solid #6b2222;color:#fca5a5;cursor:pointer">Revoke</button></div>').join('');
-}
-function escHtml(v){return String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
-async function createKey(){
-  const key=getKey();if(!key)return;
-  const name=document.getElementById('keyName').value.trim()||'Agent';
-  const r=await fetch('/api-keys',{method:'POST',headers:{'content-type':'application/json','x-api-key':key},body:JSON.stringify({name})});
-  const d=await r.json().catch(()=>({}));if(!r.ok){alert(d.error||'Could not create key');return;}
-  const config={mcpServers:{applyapply:{type:'http',url:location.origin+'/mcp',headers:{Authorization:'Bearer '+d.key}}}};
-  document.getElementById('newKeyConfig').textContent=d.key+'\\n\\n'+JSON.stringify(config,null,2);
-  document.getElementById('newKey').style.display='';document.getElementById('keyName').value='';loadKeys();
-}
-async function revokeKey(id){
-  const key=getKey();if(!key||!confirm('Revoke this key? Agents using it stop working immediately.'))return;
-  await fetch('/api-keys/'+encodeURIComponent(id),{method:'DELETE',headers:{'x-api-key':key}});loadKeys();
-}
-loadKeys();
+function escHtml(v){return String(v==null?'':v).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];});}
+function esc(t){return escHtml(t);}
 
-async function exportData(){
-  const key=getKey();const st=document.getElementById('privacyStatus');
-  if(!key){st.textContent='Sign in first.';return;}
-  st.textContent='Preparing your export…';
-  const r=await fetch('/account/export',{headers:{'x-api-key':key}});
-  if(!r.ok){st.textContent='Could not prepare the export.';return;}
-  const blob=await r.blob();const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='applyapply-data.json';a.click();URL.revokeObjectURL(a.href);st.textContent='Downloaded.';
+// One panel at a time, and the hash remembers which, so a reload or a link
+// lands back where you were.
+const PANELS=['you','search','answers','corrections','account'];
+function showTab(name){
+  if(PANELS.indexOf(name)<0)name='you';
+  document.querySelectorAll('.tab').forEach(function(t){t.classList.toggle('on',t.dataset.panel===name);});
+  PANELS.forEach(function(p){document.getElementById('panel-'+p).hidden=p!==name;});
+  if(location.hash!=='#'+name)history.replaceState(null,'','#'+name);
 }
-async function deleteAccount(){
-  const key=getKey();const email=document.getElementById('email')?.value||'';const st=document.getElementById('privacyStatus');
-  if(!key){st.textContent='Sign in first.';return;}
-  if(!confirm('This permanently deletes your profile, resume, answers, jobs, kits, schedule, and account. Continue?'))return;
-  const typed=prompt('Type your account email to confirm deletion:');if(!typed)return;
-  st.textContent='Deleting…';
-  const r=await fetch('/account/delete',{method:'POST',headers:{'content-type':'application/json','x-api-key':key},body:JSON.stringify({confirm_email:typed})});
-  const d=await r.json().catch(()=>({}));if(!r.ok){st.textContent=d.error||'Could not delete account.';return;}
-  localStorage.removeItem('aa_session');st.textContent='Account deleted.';setTimeout(()=>location.href='/',800);
-}
+document.querySelectorAll('.tab').forEach(function(t){
+  t.addEventListener('click',function(){showTab(t.dataset.panel);window.scrollTo(0,0);});
+});
+showTab((location.hash||'').replace('#','')||'you');
+// A link from elsewhere (/setup#corrections) and the back button both change
+// only the hash, which is not a page load.
+window.addEventListener('hashchange',function(){showTab((location.hash||'').replace('#','')||'you');});
 
-function setField(f,v){const el=document.getElementById(f);if(!el||!v)return;el.tagName==='SELECT'?el.value=v:el.value=v;}
+// Profile fields save together. The bar shows up only once something changed,
+// so the button is never a mystery and never off screen.
+let DIRTY=false;
+function markDirty(){
+  if(DIRTY)return;
+  DIRTY=true;
+  document.getElementById('saveBar').hidden=false;
+}
+function wireDirty(){
+  FIELDS.forEach(function(f){
+    const el=document.getElementById(f);
+    if(!el||el.dataset.dirtyWired)return;
+    el.dataset.dirtyWired='1';
+    el.addEventListener('input',markDirty);
+    el.addEventListener('change',markDirty);
+  });
+}
+wireDirty();
+
+function setField(f,v){const el=document.getElementById(f);if(!el||!v)return;el.value=v;}
 
 async function load(){
   const key=getKey();
@@ -2284,39 +2347,27 @@ async function load(){
     syncRolePills();
   }catch(e){authEl.textContent='Could not load profile.';}
 }
-load();
-loadInterview();
-showResumeFile();
-loadFacts();
 
-// Corrections: saved on their own, not with the profile form, so a correction
-// is in effect the moment it is typed rather than after a Save.
-async function loadFacts(){
-  const key=getKey();const list=document.getElementById('factsList');if(!key||!list)return;
-  const r=await fetch('/facts',{headers:{'x-api-key':key}});if(!r.ok)return;
-  const d=await r.json();
-  list.innerHTML=(d.facts||[]).map(function(f){
-    return '<div style="display:flex;gap:10px;align-items:flex-start;padding:8px 0;border-bottom:1px solid #1a1a1a;font-size:14px;color:#fff"><span style="flex:1;line-height:1.5">'+escHtml(f.text)+'</span><button type="button" data-id="'+escHtml(f.id)+'" onclick="removeFact(this.dataset.id)" style="padding:3px 8px;background:none;border:1px solid #333;color:#e5e5e5;cursor:pointer;font-family:inherit">Remove</button></div>';
-  }).join('');
+async function save(){
+  const key=getKey();
+  const st=document.getElementById('status');
+  if(!key){st.textContent='Sign in first';st.className='err';return;}
+  const btn=document.getElementById('saveBtn');
+  btn.disabled=true;btn.textContent='Saving…';
+  const data={};
+  // Send every field this page owns, empty ones included — the server treats an
+  // absent field as "leave alone", so omitting blanks would make clearing impossible.
+  for(const f of FIELDS){const el=document.getElementById(f);if(!el)continue;data[f]=el.value.trim();}
+  try{
+    const r=await fetch('/profile',{method:'POST',headers:{'x-api-key':key,'content-type':'application/json'},body:JSON.stringify(data)});
+    const j=await r.json();
+    if(!r.ok){st.textContent=j.error||'Error';st.className='err';return;}
+    st.textContent='Saved.';st.className='ok';
+    DIRTY=false;
+    setTimeout(function(){st.textContent='';document.getElementById('saveBar').hidden=true;},1400);
+  }catch(e){st.textContent='Error: '+e.message;st.className='err';}
+  finally{btn.disabled=false;btn.textContent='Save changes';}
 }
-async function addFact(){
-  const key=getKey();const input=document.getElementById('factText');const st=document.getElementById('factStatus');
-  const text=input.value.trim();
-  if(!key){st.textContent='Sign in first.';return;}
-  if(!text)return;
-  st.textContent='Saving…';
-  const r=await fetch('/facts',{method:'POST',headers:{'content-type':'application/json','x-api-key':key},body:JSON.stringify({text})});
-  const d=await r.json().catch(function(){return {};});
-  if(!r.ok){st.textContent=d.error||'Could not save that.';return;}
-  input.value='';st.textContent='Saved. Every application from here on is written against it.';loadFacts();
-}
-async function removeFact(id){
-  const key=getKey();if(!key)return;
-  await fetch('/facts/'+encodeURIComponent(id),{method:'DELETE',headers:{'x-api-key':key}});
-  document.getElementById('factStatus').textContent='';loadFacts();
-}
-
-function esc(t){return String(t==null?'':t).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
 
 // Role pills drive the comma list, so the field can be filled by clicking.
 function toggleRole(btn){
@@ -2327,8 +2378,8 @@ function toggleRole(btn){
   var preset=[].slice.call(document.querySelectorAll('.role-pill')).map(function(b){return b.textContent.trim();});
   var custom=typed.filter(function(t){return preset.indexOf(t)===-1;});
   input.value=picked.concat(custom).join(', ');
+  markDirty();
 }
-
 function syncRolePills(){
   var input=document.getElementById('target_roles');
   if(!input)return;
@@ -2338,6 +2389,7 @@ function syncRolePills(){
   });
 }
 
+// ── Resume ───────────────────────────────────────────────────────────────────
 function showResumeFile(){
   fetch('/resume/meta',{headers:{'x-api-key':getKey()}}).then(function(r){return r.ok?r.json():null;}).then(function(m){
     if(!m||!m.filename)return;
@@ -2346,13 +2398,11 @@ function showResumeFile(){
     document.getElementById('resumeFileName').textContent=m.filename+' ('+kb+'uploaded '+new Date(m.uploaded_at).toLocaleDateString()+')';
   }).catch(function(){});
 }
-
 function resumeFilename(response){
   var header=response.headers.get('content-disposition')||'';
   var match=header.match(/filename="?([^";]+)"?/i);
   return match&&match[1]?match[1]:'resume.pdf';
 }
-
 async function fetchResumeFile(){
   var key=getKey();
   if(!key) throw new Error('Sign in first');
@@ -2360,13 +2410,11 @@ async function fetchResumeFile(){
   if(!response.ok) throw new Error(response.status===404?'No resume on file':'Could not load resume');
   return {blob:await response.blob(),filename:resumeFilename(response)};
 }
-
 function showResumeError(error){
   var status=document.getElementById('resumeStatus');
   status.textContent=error.message||'Could not load resume';
   status.style.color='#f87171';
 }
-
 document.getElementById('resumeView').addEventListener('click',async function(event){
   event.preventDefault();
   // Open synchronously so browser popup blocking cannot swallow the review tab.
@@ -2379,7 +2427,6 @@ document.getElementById('resumeView').addEventListener('click',async function(ev
     setTimeout(function(){URL.revokeObjectURL(url);},60000);
   }catch(error){ if(tab) tab.close(); showResumeError(error); }
 });
-
 document.getElementById('resumeDownload').addEventListener('click',async function(event){
   event.preventDefault();
   try{
@@ -2391,9 +2438,39 @@ document.getElementById('resumeDownload').addEventListener('click',async functio
     setTimeout(function(){URL.revokeObjectURL(url);},60000);
   }catch(error){ showResumeError(error); }
 });
+async function uploadResume(file){
+  const rs=document.getElementById('resumeStatus');
+  rs.textContent='Reading resume…';rs.style.color='';
+  const fd=new FormData();fd.append('resume',file);
+  const h={};const key=getKey();if(key)h['x-api-key']=key;
+  try{
+    const r=await fetch('/resume/parse',{method:'POST',headers:h,body:fd});
+    const j=await r.json();
+    if(!r.ok){rs.textContent=j.error||'Parse failed';rs.style.color='#f87171';return;}
+    const fillable=['first_name','last_name','email','phone','location','linkedin','github','twitter','website','current_employer','school','bio','career_type','target_roles'];
+    let filled=0;
+    for(const f of fillable){if(j[f]){setField(f,j[f]);filled++;}}
+    if(j.text)document.getElementById('resume_text').value=j.text;
+    syncRolePills();
+    showResumeFile();
+    markDirty();
+    rs.textContent=filled?filled+' fields filled — career type and target roles are guesses, worth a look before you save.':'Could not extract structured fields — check the values above, or try again.';
+    rs.style.color=filled?'#4ade80':'#f87171';
+  }catch(e){rs.textContent='Error: '+e.message;rs.style.color='#f87171';}
+}
+const drop=document.getElementById('resumeDrop');
+drop.addEventListener('dragover',function(e){e.preventDefault();drop.classList.add('drag');});
+drop.addEventListener('dragleave',function(){drop.classList.remove('drag');});
+drop.addEventListener('drop',function(e){e.preventDefault();drop.classList.remove('drag');const f=e.dataTransfer.files[0];if(f)uploadResume(f);});
+document.getElementById('resumeFile').addEventListener('change',function(e){const f=e.target.files[0];if(f)uploadResume(f);});
 
-var EVIDENCE=[];
-var BTN_S='padding:5px 10px;background:#0a0a0a;border:1px solid #2a2a2a;color:#aaa;font-size:11px;cursor:pointer;font-family:inherit';
+// ── Answers ──────────────────────────────────────────────────────────────────
+// Each answer is its own card: closed it is a question and a preview, open it
+// is the editor. Answered ones close themselves so the open work is what you
+// see. Grouped by theme, filtered by state, saved as you type.
+var EVIDENCE=[],ANSWER_FILTER='all',OPEN_CARD={};
+
+function isAnswered(e){return !!(e.answer&&String(e.answer).trim());}
 
 async function loadInterview(){
   const key=getKey(); if(!key) return;
@@ -2401,21 +2478,89 @@ async function loadInterview(){
     if(r.ok){ EVIDENCE=await r.json(); renderInterview(); } }catch(e){}
 }
 
+function answerCard(e,first){
+  var open=OPEN_CARD[e.id]===undefined?first:OPEN_CARD[e.id];
+  var preview=isAnswered(e)?esc(String(e.answer).replace(/\\s+/g,' ').slice(0,110)):'Not answered yet';
+  return '<div class="card'+(open?' open':'')+'" data-state="'+(isAnswered(e)?'done':'open')+'">'
+    +'<button type="button" class="card-head" onclick="toggleCard('+e.id+')">'
+    +'<span class="dot"></span><span class="card-q">'+esc(e.question)+'<span class="card-prev">'+preview+'</span></span></button>'
+    +'<div class="card-body" id="body-'+e.id+'"'+(open?'':' hidden')+'>'
+    +'<textarea id="ans-'+e.id+'" placeholder="Your own words. What you owned, what shipped, what moved."></textarea>'
+    +'<div class="card-foot">'
+    +'<button type="button" class="btn-ghost" onclick="voiceAnswer(this,'+e.id+')">🎤 Speak it</button>'
+    +'<span class="hint" id="st-'+e.id+'"></span>'
+    +'<button type="button" class="btn-ghost del" onclick="removeAnswer('+e.id+')">Remove</button>'
+    +'</div></div></div>';
+}
+
 function renderInterview(){
   const el=document.getElementById('interviewList');
   if(!el) return;
-  if(!EVIDENCE.length){ el.innerHTML=''; return; }
-  el.innerHTML=EVIDENCE.map(function(e){
-    return '<div class="field">'
-      +'<label>'+esc(e.question)+'</label>'
-      +'<textarea id="ans-'+e.id+'" style="min-height:74px" placeholder="Your own words. Specifics beat adjectives — what you owned, what shipped, what moved.">'+esc(e.answer||'')+'</textarea>'
-      +'<div style="display:flex;gap:8px;margin-top:6px;align-items:center">'
-      +'<button type="button" style="'+BTN_S+'" onclick="voiceAnswer(this,'+e.id+')">🎤 Speak it</button>'
-      +'<span class="hint" id="st-'+e.id+'"></span>'
-      +'</div></div>';
-  }).join('');
-  wireAnswerAutosave();
   paintEvidenceSummary();
+  if(!EVIDENCE.length){ el.innerHTML='<div class="empty">No questions yet. Find your gaps, or add something you want every application to know.</div>'; return; }
+  const rows=EVIDENCE.filter(function(e){
+    return ANSWER_FILTER==='all'||(ANSWER_FILTER==='done'?isAnswered(e):!isAnswered(e));
+  });
+  if(!rows.length){ el.innerHTML='<div class="empty">'+(ANSWER_FILTER==='done'?'Nothing answered yet.':'Everything here is answered.')+'</div>'; return; }
+  const themes=[];
+  rows.forEach(function(e){ const t=e.theme||'Your answers'; if(themes.indexOf(t)<0) themes.push(t); });
+  // One question open at a time: the first thing still needing an answer.
+  // Everything else is a line you can click, so ten questions stay a list.
+  const pending=rows.filter(function(e){ return !isAnswered(e); })[0];
+  const firstOpen=pending?pending.id:null;
+  el.innerHTML=themes.map(function(theme){
+    const mine=rows.filter(function(e){ return (e.theme||'Your answers')===theme; });
+    return '<div class="grp"><div class="grp-label">'+esc(theme)+' <span style="font-weight:400;opacity:.6">'+mine.filter(isAnswered).length+' of '+mine.length+'</span></div>'
+      +'<div class="cards">'+mine.map(function(e){ return answerCard(e,e.id===firstOpen); }).join('')+'</div></div>';
+  }).join('');
+  // Values are set after the markup so an answer containing markup cannot
+  // reach innerHTML at all.
+  rows.forEach(function(e){ const ta=document.getElementById('ans-'+e.id); if(ta) ta.value=e.answer||''; });
+  wireAnswerAutosave();
+}
+
+function toggleCard(id){
+  const body=document.getElementById('body-'+id);
+  if(!body)return;
+  body.hidden=!body.hidden;
+  OPEN_CARD[id]=!body.hidden;
+  body.parentNode.classList.toggle('open',!body.hidden);
+  if(!body.hidden){ const ta=document.getElementById('ans-'+id); if(ta) ta.focus(); }
+}
+
+document.querySelectorAll('#answerFilters .chip').forEach(function(c){
+  c.addEventListener('click',function(){
+    ANSWER_FILTER=c.dataset.filter;
+    document.querySelectorAll('#answerFilters .chip').forEach(function(x){x.classList.toggle('on',x===c);});
+    renderInterview();
+  });
+});
+
+async function removeAnswer(id){
+  const key=getKey();
+  if(!key||!confirm('Remove this question and its answer? Nothing written later will use it.'))return;
+  await fetch('/interview/'+encodeURIComponent(id),{method:'DELETE',headers:{'x-api-key':key}});
+  EVIDENCE=EVIDENCE.filter(function(e){return e.id!==id;});
+  renderInterview();
+}
+
+function toggleOwn(on){
+  document.getElementById('ownForm').hidden=!on;
+  document.getElementById('ownStatus').textContent='';
+  if(on)document.getElementById('ownQ').focus();
+}
+async function saveOwn(){
+  const key=getKey(),st=document.getElementById('ownStatus');
+  const question=document.getElementById('ownQ').value.trim();
+  const answer=document.getElementById('ownA').value.trim();
+  if(!key){st.textContent='Sign in first.';return;}
+  if(!question||!answer){st.textContent='Both a question and an answer, please.';return;}
+  st.textContent='Saving…';
+  const r=await fetch('/interview/context',{method:'POST',headers:{'x-api-key':key,'content-type':'application/json'},body:JSON.stringify({question:question,answer:answer})});
+  if(!r.ok){st.textContent='Could not save that.';return;}
+  document.getElementById('ownQ').value='';document.getElementById('ownA').value='';
+  toggleOwn(false);
+  loadInterview();
 }
 
 async function generateQuestions(){
@@ -2428,7 +2573,7 @@ async function generateQuestions(){
     const r=await fetch('/interview/questions',{method:'POST',headers:{'x-api-key':key,'content-type':'application/json'},body:'{}'});
     const j=await r.json();
     if(!r.ok){ st.textContent=j.error||'Failed'; st.style.color='#f87171'; }
-    else { EVIDENCE=j.questions||[]; renderInterview(); st.textContent='Answer what you can — they save as you type. Blank ones are just skipped.'; st.style.color=''; }
+    else { EVIDENCE=j.questions||[]; OPEN_CARD={}; renderInterview(); st.textContent='Answer what you can — they save as you type.'; st.style.color=''; }
   }catch(e){ st.textContent='Error: '+e.message; st.style.color='#f87171'; }
   btn.disabled=false; btn.textContent=orig;
 }
@@ -2448,6 +2593,9 @@ async function saveAnswer(id){
     st.style.color='#4ade80'; st.textContent='Saved';
     const row=EVIDENCE.find(function(e){return e.id===id;}); if(row) row.answer=value;
     paintEvidenceSummary();
+    const card=ta.closest('.card'); if(card) card.dataset.state=value.trim()?'done':'open';
+    const prev=card?card.querySelector('.card-prev'):null;
+    if(prev) prev.textContent=value.trim()?value.replace(/\\s+/g,' ').slice(0,110):'Not answered yet';
     setTimeout(function(){ if(st.textContent==='Saved') st.textContent=''; },2500);
   }catch(e){
     // A bad connection is not the user's problem to solve — keep the text and
@@ -2479,9 +2627,11 @@ function wireAnswerAutosave(){
 
 function paintEvidenceSummary(){
   const el=document.getElementById('evidenceSummary');
+  const tab=document.getElementById('countAnswers');
+  const answered=EVIDENCE.filter(isAnswered).length;
+  if(tab) tab.textContent=EVIDENCE.length?answered+'/'+EVIDENCE.length:'';
   if(!el) return;
-  const answered=EVIDENCE.filter(function(e){ return e.answer && String(e.answer).trim(); }).length;
-  if(!EVIDENCE.length){ el.textContent=''; return; }
+  if(!EVIDENCE.length){ el.textContent='Answers are work your resume left out. Every one you give is reused by every future application and tailored resume.'; return; }
   el.textContent=answered
     ? answered+' answer'+(answered===1?'':'s')+' saved to your account. Every tailored resume and application is written using '+(answered===1?'it':'them')+'.'
     : 'No answers saved yet. Each one you add is reused by every future application.';
@@ -2514,50 +2664,86 @@ function voiceAnswer(btn,id){
   rec.start();
 }
 
-async function uploadResume(file){
-  const rs=document.getElementById('resumeStatus');
-  rs.textContent='Reading resume…';rs.style.color='';
-  const fd=new FormData();fd.append('resume',file);
-  const h={};const key=getKey();if(key)h['x-api-key']=key;
-  try{
-    const r=await fetch('/resume/parse',{method:'POST',headers:h,body:fd});
-    const j=await r.json();
-    if(!r.ok){rs.textContent=j.error||'Parse failed';rs.style.color='#f87171';return;}
-    const fillable=['first_name','last_name','email','phone','location','linkedin','github','twitter','website','current_employer','school','bio','career_type','target_roles'];
-    let filled=0;
-    for(const f of fillable){if(j[f]){setField(f,j[f]);filled++;}}
-    if(j.text)document.getElementById('resume_text').value=j.text;
-    syncRolePills();
-    showResumeFile();
-    rs.textContent=filled?filled+' fields filled — career type and target roles are AI guesses, worth a look before you save.':'Could not extract structured fields — check the values above, or try again.';
-    rs.style.color=filled?'#4ade80':'#f87171';
-  }catch(e){rs.textContent='Error: '+e.message;rs.style.color='#f87171';}
+// ── Corrections ──────────────────────────────────────────────────────────────
+// Saved on their own, not with the profile form, so a correction is in effect
+// the moment it is typed rather than after a Save.
+async function loadFacts(){
+  const key=getKey();const list=document.getElementById('factsList');if(!key||!list)return;
+  const r=await fetch('/facts',{headers:{'x-api-key':key}});if(!r.ok)return;
+  const d=await r.json();
+  const facts=d.facts||[];
+  document.getElementById('countFacts').textContent=facts.length?String(facts.length):'';
+  list.innerHTML=facts.length?facts.map(function(f){
+    return '<div class="fact"><span style="flex:1">'+escHtml(f.text)+'</span>'
+      +'<button type="button" class="btn-ghost" data-id="'+escHtml(f.id)+'" onclick="removeFact(this.dataset.id)">Remove</button></div>';
+  }).join(''):'<div class="empty">Nothing on record.</div>';
+}
+async function addFact(){
+  const key=getKey();const input=document.getElementById('factText');const st=document.getElementById('factStatus');
+  const text=input.value.trim();
+  if(!key){st.textContent='Sign in first.';return;}
+  if(!text)return;
+  st.textContent='Saving…';
+  const r=await fetch('/facts',{method:'POST',headers:{'content-type':'application/json','x-api-key':key},body:JSON.stringify({text:text})});
+  const d=await r.json().catch(function(){return {};});
+  if(!r.ok){st.textContent=d.error||'Could not save that.';return;}
+  input.value='';st.textContent='Saved. Every application from here on is written against it.';loadFacts();
+}
+async function removeFact(id){
+  const key=getKey();if(!key)return;
+  await fetch('/facts/'+encodeURIComponent(id),{method:'DELETE',headers:{'x-api-key':key}});
+  document.getElementById('factStatus').textContent='';loadFacts();
+}
+document.getElementById('factText').addEventListener('keydown',function(e){ if(e.key==='Enter'){ e.preventDefault(); addFact(); } });
+
+// ── Account ──────────────────────────────────────────────────────────────────
+async function loadKeys(){
+  const key=getKey();const list=document.getElementById('keyList');if(!key||!list)return;
+  const r=await fetch('/api-keys',{headers:{'x-api-key':key}});if(!r.ok)return;
+  const keys=await r.json();
+  list.innerHTML=keys.length?keys.map(function(k){
+    return '<div class="keyrow"><span style="flex:1">'+escHtml(k.name)+' <code style="color:#e5e5e5">'+escHtml(k.prefix)+'…</code></span>'
+      +'<span style="font-size:12px;color:#e5e5e5">'+(k.last_used_at?'used '+new Date(k.last_used_at).toLocaleDateString():'never used')+'</span>'
+      +'<button type="button" class="btn-ghost btn-danger" data-id="'+escHtml(k.id)+'" onclick="revokeKey(this.dataset.id)">Revoke</button></div>';
+  }).join(''):'<div class="empty">No keys yet.</div>';
+}
+async function createKey(){
+  const key=getKey();if(!key)return;
+  const name=document.getElementById('keyName').value.trim()||'Agent';
+  const r=await fetch('/api-keys',{method:'POST',headers:{'content-type':'application/json','x-api-key':key},body:JSON.stringify({name:name})});
+  const d=await r.json().catch(function(){return {};});if(!r.ok){alert(d.error||'Could not create key');return;}
+  const config={mcpServers:{applyapply:{type:'http',url:location.origin+'/mcp',headers:{Authorization:'Bearer '+d.key}}}};
+  document.getElementById('newKeyConfig').textContent=d.key+'\\n\\n'+JSON.stringify(config,null,2);
+  document.getElementById('newKey').style.display='';document.getElementById('keyName').value='';loadKeys();
+}
+async function revokeKey(id){
+  const key=getKey();if(!key||!confirm('Revoke this key? Agents using it stop working immediately.'))return;
+  await fetch('/api-keys/'+encodeURIComponent(id),{method:'DELETE',headers:{'x-api-key':key}});loadKeys();
+}
+async function exportData(){
+  const key=getKey();const st=document.getElementById('privacyStatus');
+  if(!key){st.textContent='Sign in first.';return;}
+  st.textContent='Preparing your export…';
+  const r=await fetch('/account/export',{headers:{'x-api-key':key}});
+  if(!r.ok){st.textContent='Could not prepare the export.';return;}
+  const blob=await r.blob();const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='applyapply-data.json';a.click();URL.revokeObjectURL(a.href);st.textContent='Downloaded.';
+}
+async function deleteAccount(){
+  const key=getKey();const st=document.getElementById('privacyStatus');
+  if(!key){st.textContent='Sign in first.';return;}
+  if(!confirm('This permanently deletes your profile, resume, answers, jobs, kits, schedule, and account. Continue?'))return;
+  const typed=prompt('Type your account email to confirm deletion:');if(!typed)return;
+  st.textContent='Deleting…';
+  const r=await fetch('/account/delete',{method:'POST',headers:{'content-type':'application/json','x-api-key':key},body:JSON.stringify({confirm_email:typed})});
+  const d=await r.json().catch(function(){return {};});if(!r.ok){st.textContent=d.error||'Could not delete account.';return;}
+  localStorage.removeItem('aa_session');st.textContent='Account deleted.';setTimeout(function(){location.href='/';},800);
 }
 
-const drop=document.getElementById('resumeDrop');
-drop.addEventListener('dragover',e=>{e.preventDefault();drop.classList.add('drag');});
-drop.addEventListener('dragleave',()=>drop.classList.remove('drag'));
-drop.addEventListener('drop',e=>{e.preventDefault();drop.classList.remove('drag');const f=e.dataTransfer.files[0];if(f)uploadResume(f);});
-document.getElementById('resumeFile').addEventListener('change',e=>{const f=e.target.files[0];if(f)uploadResume(f);});
-
-async function save(){
-  const key=getKey();
-  const st=document.getElementById('status');
-  if(!key){st.textContent='Sign in first';st.className='err';return;}
-  const btn=document.getElementById('saveBtn');
-  btn.disabled=true;btn.textContent='Saving…';
-  const data={};
-  // Send every field this page owns, empty ones included — the server treats an
-  // absent field as "leave alone", so omitting blanks would make clearing impossible.
-  for(const f of FIELDS){const el=document.getElementById(f);if(!el)continue;data[f]=el.value.trim();}
-  try{
-    const r=await fetch('/profile',{method:'POST',headers:{'x-api-key':key,'content-type':'application/json'},body:JSON.stringify(data)});
-    const j=await r.json();
-    if(!r.ok){st.textContent=j.error||'Error';st.className='err';return;}
-    st.textContent='Saved.';st.className='ok';setTimeout(()=>{st.textContent='';},2000);
-  }catch(e){st.textContent='Error: '+e.message;st.className='err';}
-  finally{btn.disabled=false;btn.textContent='Save profile';}
-}
+load();
+loadInterview();
+loadFacts();
+loadKeys();
+showResumeFile();
 </script>
 </body>
 </html>`);
