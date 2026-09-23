@@ -22,9 +22,14 @@ const browser = await chromium.launch({headless:true,executablePath:process.env.
 const page = await browser.newPage();
 const errors=[]; page.on('pageerror',e=>errors.push(e.message));
 let evidenceWrites=0;
+const mapCalls=[];
 await page.exposeFunction('transport',async msg=>{
   if(msg.type!=='SERVER_FETCH') return {ok:false};
   if(new URL(msg.url).pathname==='/interview/context') evidenceWrites++;
+  if(new URL(msg.url).pathname==='/fill/map'){
+    mapCalls.push(JSON.parse(msg.options.body).labels);
+    return {ok:true,status:200,data:{fields:[{label:'Name as it appears on your government ID',value:'Alice Nguyen'}]}};
+  }
   const r=await fetch(msg.url,{method:msg.options.method,headers:msg.options.headers,body:msg.options.body || undefined});
   let data;try{data=await r.json();}catch{data=null;}
   return {ok:r.ok,status:r.status,data};
@@ -36,6 +41,7 @@ await page.route('https://jobs.lever.co/**',route=>route.fulfill({contentType:'t
   <label for="full">Full Name</label><input id="full">
   <label for="li">LinkedIn Profile URL</label><input id="li" type="url">
   <label for="site">Personal Website/Portfolio</label><input id="site" type="url">
+  <label for="odd">Name as it appears on your government ID</label><input id="odd">
   <fieldset><legend>Do you have 10 years of experience?</legend><label><input type="radio" name="experience" value="yes">Yes</label><label><input type="radio" name="experience" value="no">No</label></fieldset>
   <label><input type="checkbox" id="consent">I agree to all terms</label>
   <label for="auth">Authorized to work?</label><select id="auth"><option value="">Choose</option><option value="yes">Yes</option><option value="no">No</option></select>
@@ -94,6 +100,16 @@ await page.addScriptTag({content:await readFile(extensionDir.replace(/\/?$/,'/')
     assert.equal(await page.locator('#li').inputValue(),'','no LinkedIn on this profile');
     assert.deepEqual(det.missing,['LinkedIn URL','portfolio URL'],'the empty profile values are named, not counted as manual');
     console.log('PASS: Full Name fills; profile values a form needs are named');
+
+    // What the rules cannot place goes to the server by label and comes back
+    // as a value. A rule list cannot anticipate every wording; this can.
+    const mappedCount = await page.evaluate(()=>mappedFill());
+    assert.equal(await page.locator('#odd').inputValue(),'Alice Nguyen','an unanticipated label is filled by meaning');
+    assert.equal(mappedCount,1);
+    assert.ok(mapCalls.length===1,'one request for the whole form');
+    assert.ok(mapCalls[0].includes('Name as it appears on your government ID'),'the unplaced label was sent');
+    assert.ok(!mapCalls[0].includes('Email'),'a field the rules already filled is not sent');
+    console.log('PASS: labels the rules miss are placed by meaning, in one request');
   }
   await page.evaluate(()=>{shadow.getElementById('jaa-sidebar').classList.add('open');});
   await page.locator('#jaa-resume-out .sec-hd').click();

@@ -25,6 +25,7 @@ const { canonicalUrl } = require('./posting');
 const { publicFetch } = require('./public-fetch');
 const { SYSTEM, applicationOutput, mappingsOutput, resumeOutput } = require('./ai-output');
 const fastKit = require('./fast-kit');
+const fieldMap = require('./field-map');
 const { evaluateResumeMatch } = require('./typesafe');
 const scriptJSON = value => JSON.stringify(value).replace(/</g, '\\u003c');
 const usage = require('./usage');
@@ -58,7 +59,7 @@ for (const method of ['get','post','put','patch','delete']) {
     (req, res, next) => { try { Promise.resolve(handler(req,res,next)).catch(next); } catch (e) { next(e); } }));
 }
 const PORT = process.env.PORT || 5000;
-const VERSION = '0.53.1';
+const VERSION = '0.54.0';
 const IS_PRODUCTION = process.env.NODE_ENV === 'production';
 const APP_ORIGIN = process.env.APP_ORIGIN || 'http://localhost:5000';
 const ALLOWED_WEB_ORIGINS = new Set(
@@ -4079,6 +4080,28 @@ Editing rules:
   const cleaned = String(text || '').trim();
   return cleaned || transcript;
 }
+
+// Labels the extension's own rules could not place. One Jev judgment each,
+// against the profile values this account actually has. No credits: it costs a
+// fraction of a cent and it is the difference between a filled form and a form
+// with holes in it.
+app.post('/fill/map', apiLimiter, async (req, res) => {
+  const userEmail = reqUserEmail(req);
+  if (!userEmail) return res.status(401).json({ error: 'Sign in required' });
+  if (!process.env.TYPESAFE_API_KEY) return res.json({ fields: [] });
+  const labels = Array.isArray(req.body?.labels) ? req.body.labels.slice(0, 25) : [];
+  if (!labels.length) return res.json({ fields: [] });
+  const profile = await db.getProfileByUserEmail(userEmail).catch(() => null);
+  if (!profile) return res.json({ fields: [] });
+  try {
+    const fields = await fieldMap.mapFields(process.env.TYPESAFE_API_KEY, labels, profile);
+    res.json({ fields: fields.map(({ label, value }) => ({ label, value })) });
+  } catch (e) {
+    // A form half-filled by the rules beats an error in the sidebar.
+    console.error('[fill map]', e.message);
+    res.json({ fields: [] });
+  }
+});
 
 app.post('/voice', requireCredits('voice'), async (req, res) => {
   const { transcript, question, appId, kitId } = req.body;

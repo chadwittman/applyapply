@@ -777,6 +777,16 @@ function bindEvents() {
           result = result?.filled ? result : det;
         } catch { result = result || { filled: 0, skipped: 0 }; }
       }
+      // Anything the rules left empty gets one pass by meaning before the
+      // count is reported, so an unfamiliar label is not a blank field.
+      try {
+        if (note && unplacedFields().length) note.textContent = 'Placing the fields the rules did not recognise…';
+        const mapped = await mappedFill();
+        if (mapped) {
+          result = { ...(result || { filled: 0, skipped: 0 }), filled: (result?.filled || 0) + mapped,
+            skipped: Math.max(0, (result?.skipped || 0) - mapped), missing: result?.missing };
+        }
+      } catch {}
       setBtn('jaa-fill', 'Re-fill');
       fillBtn.disabled = false;
       injectCopyButtons();
@@ -1138,6 +1148,45 @@ async function aiFill(app) {
 // profile, so there is no reason to refuse to fill them just because no kit
 // exists yet — previously app was dereferenced directly and threw, which the
 // caller swallowed and reported as "Nothing matched".
+// Fields the rules could not place. The label list goes to the server, which
+// runs one Jev judgment per label against this account's profile and sends
+// back the values that belong in them. A rule list cannot anticipate every
+// wording; this does not have to.
+function unplacedFields() {
+  const out = [];
+  for (const el of document.querySelectorAll('input[type="text"],input[type="url"],input[type="email"],input[type="tel"],input:not([type])')) {
+    if (el.disabled || el.readOnly || el.offsetParent === null) continue;
+    if (String(el.value || '').trim()) continue;
+    if (el.closest('#jaa-root')) continue;
+    const label = (getFieldLabel(el) || '').replace(/\*/g, '').replace(/\s+/g, ' ').trim();
+    if (!label || label.length > 160) continue;
+    if (out.some(f => f.label.toLowerCase() === label.toLowerCase())) continue;
+    out.push({ el, label });
+  }
+  return out.slice(0, 25);
+}
+
+async function mappedFill() {
+  if (!API_KEY) return 0;
+  const pending = unplacedFields();
+  if (!pending.length) return 0;
+  let data;
+  try {
+    const res = await serverFetch('/fill/map', { method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ labels: pending.map(f => f.label) }) });
+    if (!res?.ok) return 0;
+    data = res.data;
+  } catch { return 0; }
+  let filled = 0;
+  for (const { label, value } of (data?.fields || [])) {
+    const target = pending.find(f => f.label === label);
+    if (!target || !value || !target.el.isConnected) continue;
+    setVal(target.el, value);
+    if (String(target.el.value || '').trim()) filled++;
+  }
+  return filled;
+}
+
 function deterministicFill(app) {
   const p = mergeProfile(app?.profile);
   const t = app?.tailored || {};
