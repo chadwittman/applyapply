@@ -58,7 +58,7 @@ for (const method of ['get','post','put','patch','delete']) {
     (req, res, next) => { try { Promise.resolve(handler(req,res,next)).catch(next); } catch (e) { next(e); } }));
 }
 const PORT = process.env.PORT || 5000;
-const VERSION = '0.46.0';
+const VERSION = '0.47.0';
 const IS_PRODUCTION = process.env.NODE_ENV === 'production';
 const APP_ORIGIN = process.env.APP_ORIGIN || 'http://localhost:5000';
 const ALLOWED_WEB_ORIGINS = new Set(
@@ -95,6 +95,50 @@ app.use('/brand', express.static(path.join(__dirname, '../brand'), {
 function escapeHtml(v) {
   return String(v).replace(/&/g, '&amp;').replace(/</g, '&lt;')
     .replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
+// What applyapply is, in the plainest terms, for the engines that answer
+// questions about it. Facts here are the ones we can stand behind: prices
+// from CREDIT_COSTS, timings measured in production.
+function structuredData(objects) {
+  return objects.map(o => `<script type="application/ld+json">${JSON.stringify(o).replace(/</g, '\\u003c')}</script>`).join('\n');
+}
+
+const FAQ = () => [
+  ['Does applyapply submit job applications for me?',
+    'No. applyapply writes the application (a tailored resume, a cover note and answers to the form\'s questions) and fills the form when you ask it to, but you review every answer and press submit yourself. It never submits on your behalf.'],
+  ['What does applyapply cost?',
+    `Credits, with no subscription. $10 buys 1,000 credits and they never expire. A full application kit costs ${CREDIT_COSTS.generate} credits (about 10 cents), rewriting the tailored resume costs ${CREDIT_COSTS.resume}, and a full cover letter costs ${CREDIT_COSTS.cover_letter}. New accounts start with free credits, enough for a few kits.`],
+  ['How long does it take to write an application?',
+    'About 10 to 15 seconds for a complete kit: a resume tailored to that posting, a cover note, and answers to the questions on the form. Searching for new jobs runs in the background and emails or texts you when it finishes.'],
+  ['Where does applyapply find jobs?',
+    'It keeps its own ledger of public listings, refreshed every few hours: the a16z and Sequoia portfolio job boards, Himalayas, We Work Remotely, and the monthly Hacker News "Who is hiring" thread. You can also hand it any job link yourself.'],
+  ['Which job sites does it work on?',
+    'Greenhouse, Lever, Ashby, Workday and most hosted application systems, including postings embedded on a company\'s own careers site. If it cannot read a posting, it says so and writes nothing rather than inventing an application.'],
+  ['Do I need the browser extension?',
+    'No. Put applyapply.xyz/ in front of any job link and the kit is written on a page you can copy from, or text the link to applyapply. The Chrome extension adds one-click form filling and attaches your tailored resume on the job page itself.'],
+  ['Will it invent experience I do not have?',
+    'No. Every answer comes from your resume and the answers you have given it. Questions only you can answer (start date, work authorization, relocation, sponsorship) are left blank for you, and a resume rewrite keeps your strongest achievements word for word.'],
+  ['What happens to my resume and personal data?',
+    'It is used to run applyapply for you and nothing else. It is not sold, not used for advertising, and not used to train a general-purpose model. You can download everything or delete your account at any time from Profile and settings.'],
+  ['Can an AI agent use applyapply?',
+    'Yes. Create a personal API key and point any MCP-capable agent (Claude, ChatGPT, Cursor) at applyapply.xyz/mcp, or call the HTTP API described at applyapply.xyz/openapi.json. The agent can search listings, write kits, rewrite resumes and manage the pipeline with your credits.'],
+  ['How is this different from auto-apply tools?',
+    'Auto-apply tools send hundreds of generic applications for you, which is fast but produces low response rates and can get accounts on job sites restricted. applyapply writes one strong application at a time from your real experience and leaves you in control of what gets sent.'],
+];
+
+function siteSchema() {
+  const origin = APP_ORIGIN.replace(/\/$/, '');
+  return [
+    { '@context': 'https://schema.org', '@type': 'Organization', name: 'applyapply', url: origin, logo: origin + '/brand/icon-512.png',
+      email: 'wittman.c@gmail.com', description: 'applyapply finds jobs that match your background and writes the application with you. It never submits on your behalf.' },
+    { '@context': 'https://schema.org', '@type': 'WebSite', name: 'applyapply', url: origin },
+    { '@context': 'https://schema.org', '@type': 'SoftwareApplication', name: 'applyapply', applicationCategory: 'BusinessApplication',
+      operatingSystem: 'Web, Chrome, Edge, Brave, Arc', url: origin,
+      description: `Finds job openings that match your target roles, then writes a tailored resume, cover note and answers to each application's questions in about 10 to 15 seconds. You review and submit; applyapply never submits for you.`,
+      offers: { '@type': 'Offer', price: '10.00', priceCurrency: 'USD', description: '1,000 credits, no subscription, never expire. A full application kit costs 10 credits.' },
+      featureList: ['Job sourcing from public boards and feeds', 'Tailored resume for each posting', 'Cover note and answers to form questions', 'Chrome extension form filling', 'Text-message and agent (MCP) access'] },
+  ];
 }
 
 function metaHead({ title, desc, path: urlPath = '/', noindex = false }) {
@@ -214,7 +258,7 @@ function legalPage(res, { title, desc, path: urlPath, body }) {
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 ${metaHead({ title, desc, path: urlPath })}
 ${LEGAL_STYLE}</head><body><div class="topbar"><a class="logo" href="/">applyapply</a><div class="nav"><a href="/extension">Extension</a><a href="/buy">Credits</a></div></div>
-<main class="wrap">${body}<div class="foot"><a href="/">applyapply.xyz</a> · <a href="/privacy">Privacy</a> · <a href="/terms">Terms</a> · <a href="/feedback">Make this better</a> · <a href="/agents">Agents &amp; API</a> · <a href="/demo">Demo</a> · <a href="/extension">Extension</a> · <a href="/login">Sign in</a> · <a href="/support">Support</a></div></main></body></html>`);
+<main class="wrap">${body}<div class="foot"><a href="/">applyapply.xyz</a> · <a href="/privacy">Privacy</a> · <a href="/terms">Terms</a> · <a href="/faq">FAQ</a> · <a href="/feedback">Make this better</a> · <a href="/agents">Agents &amp; API</a> · <a href="/demo">Demo</a> · <a href="/extension">Extension</a> · <a href="/login">Sign in</a> · <a href="/support">Support</a></div></main></body></html>`);
 }
 
 app.get('/privacy', (req, res) => legalPage(res, {
@@ -296,7 +340,13 @@ app.get('/terms', (req, res) => legalPage(res, {
 
 app.get('/robots.txt', (req, res) => {
   const origin = APP_ORIGIN.replace(/\/$/, '');
+  // Answer engines cite what they are allowed to read. Each is named so the
+  // permission is unambiguous, and each gets the same private-path rules.
+  const PRIVATE = ['/pipeline', '/sourcing', '/setup', '/login', '/imessage', '/auth/', '/checkout', '/admin/', '/k/', '/https://', '/http://'];
+  const ANSWER_ENGINES = ['GPTBot', 'OAI-SearchBot', 'ChatGPT-User', 'ClaudeBot', 'Claude-User', 'Claude-SearchBot', 'anthropic-ai', 'PerplexityBot', 'Perplexity-User', 'Google-Extended', 'Applebot-Extended', 'meta-externalagent', 'Bingbot', 'Amazonbot', 'DuckAssistBot', 'CCBot'];
+  const forEngines = ANSWER_ENGINES.flatMap(bot => [`User-agent: ${bot}`, 'Allow: /', ...PRIVATE.map(p => `Disallow: ${p}`), '']);
   res.type('text/plain').send([
+    ...forEngines,
     'User-agent: *',
     'Allow: /$',
     'Allow: /buy',
@@ -326,7 +376,7 @@ app.get('/sitemap.xml', (req, res) => {
   res.type('application/xml').send(
     `<?xml version="1.0" encoding="UTF-8"?>\n` +
     `<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n` +
-    ['/', '/buy', '/extension'].map(u =>
+    ['/', '/buy', '/extension', '/demo', '/faq', '/agents', '/support', '/feedback', '/privacy', '/terms'].map(u =>
       `  <url><loc>${origin}${u}</loc><lastmod>${day}</lastmod></url>`).join('\n') +
     `\n</urlset>\n`);
 });
@@ -891,6 +941,7 @@ app.get('/', (req, res) => {
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 ${metaHead({title:'applyapply — job applications, done for you', desc:'Agents find the roles overnight, AI writes the apply kit, and the Chrome extension fills the form. Stop retyping your resume into every job board.', path:'/'})}
+${structuredData(siteSchema())}
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
 body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#000;color:#fff;line-height:1.5;-webkit-font-smoothing:antialiased}
@@ -1314,6 +1365,7 @@ setTimeout(function() { var b = document.querySelector('.drole'); startDemo('pro
     <a href="/login">Sign in</a>
     <a href="/setup">Setup</a>
     <a href="/pipeline">Pipeline</a>
+    <a href="/faq">FAQ</a>
     <a href="/privacy">Privacy</a>
     <a href="/terms">Terms</a>
     <a href="/support">Support</a>
@@ -3848,6 +3900,19 @@ curl -X POST ${origin}/generate -H "Authorization: Bearer $APPLYAPPLY_KEY" \\
 
 // A machine-readable description of the same routes the MCP tools call, so an
 // agent can use applyapply over plain HTTP without reading the docs page.
+app.get('/faq', (req, res) => {
+  const faq = FAQ();
+  legalPage(res, {
+    title: 'applyapply FAQ: what it is, what it costs, and what it will not do',
+    desc: 'Straight answers about applyapply: it never submits applications, a kit costs 10 credits, it works on Greenhouse, Lever, Ashby and Workday, and agents can call it.',
+    path: '/faq',
+    body: `<h1>Questions people ask</h1>
+${faq.map(([q, a]) => `<h2 style="text-transform:none;letter-spacing:0;font-size:17px">${escapeHtml(q)}</h2><p>${escapeHtml(a)}</p>`).join('\n')}
+<p><a href="/demo">Try it on a sample job</a> or <a href="/login">start with free credits</a>.</p>
+${structuredData([{ '@context': 'https://schema.org', '@type': 'FAQPage', mainEntity: faq.map(([q, a]) => ({ '@type': 'Question', name: q, acceptedAnswer: { '@type': 'Answer', text: a } })) }])}`,
+  });
+});
+
 app.get('/openapi.json', (req, res) => {
   const origin = APP_ORIGIN.replace(/\/$/, '');
   const json = (description, properties = {}, required = []) => ({ description, content: { 'application/json': { schema: { type: 'object', properties, required } } } });
@@ -3886,13 +3951,30 @@ app.get('/llms.txt', (req, res) => {
   const origin = APP_ORIGIN.replace(/\/$/, '');
   res.type('text/plain').send(`# applyapply
 
-> applyapply finds jobs that match a person's target roles and writes tailored application kits (resume, cover note, answers to the form's questions). The person reviews and submits; applyapply never submits applications.
+> applyapply finds jobs that match a person's target roles and writes the application with them: a resume tailored to that posting, a cover note, and answers to the questions on the form. The person reviews everything and submits it themselves. applyapply never submits an application.
 
-Agents can act for a user with a personal API key (created at ${origin}/setup) over MCP at ${origin}/mcp or plain HTTP.
+## Facts
 
+- Price: credits, no subscription. $10 buys 1,000 credits, which never expire. A full application kit costs ${CREDIT_COSTS.generate} credits (about 10 cents); rewriting the tailored resume costs ${CREDIT_COSTS.resume}; a full cover letter costs ${CREDIT_COSTS.cover_letter}. New accounts start with free credits.
+- Speed: a complete kit takes about 10 to 15 seconds.
+- Job sources: its own ledger of public listings, refreshed every few hours, from the a16z and Sequoia portfolio boards, Himalayas, We Work Remotely, and the Hacker News "Who is hiring" thread. Any job link can also be handed to it directly.
+- Application systems it reads: Greenhouse, Lever, Ashby, Workday, and postings embedded on company careers sites. A posting it cannot read is refused rather than guessed at.
+- Ways to use it: the website, a Chrome extension that fills the form on the job page, putting ${origin.replace('https://', '')}/ in front of any job link, a text-message line, and an API for agents.
+- What it will not do: submit applications, invent experience, or answer questions only the candidate can answer (start date, work authorization, relocation, sponsorship). Those are left blank.
+- Data: used only to run the service. Not sold, not used for advertising, not used to train general-purpose models. Export or delete at any time.
+- Operated by Pegasus Crypto Holdings, LLC. Support: wittman.c@gmail.com.
+
+## For agents
+
+Create a personal API key at ${origin}/setup, then use MCP at ${origin}/mcp (bearer token) or the HTTP API at ${origin}/openapi.json. Tools cover searching current listings, running a job search, writing and fetching kits, rewriting resumes, saving the person's answers, and the pipeline.
+
+## Pages
+
+- [FAQ](${origin}/faq): what it is, what it costs, what it will not do
+- [Demo](${origin}/demo): the real extension sidebar on a sample application, nothing sent or charged
 - [Agents & API](${origin}/agents): connecting an agent, tools, HTTP routes, limits
-- [MCP server](${origin}/mcp): tools for searching listings, writing kits, resumes and the pipeline (send a personal API key as a bearer token)
-- [OpenAPI](${origin}/openapi.json): the same actions over plain HTTP
+- [OpenAPI](${origin}/openapi.json)
+- [Extension](${origin}/extension)
 - [Privacy policy](${origin}/privacy)
 - [Terms of Service](${origin}/terms)
 - [Support](${origin}/support)
