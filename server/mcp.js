@@ -36,6 +36,13 @@ const TOOLS = [
     url: str('The job posting or application URL'), force: { type: 'boolean', description: 'Write a fresh kit even if one exists (charges again)' },
   } } },
   { name: 'get_application_kit', description: 'The saved kit for a job URL, if one exists. Free.', inputSchema: { type: 'object', required: ['url'], properties: { url: str('The job URL') } } },
+  { name: 'get_kit_link', description: 'A private page for a kit that the person can open on a phone without signing in, plus direct links to their tailored resume and cover letter as PDFs. Free. Hand this to the person you are working for.', inputSchema: { type: 'object', required: ['url'], properties: { url: str('The job URL') } } },
+  { name: 'list_resume_questions', description: 'What the tailored resume for a job still cannot evidence: the questions worth asking the person, with any answers they have already given. Free.', inputSchema: { type: 'object', required: ['url'], properties: { url: str('The job URL') } } },
+  { name: 'answer_resume_question', description: 'Save the person\'s answer to one of those questions. It is stored on their profile and strengthens every future application, not just this one. Free. Use their own words; do not invent experience.', inputSchema: { type: 'object', required: ['question', 'answer'], properties: {
+    question: str('The question, exactly as list_resume_questions gave it'), answer: str('What the person said, in their words') } } },
+  { name: 'rewrite_resume', description: 'Rewrite the tailored resume for a job using everything the person has told us, and report the new match. Costs credits (see list_sources pricing in get_account). Ask them first.', inputSchema: { type: 'object', required: ['url'], properties: { url: str('The job URL') } } },
+  { name: 'list_saved_answers', description: 'Everything the person has told us about their work, saved from earlier questions. Free. Read this before asking them something they have already answered.', inputSchema: { type: 'object', properties: {} } },
+  { name: 'send_feedback', description: 'Report something broken or missing in applyapply (a job link that produced a bad kit, a wrong question). It reaches the people building it.', inputSchema: { type: 'object', required: ['message'], properties: { message: str('What happened, and what was expected') } } },
   { name: 'set_job_status', description: 'Move a pipeline job to a status, e.g. applied after the user submits.', inputSchema: { type: 'object', required: ['url', 'status'], properties: {
     url: str('The job URL as it appears in the pipeline'), status: str('New status', { enum: ['new', 'reviewed', 'applying', 'applied', 'skipped', 'rejected'] }),
   } } },
@@ -92,6 +99,25 @@ module.exports = function mountMcp(app, { db, port, limiter, sourceNames }) {
     generate_application_kit: (req, args) => call(req, 'POST', '/generate', { url: args.url, force: !!args.force }),
     get_application_kit: (req, args) => call(req, 'GET', '/application?url=' + encodeURIComponent(args.url)),
     set_job_status: (req, args) => call(req, 'POST', '/sourced/status', { url: args.url, status: args.status }),
+    get_kit_link: (req, args) => call(req, 'POST', '/kit-link', { url: args.url }),
+    list_resume_questions: async (req, args) => {
+      const kit = await call(req, 'GET', '/application?url=' + encodeURIComponent(args.url));
+      const cov = kit?.tailored_resume?.coverage || {};
+      return { match: kit?.tailored_resume?.jev_match?.score ? Math.round((kit.tailored_resume.jev_match.score / 5) * 100) + '%' : null,
+        unanswered: cov.gaps || [], answered: cov.answered || [] };
+    },
+    answer_resume_question: (req, args) => call(req, 'POST', '/interview/context', { question: args.question, answer: args.answer }),
+    rewrite_resume: async (req, args) => {
+      const kit = await call(req, 'GET', '/application?url=' + encodeURIComponent(args.url));
+      if (!kit?.id) throw new Error('No kit for that job yet. Use generate_application_kit first.');
+      const resume = await call(req, 'POST', '/resume-tailor', { appId: kit.id });
+      const pct = x => Math.round((Number(x) / 5) * 100) + '%';
+      return { match: resume.jev_match?.score ? pct(resume.jev_match.score) : null,
+        previous_match: resume.previous_match_score ? pct(resume.previous_match_score) : null,
+        answers_used: resume.evidence_used || 0, still_unanswered: resume.coverage?.gaps || [], summary: resume.summary };
+    },
+    list_saved_answers: req => call(req, 'GET', '/interview'),
+    send_feedback: (req, args) => call(req, 'POST', '/feedback', { message: args.message, page: 'mcp' }),
   };
 
   async function handle(req, msg) {

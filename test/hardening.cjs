@@ -397,6 +397,12 @@ async function main() {
     assert.equal(await db.revokeApiKey(owner,id),true);
     assert.equal((await rpc({jsonrpc:'2.0',id:7,method:'tools/list'})).status,401,'Revoked key rejected');
     assert.equal((await rpc({jsonrpc:'2.0',id:8,method:'tools/list'},'')).status,401,'No key rejected');
+    // Everything the product does is callable, and described for machines.
+    for (const t of ['get_kit_link','list_resume_questions','answer_resume_question','rewrite_resume','list_saved_answers','send_feedback']) assert.ok(tools.includes(t),t);
+    const spec=await (await originalFetch(origin+'/openapi.json')).json();
+    assert.equal(spec.openapi,'3.1.0');
+    for (const path of ['/generate','/kit-link','/resume-tailor','/interview/context','/source/run','/feedback']) assert.ok(spec.paths[path],path);
+    assert.match(spec.info.description,/never submits/);
   });
   await check('Reopening a kit shows answered resume gaps as answered, not blank',async()=>{
     const owner='gaps@audit.invalid';await balance(owner,0);
@@ -443,6 +449,18 @@ async function main() {
     const exported=await db.getAccountExport('agent@audit.invalid');
     for (const k of ['runs','credit_history','api_keys','resume_structure']) assert.ok(k in exported,k);
     assert.ok(exported.api_keys.length && !('key_hash' in exported.api_keys[0]),'Key metadata exported without the hash');
+  });
+  await check('An agent can hand back a kit page with its PDFs',async()=>{
+    const owner='kitlink@audit.invalid'; await balance(owner,0);
+    const linkUrl='https://jobs.lever.co/linkco/pm';
+    await db.saveKit({id:'link-kit',user_email:owner,url:linkUrl,company:'LinkCo',role:'PM',job_description:'About the role: own it. Responsibilities: ship. Qualifications: experience.',
+      tailored:{why_role:'w',cover_note:'c',qa:[]},tailored_resume:{name:'L',summary:'s',experience:[],skills:[]}});
+    const r=await call('POST','/kit-link',owner,{url:linkUrl});
+    assert.equal(r.status,200);
+    assert.match(r.data.kit_url,/\/k\/[A-Za-z0-9_-]{16}$/);
+    assert.equal(r.data.resume_pdf,r.data.kit_url+'/resume.pdf');
+    assert.equal(r.data.cover_letter_pdf,r.data.kit_url+'/cover-letter.pdf');
+    assert.equal((await call('POST','/kit-link',owner,{url:'https://jobs.lever.co/linkco/nothing'})).status,404);
   });
   await check('Search window is part of the cache key and honors date-only board stamps',async()=>{
     assert.notEqual(db.cacheKeyFor('Sequoia job board','',true,'remote',24),db.cacheKeyFor('Sequoia job board','',true,'remote',0));

@@ -58,7 +58,7 @@ for (const method of ['get','post','put','patch','delete']) {
     (req, res, next) => { try { Promise.resolve(handler(req,res,next)).catch(next); } catch (e) { next(e); } }));
 }
 const PORT = process.env.PORT || 5000;
-const VERSION = '0.45.0';
+const VERSION = '0.46.0';
 const IS_PRODUCTION = process.env.NODE_ENV === 'production';
 const APP_ORIGIN = process.env.APP_ORIGIN || 'http://localhost:5000';
 const ALLOWED_WEB_ORIGINS = new Set(
@@ -654,6 +654,21 @@ async function sharedKit(req, res) {
   const profile = { ...(found.kit.profile || {}), ...Object.fromEntries(Object.entries(await getProfileByUserEmail(found.owner) || {}).filter(([, v]) => v)) };
   return { ...found, profile };
 }
+// A shareable page for one kit, plus its files: what an agent hands back to
+// the person it is working for.
+app.post('/kit-link', apiLimiter, async (req, res) => {
+  const userEmail = reqUserEmail(req);
+  if (!userEmail) return res.status(401).json({ error: 'Sign in required' });
+  const { url, appId } = req.body || {};
+  const kit = appId ? await loadKit(appId, userEmail) : url ? await findApplicationByUrl(url, userEmail) : null;
+  if (!kit || kit === 'forbidden') return res.status(404).json({ error: 'No kit for that job yet. Generate one first.' });
+  const token = await db.kitShareToken(userEmail, kit.id);
+  const base = APP_ORIGIN.replace(/\/$/, '') + '/k/' + token;
+  res.json({ kit_url: base, resume_pdf: kit.tailored_resume ? base + '/resume.pdf' : null,
+    cover_letter_pdf: kit.cover_letter || kit.tailored?.cover_note ? base + '/cover-letter.pdf' : null,
+    job_url: kit.url, company: kit.company, role: kit.role, expires_in_days: 30 });
+});
+
 app.get('/k/:token/resume.pdf', apiLimiter, async (req, res) => {
   const found = await sharedKit(req, res); if (!found) return;
   if (!found.kit.tailored_resume) return res.status(404).send('No resume in this kit');
@@ -3824,8 +3839,46 @@ curl -X POST ${origin}/generate -H "Authorization: Bearer $APPLYAPPLY_KEY" \\
 <li><code>GET /sourced?status=new</code>, <code>POST /sourced/status</code>: your pipeline</li>
 <li><code>POST /generate</code> (${CREDIT_COSTS.generate} credits), <code>GET /application?url=</code>: application kits</li>
 </ul>
+<h2>Machine-readable</h2>
+<p>The same actions as OpenAPI: <a href="/openapi.json">/openapi.json</a>. Tool descriptions and this page are generated from the server, so they cannot drift from what it does.</p>
 <h2>Limits</h2>
 <p>60 requests a minute per account. Keys cannot create other keys, export the account, or delete it; those need a signed-in session.</p>`,
+  });
+});
+
+// A machine-readable description of the same routes the MCP tools call, so an
+// agent can use applyapply over plain HTTP without reading the docs page.
+app.get('/openapi.json', (req, res) => {
+  const origin = APP_ORIGIN.replace(/\/$/, '');
+  const json = (description, properties = {}, required = []) => ({ description, content: { 'application/json': { schema: { type: 'object', properties, required } } } });
+  const ok = description => ({ 200: { description, content: { 'application/json': { schema: { type: 'object' } } } } });
+  res.setHeader('Cache-Control', 'public, max-age=3600');
+  res.json({
+    openapi: '3.1.0',
+    info: { title: 'applyapply', version: VERSION, description: 'Find jobs that match a person and write tailored application kits. applyapply never submits an application: the person reviews and submits. Actions marked as costing credits spend the account balance.', contact: { url: origin + '/agents' } },
+    servers: [{ url: origin }],
+    security: [{ apiKey: [] }],
+    components: { securitySchemes: { apiKey: { type: 'http', scheme: 'bearer', description: 'A personal API key (aa_live_...) created at ' + origin + '/setup' } } },
+    paths: {
+      '/auth/me': { get: { summary: 'Account email and credit balance', responses: ok('Account') } },
+      '/profile': {
+        get: { summary: 'The saved profile', responses: ok('Profile') },
+        post: { summary: 'Update profile fields; only the fields sent change', requestBody: json('Profile fields', { first_name: { type: 'string' }, last_name: { type: 'string' }, phone: { type: 'string' }, linkedin: { type: 'string' }, location: { type: 'string' }, location_pref: { type: 'string', enum: ['remote', 'hybrid', 'any'] }, target_roles: { type: 'string' }, salary: { type: 'string' }, work_authorization: { type: 'string', enum: ['', 'yes', 'no'] }, sponsorship: { type: 'string', enum: ['', 'yes', 'no'] }, bio: { type: 'string' } }), responses: ok('Saved') },
+      },
+      '/source/catalog': { get: { summary: 'Sources a run can use, with credit cost', responses: ok('Sources') } },
+      '/source/run': { post: { summary: 'Start a sourcing run (costs credits per source)', requestBody: json('Sources to use', { sources: { type: 'array', items: { type: 'string' } } }), responses: ok('Run started') } },
+      '/source/status': { get: { summary: 'Whether a run is active, and pipeline counts', responses: ok('Status') } },
+      '/sourced': { get: { summary: 'Jobs in the pipeline', parameters: [{ name: 'status', in: 'query', schema: { type: 'string', enum: ['new', 'reviewed', 'applying', 'applied', 'skipped', 'rejected'] } }], responses: ok('Jobs') } },
+      '/sourced/status': { post: { summary: 'Move a pipeline job to a status', requestBody: json('Job and status', { url: { type: 'string' }, status: { type: 'string' } }, ['url', 'status']), responses: ok('Updated') } },
+      '/generate': { post: { summary: 'Write an application kit for a job URL (costs ' + CREDIT_COSTS.generate + ' credits; returns a saved kit free)', requestBody: json('The job', { url: { type: 'string' }, force: { type: 'boolean', description: 'Write a fresh kit even if one exists' }, note: { type: 'string', description: 'A direction for this kit, e.g. lean on fintech work' } }, ['url']), responses: { ...ok('The kit'), 422: { description: 'The posting could not be read; nothing saved or charged' }, 402: { description: 'Out of credits' } } } },
+      '/application': { get: { summary: 'The saved kit for a job URL', parameters: [{ name: 'url', in: 'query', required: true, schema: { type: 'string' } }], responses: ok('The kit') } },
+      '/kit-link': { post: { summary: 'A private page for a kit, with resume and cover letter PDFs', requestBody: json('The job', { url: { type: 'string' } }, ['url']), responses: ok('Links') } },
+      '/resume-tailor': { post: { summary: 'Rewrite the tailored resume using saved answers (costs ' + CREDIT_COSTS.resume + ' credits)', requestBody: json('The kit', { appId: { type: 'string' } }, ['appId']), responses: ok('The resume') } },
+      '/cover-letter': { post: { summary: 'Write a full cover letter (costs ' + CREDIT_COSTS.cover_letter + ' credits)', requestBody: json('The kit', { appId: { type: 'string' } }, ['appId']), responses: ok('The letter') } },
+      '/interview': { get: { summary: 'Everything the person has told us about their work', responses: ok('Saved answers') } },
+      '/interview/context': { post: { summary: "Save the person's answer to a question", requestBody: json('Question and answer', { question: { type: 'string' }, answer: { type: 'string' } }, ['question', 'answer']), responses: ok('Saved') } },
+      '/feedback': { post: { summary: 'Report something broken or missing in applyapply', requestBody: json('The report', { message: { type: 'string' } }, ['message']), responses: ok('Received') } },
+    },
   });
 });
 
@@ -3838,6 +3891,8 @@ app.get('/llms.txt', (req, res) => {
 Agents can act for a user with a personal API key (created at ${origin}/setup) over MCP at ${origin}/mcp or plain HTTP.
 
 - [Agents & API](${origin}/agents): connecting an agent, tools, HTTP routes, limits
+- [MCP server](${origin}/mcp): tools for searching listings, writing kits, resumes and the pipeline (send a personal API key as a bearer token)
+- [OpenAPI](${origin}/openapi.json): the same actions over plain HTTP
 - [Privacy policy](${origin}/privacy)
 - [Terms of Service](${origin}/terms)
 - [Support](${origin}/support)
