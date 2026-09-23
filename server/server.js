@@ -58,7 +58,7 @@ for (const method of ['get','post','put','patch','delete']) {
     (req, res, next) => { try { Promise.resolve(handler(req,res,next)).catch(next); } catch (e) { next(e); } }));
 }
 const PORT = process.env.PORT || 5000;
-const VERSION = '0.52.0';
+const VERSION = '0.53.0';
 const IS_PRODUCTION = process.env.NODE_ENV === 'production';
 const APP_ORIGIN = process.env.APP_ORIGIN || 'http://localhost:5000';
 const ALLOWED_WEB_ORIGINS = new Set(
@@ -1028,6 +1028,12 @@ hr{border:none;border-top:1px solid #111}
 .time-task{font-size:14px;font-weight:500;color:#fff}
 .time-before{font-size:13px;color:#b9b9b9;text-decoration:line-through;text-decoration-color:#444}
 .time-after{font-size:14px;color:#ccc;font-weight:500}
+.verdicts{margin:28px 0 24px}
+.verdict{display:grid;grid-template-columns:150px 1fr;gap:18px;padding:16px 0;border-top:1px solid #111;align-items:baseline}
+.verdict:last-child{border-bottom:1px solid #111}
+.verdict-v{font-size:13px;font-weight:600;color:#fff;letter-spacing:.01em}
+.verdict-d{font-size:14px;color:#ccc;line-height:1.65}
+@media(max-width:560px){.verdict{grid-template-columns:1fr;gap:4px}}
 .price-n{font-size:56px;font-weight:700;letter-spacing:-.05em;line-height:1;margin-bottom:8px}
 .price-s{font-size:15px;color:#bbb;margin-bottom:12px}
 .price-d{font-size:13px;color:#888;margin-bottom:24px}
@@ -1073,6 +1079,11 @@ footer{padding:24px 32px;border-top:1px solid #111;display:flex;justify-content:
       <div class="time-after">runs overnight</div>
     </div>
     <div class="time-row">
+      <div class="time-task">Tailoring your resume</div>
+      <div class="time-before">45 to 90 minutes per posting</div>
+      <div class="time-after">10 seconds</div>
+    </div>
+    <div class="time-row">
       <div class="time-task">Cover letter</div>
       <div class="time-before">60 to 90 minutes</div>
       <div class="time-after">30 seconds</div>
@@ -1088,6 +1099,19 @@ footer{padding:24px 32px;border-top:1px solid #111;display:flex;justify-content:
       <div class="time-after">built in</div>
     </div>
   </div>
+</div>
+
+<hr>
+
+<div class="section">
+  <div class="eyebrow">Your resume, per posting</div>
+  <p class="body-l">Most AI resume tools rewrite every line, which flattens the achievements that got you the interviews in the first place. applyapply reads your resume once, then judges each bullet twice: how much it matters to the job in front of it, and how strong it is on its own.</p>
+  <div class="verdicts">
+    <div class="verdict"><div class="verdict-v">Kept word for word</div><div class="verdict-d">Your career-best work, reproduced exactly as you wrote it, every number intact.</div></div>
+    <div class="verdict"><div class="verdict-v">Rewritten for the role</div><div class="verdict-d">Every fact kept, reworded so the posting's own language and priorities come through.</div></div>
+    <div class="verdict"><div class="verdict-v">Dropped</div><div class="verdict-d">Off-topic for this job, so it stops crowding out the work that wins it.</div></div>
+  </div>
+  <p class="body-l">Then it names what this posting asks for that your resume cannot show yet. Answer in a sentence or a voice note and it becomes a bullet in the next version, and evidence for every application after it.</p>
 </div>
 
 <hr>
@@ -1318,8 +1342,10 @@ function openJob(job) {
 
   const kit = document.getElementById('dsb-kit');
   const gen = document.getElementById('dsb-gen');
+  // Explicit values both ways: #dsb-kit is display:none in the stylesheet, so
+  // clearing the inline style hides the kit instead of showing it.
   kit.style.display = 'none';
-  gen.style.display = '';
+  gen.style.display = 'block';
 
   document.getElementById('demo-sidebar').classList.add('open');
 
@@ -1329,7 +1355,7 @@ function openJob(job) {
     document.getElementById('dsb-qlbl').textContent = job.q;
     document.getElementById('dsb-qa').textContent = job.a;
     gen.style.display = 'none';
-    kit.style.display = '';
+    kit.style.display = 'block';
   }, 950);
 }
 
@@ -1337,7 +1363,7 @@ function closeSidebar(instant) {
   document.getElementById('demo-sidebar').classList.remove('open');
   if (instant) {
     document.getElementById('dsb-kit').style.display = 'none';
-    document.getElementById('dsb-gen').style.display = '';
+    document.getElementById('dsb-gen').style.display = 'block';
   }
   document.querySelectorAll('.djob').forEach(el => el.classList.remove('selected'));
 }

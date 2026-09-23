@@ -52,4 +52,20 @@ try {
   await home.locator('.url-trick').scrollIntoViewIfNeeded();
   await home.screenshot({ path: '/tmp/applyapply-urltrick.png' });
   console.log('PASS: homepage job-link box opens the URL-prefix kit page');
+
+  // "See it work": pick a role, click a result, and the kit has to actually
+  // appear. It was stuck on "Generating" because the reveal cleared an inline
+  // style over a stylesheet rule that hides the panel.
+  await home.goto(origin + '/');
+  await home.locator('.demo-outer').scrollIntoViewIfNeeded();
+  await home.waitForSelector('.djob.visible', { timeout: 15000 });
+  await home.locator('.djob').first().click();
+  await home.waitForSelector('.demo-sidebar.open', { timeout: 5000 });
+  await home.waitForFunction(() => {
+    const kit = document.getElementById('dsb-kit');
+    return kit && getComputedStyle(kit).display !== 'none' && kit.getBoundingClientRect().height > 20;
+  }, null, { timeout: 8000 });
+  assert.ok((await home.textContent('#dsb-cover')).length > 40, 'the kit shows a cover note');
+  assert.equal(await home.isVisible('#dsb-gen'), false, 'the generating line is gone once the kit lands');
+  console.log('PASS: homepage demo opens a kit when a result is clicked');
 } finally { await browser.close(); }
