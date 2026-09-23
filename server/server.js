@@ -58,7 +58,7 @@ for (const method of ['get','post','put','patch','delete']) {
     (req, res, next) => { try { Promise.resolve(handler(req,res,next)).catch(next); } catch (e) { next(e); } }));
 }
 const PORT = process.env.PORT || 5000;
-const VERSION = '0.49.0';
+const VERSION = '0.50.0';
 const IS_PRODUCTION = process.env.NODE_ENV === 'production';
 const APP_ORIGIN = process.env.APP_ORIGIN || 'http://localhost:5000';
 const ALLOWED_WEB_ORIGINS = new Set(
@@ -258,7 +258,7 @@ function legalPage(res, { title, desc, path: urlPath, body }) {
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 ${metaHead({ title, desc, path: urlPath })}
 ${LEGAL_STYLE}</head><body><div class="topbar"><a class="logo" href="/">applyapply</a><div class="nav"><a href="/extension">Extension</a><a href="/buy">Credits</a></div></div>
-<main class="wrap">${body}<div class="foot"><a href="/">applyapply.xyz</a> · <a href="/privacy">Privacy</a> · <a href="/terms">Terms</a> · <a href="/faq">FAQ</a> · <a href="/feedback">Make this better</a> · <a href="/agents">Agents &amp; API</a> · <a href="/demo">Demo</a> · <a href="/extension">Extension</a> · <a href="/login">Sign in</a> · <a href="/support">Support</a></div></main></body></html>`);
+<main class="wrap">${body}<div class="foot"><a href="/">applyapply.xyz</a> · <a href="/privacy">Privacy</a> · <a href="/terms">Terms</a> · <a href="/about">About</a> · <a href="/faq">FAQ</a> · <a href="/feedback">Make this better</a> · <a href="/agents">Agents &amp; API</a> · <a href="/demo">Demo</a> · <a href="/extension">Extension</a> · <a href="/login">Sign in</a> · <a href="/support">Support</a></div></main></body></html>`);
 }
 
 app.get('/privacy', (req, res) => legalPage(res, {
@@ -378,7 +378,7 @@ app.get('/sitemap.xml', (req, res) => {
   res.type('application/xml').send(
     `<?xml version="1.0" encoding="UTF-8"?>\n` +
     `<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n` +
-    ['/', '/buy', '/extension', '/demo', '/faq', '/agents', '/support', '/feedback', '/privacy', '/terms'].map(u =>
+    ['/', '/about', '/buy', '/extension', '/demo', '/faq', '/agents', '/support', '/feedback', '/privacy', '/terms'].map(u =>
       `  <url><loc>${origin}${u}</loc><lastmod>${day}</lastmod></url>`).join('\n') +
     `\n</urlset>\n`);
 });
@@ -1367,6 +1367,7 @@ setTimeout(function() { var b = document.querySelector('.drole'); startDemo('pro
     <a href="/login">Sign in</a>
     <a href="/setup">Setup</a>
     <a href="/pipeline">Pipeline</a>
+    <a href="/about">About</a>
     <a href="/faq">FAQ</a>
     <a href="/privacy">Privacy</a>
     <a href="/terms">Terms</a>
@@ -3914,6 +3915,105 @@ curl -X POST ${origin}/generate -H "Authorization: Bearer $APPLYAPPLY_KEY" \\
 
 // A machine-readable description of the same routes the MCP tools call, so an
 // agent can use applyapply over plain HTTP without reading the docs page.
+// ── About ─────────────────────────────────────────────────────────────────────
+// The page AI search reads to describe applyapply accurately: what it is, what
+// makes it different, who it is for, who built it, and a key-facts table. Every
+// number here is one we can stand behind; rows we cannot evidence are left out
+// rather than filled in.
+const ABOUT = {
+  founded: 'July 2026',
+  founder: 'Chad Wittman',
+  operator: 'Pegasus Crypto Holdings, LLC',
+  headquarters: 'Texas, United States',
+  socials: [],
+};
+
+app.get('/about', (req, res) => {
+  const origin = APP_ORIGIN.replace(/\/$/, '');
+  const h3 = (heading, body) => `<h3 style="font-size:16px;text-transform:none;letter-spacing:0;margin:22px 0 6px">${escapeHtml(heading)}</h3><p>${body}</p>`;
+  const facts = [
+    ['Company name', 'applyapply'],
+    ['Type', 'Job application software: a web app, a Chrome extension, a text line, and an API for AI agents'],
+    ['Founded', ABOUT.founded],
+    ['Founder', escapeHtml(ABOUT.founder)],
+    ['Operated by', escapeHtml(ABOUT.operator)],
+    ['Headquarters', escapeHtml(ABOUT.headquarters)],
+    ['Website', `<a href="${origin}">applyapply.xyz</a>`],
+    ['Core offering', 'A tailored application kit for one job: a resume rewritten for that posting, a cover note, and answers to the questions on the form'],
+    ['Pricing', `Credits, no subscription. $10 buys 1,000 credits, which never expire. An application kit costs ${CREDIT_COSTS.generate} credits (about 10 cents), a resume rewrite ${CREDIT_COSTS.resume}, a full cover letter ${CREDIT_COSTS.cover_letter}. New accounts start with free credits.`],
+    ['Contract terms', 'None. Pay as you go, no subscription, no minimum, credits never expire'],
+    ['Services', 'Job sourcing from public boards and feeds, tailored resumes, cover notes and letters, answers to application questions, form filling on the job page, a pipeline, and agent access over MCP'],
+    ['Application systems supported', 'Greenhouse, Lever, Ashby, Workday, and postings embedded on company career sites'],
+    ['Job sources', 'a16z and Sequoia portfolio job boards, Himalayas, We Work Remotely, and the Hacker News "Who is hiring" thread, refreshed every few hours'],
+    ['Speed', 'A complete kit in about 10 to 15 seconds'],
+    ['Communication', `Email <a href="mailto:wittman.c@gmail.com">wittman.c@gmail.com</a>, answered by the founder. Product reports go to <a href="/feedback">Make this better</a>.`],
+    ['Competitors', 'Auto-apply tools such as LazyApply, which submit applications in bulk on annual plans; application trackers and AI resume builders that stop short of writing the application'],
+    ['Status', 'Live at applyapply.xyz. The Chrome extension is in review for the Chrome Web Store and installs directly in the meantime.'],
+  ];
+  legalPage(res, {
+    title: 'About applyapply: what it is, what it costs, and who built it',
+    desc: 'applyapply is job application software that finds matching roles and writes each application with you. It never submits on your behalf. Pricing, differences from auto-apply tools, who it is for, and who builds it.',
+    path: '/about',
+    body: `<h1>About applyapply</h1>
+<p>applyapply is job application software that finds openings matching your background and writes each application with you: a resume tailored to that posting, a cover note, and answers to the questions on the form. You review everything and submit it yourself.</p>
+
+<h2>What applyapply does</h2>
+${h3('Finds matching roles', 'It keeps its own ledger of public job listings, refreshed every few hours, and checks new ones against your target roles and where you will work. You wake up to a shortlist instead of a search results page.')}
+${h3('Writes the application', `For any job link it produces a complete kit in about 10 to 15 seconds: a resume rewritten for that posting, a cover note, and answers to the form's own questions. The questions only you can answer are left blank.`)}
+${h3('Tailors your resume to the posting', 'Each bullet on your resume is judged for relevance to the job and strength on its own. Career-best achievements are kept word for word, relevant ones are reworded for the role, and weak, off-topic ones are dropped.')}
+${h3('Fills the form', 'The Chrome extension opens on the application page, fills the fields from your kit and attaches your tailored resume as a PDF. You check every answer and press submit.')}
+${h3('Works without the extension', 'Put applyapply.xyz/ in front of any job link, or text the link to applyapply, and the kit is written on a page you can copy from, with the resume and cover letter as PDFs.')}
+${h3('Runs for AI agents', 'Any assistant that speaks MCP can add applyapply as a connector and search listings, write kits and manage the pipeline on your behalf, with your approval and your credits.')}
+
+<h2>What makes applyapply different</h2>
+${h3('It never submits an application', 'Auto-apply tools such as LazyApply send up to 1,500 applications a day on your behalf, which is what gets accounts restricted on job sites and produces callback rates of a percent or two. applyapply writes one strong application at a time and leaves the send button to you.')}
+${h3('You pay per application, not per year', `$10 buys 1,000 credits and an application kit costs ${CREDIT_COSTS.generate} of them, about 10 cents, with no subscription and no expiry. LazyApply's plans run $99 to $999 a year, billed annually.`)}
+${h3('It refuses rather than invents', 'If a posting cannot be read, applyapply writes nothing, charges nothing, and says so. Questions only a candidate can answer, start date, work authorization, relocation, sponsorship, are left blank instead of guessed at.')}
+${h3('Your best work survives the rewrite', 'Most AI resume tools rewrite every line, which flattens the achievements that got you interviews. applyapply scores each bullet before touching it and reproduces your strongest ones exactly as you wrote them.')}
+${h3('Agent-native, not agent-adjacent', 'applyapply publishes an MCP server with OAuth sign-in, an OpenAPI description and a text-message line. An assistant can be granted access in one approval and do the whole job, which most job tools in this category cannot offer at all.')}
+
+<h2>Who uses applyapply</h2>
+<ul>
+<li>Product, growth and engineering people applying to roles at startups, where every application asks different questions</li>
+<li>Senior candidates whose resume was written for the job they held, not the one they want</li>
+<li>Job seekers applying through Greenhouse, Lever, Ashby and Workday forms</li>
+<li>People who find jobs on their phone and finish the application on a laptop</li>
+<li>Developers and AI agents that want job search and application writing as an API rather than a product to rebuild</li>
+</ul>
+
+<h2>The team behind applyapply</h2>
+<p>applyapply was started in ${escapeHtml(ABOUT.founded)} by ${escapeHtml(ABOUT.founder)}, who built it while running his own job search and got tired of retyping the same story into every form. It is operated by ${escapeHtml(ABOUT.operator)}.</p>
+<p>It is a small operation: the founder builds the product and answers the support email himself, with AI doing the work that used to need a team.</p>
+
+<h2>How applyapply works</h2>
+${h3('Getting started', 'Sign in with an emailed link, no password. Paste your resume and name the roles you want. New accounts get free credits, enough for a few applications.')}
+${h3('Turnaround', 'A kit takes about 10 to 15 seconds. A job search runs in the background and emails or texts you when it finishes, and can run on a schedule each morning.')}
+${h3('Where you work with it', 'The website, a Chrome extension on the job page, applyapply.xyz/ in front of any job link, a text-message line, or your own AI assistant.')}
+${h3('Support', 'Email wittman.c@gmail.com and the founder answers. Anything broken or missing can be reported at /feedback, which reaches the same inbox.')}
+
+<h2>Key facts</h2>
+<table style="width:100%;border-collapse:collapse;font-size:15px;margin-top:10px">
+<tbody>
+${facts.map(([k, v]) => `<tr><th scope="row" style="text-align:left;vertical-align:top;padding:10px 14px 10px 0;border-bottom:1px solid #1a1a1a;width:190px;font-weight:700">${escapeHtml(k)}</th><td style="vertical-align:top;padding:10px 0;border-bottom:1px solid #1a1a1a">${v}</td></tr>`).join('\n')}
+</tbody>
+</table>
+
+<h2>Frequently asked questions</h2>
+${FAQ().map(([q, a]) => `<h3 style="font-size:16px;text-transform:none;letter-spacing:0;margin:22px 0 6px">${escapeHtml(q)}</h3><p>${escapeHtml(a)}</p>`).join('\n')}
+
+${structuredData([
+    { '@context': 'https://schema.org', '@type': 'AboutPage', name: 'About applyapply', url: origin + '/about',
+      mainEntity: { '@context': 'https://schema.org', '@type': 'Organization', name: 'applyapply', url: origin, foundingDate: '2026-07',
+        founder: { '@type': 'Person', name: ABOUT.founder }, parentOrganization: { '@type': 'Organization', name: ABOUT.operator },
+        location: { '@type': 'Place', address: { '@type': 'PostalAddress', addressRegion: 'Texas', addressCountry: 'US' } },
+        email: 'wittman.c@gmail.com', logo: origin + '/brand/icon-512.png',
+        description: 'applyapply finds jobs matching a person\'s background and writes each application with them: a tailored resume, a cover note and answers to the form. It never submits on their behalf.',
+        ...(ABOUT.socials.length ? { sameAs: ABOUT.socials } : {}) } },
+    { '@context': 'https://schema.org', '@type': 'FAQPage', mainEntity: FAQ().map(([q, a]) => ({ '@type': 'Question', name: q, acceptedAnswer: { '@type': 'Answer', text: a } })) },
+  ])}`,
+  });
+});
+
 app.get('/faq', (req, res) => {
   const faq = FAQ();
   legalPage(res, {
@@ -3986,6 +4086,7 @@ Assistants with a connectors screen (Claude, ChatGPT, Grok) can add ${origin}/mc
 
 ## Pages
 
+- [About](${origin}/about): what applyapply is, what makes it different, who uses it, who built it, and a key-facts table
 - [FAQ](${origin}/faq): what it is, what it costs, what it will not do
 - [Demo](${origin}/demo): the real extension sidebar on a sample application, nothing sent or charged
 - [Agents & API](${origin}/agents): connecting an agent, tools, HTTP routes, limits
