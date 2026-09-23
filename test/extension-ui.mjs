@@ -86,12 +86,15 @@ await page.addScriptTag({content:await readFile(extensionDir.replace(/\/?$/,'/')
   console.log('PASS: explicit fill preserves existing answers and unknown qualifications');
   // Ashby's standard name field is "Full Name", which matched no rule at all,
   // and a profile with no LinkedIn or portfolio used to look like a fill that
-  // silently skipped two fields.
-  const det = await page.evaluate(()=>deterministicFill(currentApp));
-  assert.equal(await page.locator('#full').inputValue(),'Alice','Full Name fills');
-  assert.equal(await page.locator('#li').inputValue(),'','no LinkedIn on this profile');
-  assert.deepEqual(det.missing,['LinkedIn URL','portfolio URL'],'the empty profile values are named, not counted as manual');
-  console.log('PASS: Full Name fills; profile values a form needs are named');
+  // silently skipped two fields. Shipped after store-1.19.3, so the frozen
+  // release pass does not assert it.
+  if (!process.env.AA_EXTENSION_DIR) {
+    const det = await page.evaluate(()=>deterministicFill(currentApp));
+    assert.equal(await page.locator('#full').inputValue(),'Alice','Full Name fills');
+    assert.equal(await page.locator('#li').inputValue(),'','no LinkedIn on this profile');
+    assert.deepEqual(det.missing,['LinkedIn URL','portfolio URL'],'the empty profile values are named, not counted as manual');
+    console.log('PASS: Full Name fills; profile values a form needs are named');
+  }
   await page.evaluate(()=>{shadow.getElementById('jaa-sidebar').classList.add('open');});
   await page.locator('#jaa-resume-out .sec-hd').click();
   const answer=page.locator('#jaa-resume-out textarea').first();
