@@ -33,6 +33,9 @@ await page.route('https://jobs.lever.co/**',route=>route.fulfill({contentType:'t
   <h1>Product Manager</h1><form>
   <label for="name">First name</label><input id="name" value="User typed this">
   <label for="email">Email</label><input id="email" type="email">
+  <label for="full">Full Name</label><input id="full">
+  <label for="li">LinkedIn Profile URL</label><input id="li" type="url">
+  <label for="site">Personal Website/Portfolio</label><input id="site" type="url">
   <fieldset><legend>Do you have 10 years of experience?</legend><label><input type="radio" name="experience" value="yes">Yes</label><label><input type="radio" name="experience" value="no">No</label></fieldset>
   <label><input type="checkbox" id="consent">I agree to all terms</label>
   <label for="auth">Authorized to work?</label><select id="auth"><option value="">Choose</option><option value="yes">Yes</option><option value="no">No</option></select>
@@ -81,6 +84,14 @@ await page.addScriptTag({content:await readFile(extensionDir.replace(/\/?$/,'/')
   assert.equal(await page.locator('input[type=radio]:checked').count(),0);
   assert.equal(await page.locator('#consent').isChecked(),false);
   console.log('PASS: explicit fill preserves existing answers and unknown qualifications');
+  // Ashby's standard name field is "Full Name", which matched no rule at all,
+  // and a profile with no LinkedIn or portfolio used to look like a fill that
+  // silently skipped two fields.
+  const det = await page.evaluate(()=>deterministicFill(currentApp));
+  assert.equal(await page.locator('#full').inputValue(),'Alice','Full Name fills');
+  assert.equal(await page.locator('#li').inputValue(),'','no LinkedIn on this profile');
+  assert.deepEqual(det.missing,['LinkedIn URL','portfolio URL'],'the empty profile values are named, not counted as manual');
+  console.log('PASS: Full Name fills; profile values a form needs are named');
   await page.evaluate(()=>{shadow.getElementById('jaa-sidebar').classList.add('open');});
   await page.locator('#jaa-resume-out .sec-hd').click();
   const answer=page.locator('#jaa-resume-out textarea').first();

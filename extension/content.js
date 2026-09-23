@@ -792,6 +792,7 @@ function bindEvents() {
         if (result?.filled > 0) {
           note.textContent = `${result.filled} filled · ${result.skipped} manual`
             + (attached?.ok ? ' · resume attached' : '')
+            + (result.missing?.length ? ` · this form asks for your ${result.missing.join(' and ')} — add it in your profile` : '')
             + (currentApp ? '' : ' · generate a kit for the written answers');
         } else if (!currentApp) {
           note.textContent = 'No fields matched. Generate a kit for this job to answer its questions.';
@@ -1143,30 +1144,37 @@ function deterministicFill(app) {
   let filled = 0, skipped = 0;
 
   const rules = [
-    { test: l => /legal.*(first.*last|name)/.test(l) || (l.includes('first') && l.includes('last')), value: `${p.first_name} ${p.last_name}` },
+    { test: l => /legal.*(first.*last|name)/.test(l) || /^(full|complete)\s*name/.test(l) || (l.includes('first') && l.includes('last')), value: `${p.first_name} ${p.last_name}`.trim() },
     { test: l => /preferred.*first/.test(l), value: p.first_name },
     { test: l => /preferred.*last/.test(l), value: p.last_name },
     { test: l => /^first\s*(name)?$/.test(l), value: p.first_name },
     { test: l => /^last\s*(name)?$/.test(l), value: p.last_name },
     { test: l => /email/.test(l), value: p.email },
     { test: l => /phone|mobile/.test(l), value: p.phone },
-    { test: l => /linkedin/.test(l), value: p.linkedin },
-    { test: l => /^(location|city|where)/.test(l), value: p.location },
+    { test: l => /linkedin/.test(l), value: p.linkedin, needs: 'LinkedIn URL' },
+    { test: l => /^(location|city|where)/.test(l), value: p.location, needs: 'location' },
     { test: l => /current.*employer|most recent.*employer|employer/.test(l), value: p.current_employer },
     { test: l => /university|school|college/.test(l), value: p.school },
-    { test: l => /github/.test(l), value: p.github || '' },
+    { test: l => /github/.test(l), value: p.github || '', needs: 'GitHub URL' },
     { test: l => /twitter|x\.com|@/.test(l), value: p.twitter || '' },
-    { test: l => /portfolio|work\s*sample|sample\s*work|show\s*your\s*work/.test(l), value: p.website || '' },
-    { test: l => /website|personal\s*site|project\s*site|online\s*presence|portfolio\s*url|personal\s*url|additional\s*link/.test(l), value: p.website || '' },
-    { test: l => /salary|compensation/.test(l), value: p.salary || '' },
+    { test: l => /portfolio|work\s*sample|sample\s*work|show\s*your\s*work/.test(l), value: p.website || '', needs: 'portfolio URL' },
+    { test: l => /website|personal\s*site|project\s*site|online\s*presence|portfolio\s*url|personal\s*url|additional\s*link/.test(l), value: p.website || '', needs: 'portfolio URL' },
+    { test: l => /salary|compensation/.test(l), value: p.salary || '', needs: 'salary target' },
     { test: l => /cover letter|additional info|tell us|message/.test(l), value: t.cover_note || '', textarea: true },
     // The copy button already offered why_role here; Fill left the field empty.
     { test: l => /\bwhy\b.*\b(join|company|us|role|position|apply|applying|interested|excited)\b/.test(l), value: t.why_role || '', textarea: true },
 
   ];
 
+  // A rule with no value is not a field we failed to match: it is a field the
+  // profile cannot answer. Name those, so "2 manual" stops looking like a bug
+  // when the real cause is an empty LinkedIn or portfolio URL.
+  const missing = [];
   for (const rule of rules) {
-    if (!rule.value) continue;
+    if (!rule.value) {
+      if (rule.needs && findFieldByRule(rule) && !missing.includes(rule.needs)) missing.push(rule.needs);
+      continue;
+    }
     const el = findFieldByRule(rule);
     if (el) { setVal(el, rule.value); filled++; } else skipped++;
   }
@@ -1220,7 +1228,7 @@ function deterministicFill(app) {
   }
 
   highlightResumeField();
-  return { filled, skipped };
+  return { filled, skipped, missing };
 }
 
 function findFieldByRule({ test, textarea }) {
