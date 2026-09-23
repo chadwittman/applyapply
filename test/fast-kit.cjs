@@ -20,11 +20,17 @@ const fastKit = require('../server/fast-kit');
   assert.deepEqual([...reused.keys()], ['Tell us about something you built from scratch.'], 'only confident matches reused; eligibility never asked');
   assert.match(reused.get('Tell us about something you built from scratch.').a, /Route Assist/);
 
-  respond = (state) => ({ answers: Object.fromEntries(state.bullets.map((b, i) => ['b' + i, { score: /offsite/.test(b) ? 0.2 : /AI/.test(b) ? 3 : 1.5 }])) });
-  const scored = await fastKit.rankBullets('key', { experience: [
-    { company: 'A', title: 'Dir', dates: '2022-', bullets: ['Organized the offsite', 'Shipped an AI planner'] },
-    { company: 'B', title: 'PM', dates: '2019-2022', bullets: ['Wrote docs'] }] }, { role: 'PM', description: 'AI' });
-  assert.deepEqual(scored.map(f => [f.r, f.bullet, f.score]), [[0, 'Organized the offsite', 0.2], [0, 'Shipped an AI planner', 3], [1, 'Wrote docs', 1.5]]);
+  // Relevance and strength are judged separately, then turned into a decision.
+  const scores = { 'Organized the offsite': [0.2, 0.3], 'Shipped an AI planner': [3, 3], 'Grew revenue 4x at 200k users': [0.4, 3], 'Ran the weekly product review': [2, 1] };
+  respond = (state) => ({ answers: Object.fromEntries(state.bullets.flatMap((b, i) => [['fit' + i, { score: scores[b][0] }], ['impact' + i, { score: scores[b][1] }]])) });
+  const judged = await fastKit.judgeBullets('key', { experience: [
+    { company: 'A', title: 'Dir', dates: '2022-', bullets: Object.keys(scores) }] }, { role: 'PM', description: 'AI' });
+  assert.deepEqual(judged.map(f => [f.bullet, f.decision]), [
+    ['Organized the offsite', 'drop'],
+    ['Shipped an AI planner', 'keep'],
+    ['Grew revenue 4x at 200k users', 'keep'],
+    ['Ran the weekly product review', 'rewrite'],
+  ], 'A standout achievement is kept even when the posting does not ask for it');
 
   const store = {}; let parses = 0;
   const db = { getResumeStructure: async e => store[e], saveResumeStructure: async (e, h, d) => { store[e] = { source_hash: h, data: d }; } };

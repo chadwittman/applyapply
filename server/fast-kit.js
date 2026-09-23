@@ -94,20 +94,38 @@ Return ONLY valid JSON, no markdown:
 
 // Score every bullet's relevance to the job (0 irrelevant .. 3 core) in one
 // Jev request. Used to rank the instant resume and to guide the AI rewrite.
-async function rankBullets(apiKey, structure, job) {
+// Two judgments per bullet, in one Jev request: how relevant it is to this
+// posting, and how strong it is on its own. Code turns the pair into a
+// decision, so a career-best achievement is never watered down just because
+// the posting does not ask for it.
+async function judgeBullets(apiKey, structure, job) {
   const flat = [];
   structure.experience.forEach((role, r) => role.bullets.forEach((bullet, b) => flat.push({ r, b, bullet })));
+  const batch = flat.slice(0, 60);
   const questions = {};
-  flat.slice(0, 120).forEach((item, i) => {
-    questions['b' + i] = { type: 'score', instructions: `How strongly does the resume bullet \`bullets[${i}]\` support this candidate for \`job\`? Judge relevance to the work this job describes, not general impressiveness.`,
+  batch.forEach((item, i) => {
+    questions['fit' + i] = { type: 'score', instructions: `How relevant is the resume bullet \`bullets[${i}]\` to the work \`job\` describes? Judge relevance to this posting, not how impressive the bullet is.`,
       criteria: ['Irrelevant to this job', 'Loosely related', 'Relevant supporting experience', 'Directly relevant to the core of this job'] };
+    questions['impact' + i] = { type: 'score', instructions: `How strong is the resume bullet \`bullets[${i}]\` on its own, for any employer? Weigh concrete outcomes, numbers, scale and ownership. Ignore how well it fits \`job\`.`,
+      criteria: ['A duty with no outcome', 'An outcome with no scale or number', 'A clear result with real numbers or scope', 'A standout achievement any employer would notice'] };
   });
   const data = await evaluate(apiKey, {
     job: { title: String(job.role || '').slice(0, 250), company: String(job.company || '').slice(0, 250), description: String(job.description || '').slice(0, 12000) },
-    bullets: flat.slice(0, 120).map(f => f.bullet),
+    bullets: batch.map(f => f.bullet),
   }, questions);
-  flat.forEach((item, i) => { item.score = Number(data.answers?.['b' + i]?.score ?? 0); });
-  return flat;
+  batch.forEach((item, i) => {
+    item.fit = Number(data.answers?.['fit' + i]?.score ?? 0);
+    item.impact = Number(data.answers?.['impact' + i]?.score ?? 0);
+    // Career-best work is kept word for word: rewriting is what dulls it.
+    // Relevant-but-ordinary bullets are reworded for this posting. The rest
+    // go only when they are both weak and off-topic.
+    // Measured against real resumes: a bullet with a concrete result and
+    // numbers scores about 2.0-2.6 for strength, a duty about 0.0-0.8.
+    item.decision = item.impact >= 2.0 ? 'keep'
+      : item.fit >= 1.5 || item.impact >= 1.2 ? 'rewrite'
+      : 'drop';
+  });
+  return batch;
 }
 
-module.exports = { answerPool, reuseAnswers, resumeStructure, rankBullets, resumeHash, NEVER_REUSE };
+module.exports = { answerPool, reuseAnswers, resumeStructure, judgeBullets, resumeHash, NEVER_REUSE };

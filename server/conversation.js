@@ -31,7 +31,7 @@ function findJobLink(text) {
 // are being asked before they answer.
 const listGaps = gaps => gaps.map(g => '• ' + String(g).replace(/\s+/g, ' ').trim()).join('\n');
 
-module.exports = function conversation({ db, port, signToken, origin, kitLink, resumeCost = 8 }) {
+module.exports = function conversation({ db, port, signToken, origin, kitLink, resumeCost = 8, polish = null }) {
   const typing = new Map(); // email -> since (ms); the test page shows dots
 
   function api(email, method, path, body) {
@@ -166,7 +166,10 @@ module.exports = function conversation({ db, port, signToken, origin, kitLink, r
       }
       if (!await db.claimChatPrompt(prompt.id)) return;
       if (!stop && !skipped) {
-        const saved = await api(email, 'POST', '/interview/context', { question: meta.question, answer: message });
+        // Same cleanup as the extension's voice button: filler and grammar
+        // tidied, names fixed, every fact kept.
+        const answer = polish ? await polish(email, message, meta.question, meta.kit_id) : message;
+        const saved = await api(email, 'POST', '/interview/context', { question: meta.question, answer });
         if (saved.status === 200) answered++;
       }
       if (!stop && meta.open.length) return askGap(email, { ...meta, answered });

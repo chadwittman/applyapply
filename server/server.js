@@ -58,7 +58,7 @@ for (const method of ['get','post','put','patch','delete']) {
     (req, res, next) => { try { Promise.resolve(handler(req,res,next)).catch(next); } catch (e) { next(e); } }));
 }
 const PORT = process.env.PORT || 5000;
-const VERSION = '0.44.1';
+const VERSION = '0.45.0';
 const IS_PRODUCTION = process.env.NODE_ENV === 'production';
 const APP_ORIGIN = process.env.APP_ORIGIN || 'http://localhost:5000';
 const ALLOWED_WEB_ORIGINS = new Set(
@@ -829,6 +829,7 @@ if (rw) rw.addEventListener('click', function () {
 // shows replies on a phone-style page instead of sending an iMessage. Only
 // accounts in IMESSAGE_TESTERS can use it until the Sendblue line goes live.
 const chat = require('./conversation')({ db, port: PORT, origin: APP_ORIGIN.replace(/\/$/, ''), kitLink: (email, kitId) => db.kitShareToken(email, kitId), resumeCost: CREDIT_COSTS.resume,
+  polish: (email, text, question, kitId) => polishAnswer(email, text, { question, kit: null }).catch(e => { console.error('[polish]', e.message); return text; }),
   signToken: email => jwt.sign({ email }, loadJwtSecret(), { expiresIn: '15m' }) });
 const chatTesters = () => new Set(String(process.env.IMESSAGE_TESTERS || 'wittman.c@gmail.com').toLowerCase().split(',').map(e => e.trim()).filter(Boolean));
 function chatUser(req, res) {
@@ -3415,17 +3416,26 @@ ${previousGaps.map(g => `- "${g}" — ${answeredSet.has(g.trim().toLowerCase()) 
 For "gaps" in your output: do not list a gap the candidate's answer covers. Repeat any gap that is still unanswered and still true WORD FOR WORD, so the candidate keeps their place. Add a new gap only for a requirement not already listed above.` : '';
   // Jev's relevance score for each original bullet (cached resume structure,
   // ~0.3s) tells the rewrite what to cut. Optional: the rewrite works without it.
+  // Each original bullet is judged twice (relevance to this posting, strength
+  // on its own) and gets a decision, so the rewrite improves the resume
+  // without flattening the candidate's best work.
   let relevance = '';
   if (process.env.TYPESAFE_API_KEY && userEmail && appData.job_description) {
     try {
       const structure = await fastKit.resumeStructure(db, p => callClaude(p, 8000, WRITER_MODEL, writerOptions(WRITER_MODEL)), userEmail, profile.resume_text);
-      const scored = await fastKit.rankBullets(process.env.TYPESAFE_API_KEY, structure, { role: appData.role, company: appData.company, description: appData.job_description });
-      const label = x => x >= 2.5 ? 'core to this job' : x >= 1.5 ? 'relevant' : x >= 0.75 ? 'loosely related' : 'irrelevant';
+      const judged = await fastKit.judgeBullets(process.env.TYPESAFE_API_KEY, structure, { role: appData.role, company: appData.company, description: appData.job_description });
+      const verdict = { keep: 'KEEP WORD FOR WORD', rewrite: 'REWRITE FOR THIS ROLE', drop: 'DROP' };
       relevance = `
 
-HOW RELEVANT EACH ORIGINAL BULLET IS TO THIS JOB (judged by a relevance model):
-${scored.map(f => `- [${label(f.score)}] ${structure.experience[f.r].company}: ${f.bullet}`).join('\n')}
-Lead each role with its most relevant work. Drop bullets marked irrelevant, and loosely related ones when the role has stronger material, unless that would leave a role with fewer than two bullets.`;
+WHAT TO DO WITH EACH ORIGINAL BULLET (judged for relevance to this posting and for strength on its own):
+${judged.map(f => `- [${verdict[f.decision]}] ${structure.experience[f.r].company}: ${f.bullet}`).join('\n')}
+
+Follow those decisions:
+- KEEP WORD FOR WORD: reproduce the bullet exactly, including its numbers. Do not reword, shorten, merge or soften it. These are the candidate's strongest achievements.
+- REWRITE FOR THIS ROLE: keep every fact and number, and reword so the posting's language and priorities come through.
+- DROP: leave it out, unless the role would be left with fewer than two bullets.
+- Lead each role with its most relevant work.
+- You may add up to two new bullets per role drawn from the additional evidence, when they answer something this posting asks for. Mark nothing as new; just write it as a bullet.`;
     } catch (e) { console.error('[resume relevance]', e.message); }
   }
   const prompt = `Rewrite this candidate's resume experience for ${target}.
@@ -3677,35 +3687,20 @@ Keep their words, phrasing, grammar and meaning exactly as spoken. Do not tidy, 
   } catch (e) { console.error('[voice names]', e.message); return transcript; }
 }
 
-app.post('/voice', requireCredits('voice'), async (req, res) => {
-  const { transcript, question, appId, kitId } = req.body;
-  if (!transcript) return res.status(400).json({ error: 'transcript required' });
-  if (!keys) return res.status(503).json({ error: 'No API key' });
-
-  const id = appId || kitId;
-  const properNouns = [];
-
-  let kitContext = '';
-  if (id) {
-    const voiceKit = await loadKit(id, reqUserEmail(req));
-    const appData = (voiceKit && voiceKit !== 'forbidden') ? voiceKit : null;
-    if (appData) {
-      properNouns.push(appData.company, appData.role);
-      const text = [appData.tailored?.cover_note, appData.tailored?.why_role, ...(appData.tailored?.qa || []).map(q => q.a)].filter(Boolean).join(' ');
-      const extracted = [...new Set((text.match(/\b[A-Z][a-zA-Z]+(?:\s+[A-Z][a-zA-Z]+)*/g) || []).filter(w => w.length > 2 && !['The','This','That','These','Those','When','What','Where','How','Why','Which','With','From','Then','Also','And','But','For'].includes(w)))];
-      properNouns.push(...extracted);
-      properNouns.push(...await candidateNames(reqUserEmail(req), appData));
-      kitContext = `Company: ${appData.company}\nRole: ${appData.role}\n`;
-      if (appData.tailored?.why_role) kitContext += `Context: ${appData.tailored.why_role.slice(0, 400)}\n`;
-    }
-  }
-
+// Polishing a spoken answer into written copy: fixes filler, grammar and
+// misheard names while keeping every fact. Used by the extension's voice
+// button (2 credits, a model call) and by the text line when someone answers
+// a resume question.
+async function polishAnswer(userEmail, transcript, { question = '', kit = null } = {}) {
+  if (!keys) return transcript;
+  const names = await candidateNames(userEmail, kit);
+  const kitContext = kit ? `Company: ${kit.company}\nRole: ${kit.role}\n${kit.tailored?.why_role ? `Context: ${String(kit.tailored.why_role).slice(0, 400)}\n` : ''}` : '';
   const prompt = `You are editing a raw voice transcript into polished written copy for a job application.
 
 ${kitContext}${question ? `Question being answered: ${question}\n` : ''}Raw transcript: ${transcript}
 
 Known proper nouns — if the transcript contains a word that sounds like one of these, correct it:
-${[...new Set(properNouns)].join(', ')}
+${names.join(', ')}
 
 Editing rules:
 - Break up ALL run-on sentences. If a sentence has multiple clauses joined by "and" or "so", split it into separate sentences.
@@ -3718,20 +3713,27 @@ Editing rules:
 - Varied sentence rhythm — short punchy sentences mixed with longer ones
 - Write how a direct, confident person writes, not how they talk
 - Return only the cleaned text, no preamble`;
+  const text = await callClaude(prompt, 2000, WRITER_MODEL, writerOptions(WRITER_MODEL));
+  const cleaned = String(text || '').trim();
+  return cleaned || transcript;
+}
 
+app.post('/voice', requireCredits('voice'), async (req, res) => {
+  const { transcript, question, appId, kitId } = req.body;
+  if (!transcript) return res.status(400).json({ error: 'transcript required' });
+  if (!keys) return res.status(503).json({ error: 'No API key' });
+  const userEmail = reqUserEmail(req);
+  const id = appId || kitId;
+  let kit = null;
+  if (id) {
+    const loaded = await loadKit(id, userEmail);
+    if (loaded && loaded !== 'forbidden') kit = loaded;
+  }
   try {
-    const r = await providerFetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: { 'x-api-key': keys.key, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
-      body: JSON.stringify({ model: 'claude-sonnet-4-6', max_tokens: 1024, messages: [{ role: 'user', content: prompt }] }),
-    });
-    if (!r.ok) throw new Error(`Anthropic ${r.status}`);
-    const text = (await r.json()).content[0].text.trim();
-    res.json({ text });
+    res.json({ text: await polishAnswer(userEmail, transcript, { question, kit }) });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// Quick answer — generate a response to a spoken question using the user's background
 app.post('/quick-answer', requireCredits('voice'), async (req, res) => {
   const { question } = req.body;
   if (!question) return res.status(400).json({ error: 'question required' });
