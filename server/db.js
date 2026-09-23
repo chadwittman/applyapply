@@ -251,6 +251,20 @@ async function initSchema() {
   `);
   await q(`CREATE INDEX IF NOT EXISTS idx_chat_messages_user ON chat_messages (user_email, id)`);
 
+  // An agent asking to be connected: it shows the person a short code, they
+  // approve it while signed in, and the agent collects its key once.
+  await q(`
+    CREATE TABLE IF NOT EXISTS agent_connects (
+      code TEXT PRIMARY KEY,
+      poll_hash TEXT NOT NULL,
+      name TEXT NOT NULL,
+      user_email TEXT,
+      api_key TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      expires_at TIMESTAMPTZ NOT NULL
+    )
+  `);
+
   // Personal API keys for agents. Only a SHA-256 of the key is stored.
   await q(`
     CREATE TABLE IF NOT EXISTS api_keys (
@@ -848,6 +862,39 @@ async function revokeApiKey(userEmail, id) {
   return rows.length > 0;
 }
 
+// ── Connecting an agent ───────────────────────────────────────────────────────
+
+const CONNECT_MINUTES = 15;
+async function createAgentConnect(name) {
+  const crypto = require('crypto');
+  const letters = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789'; // no look-alikes: the person types this
+  const code = Array.from(crypto.randomBytes(8)).map(b => letters[b % letters.length]).join('').replace(/^(.{4})/, '$1-');
+  const pollToken = crypto.randomBytes(24).toString('base64url');
+  await q(`INSERT INTO agent_connects (code, poll_hash, name, expires_at) VALUES ($1,$2,$3,NOW() + ($4 || ' minutes')::interval)`,
+    [code, hashKey(pollToken), String(name || 'An agent').slice(0, 80), String(CONNECT_MINUTES)]);
+  return { code, pollToken, minutes: CONNECT_MINUTES };
+}
+
+async function getAgentConnect(code) {
+  return q1(`SELECT code, name, user_email, created_at FROM agent_connects WHERE code=$1 AND expires_at > NOW()`, [String(code || '').toUpperCase().slice(0, 20)]);
+}
+
+// The person approves; the key is held for the agent to collect once.
+async function approveAgentConnect(code, userEmail, key) {
+  const row = await q1(`UPDATE agent_connects SET user_email=$2, api_key=$3 WHERE code=$1 AND expires_at > NOW() AND user_email IS NULL RETURNING code`,
+    [String(code || '').toUpperCase().slice(0, 20), requireOwner(userEmail), key]);
+  return !!row;
+}
+
+async function claimAgentConnect(code, pollToken) {
+  const row = await q1(`SELECT code, api_key, user_email FROM agent_connects WHERE code=$1 AND poll_hash=$2 AND expires_at > NOW()`,
+    [String(code || '').toUpperCase().slice(0, 20), hashKey(String(pollToken || ''))]);
+  if (!row) return { status: 'unknown' };
+  if (!row.api_key) return { status: 'pending' };
+  await q(`DELETE FROM agent_connects WHERE code=$1`, [row.code]);
+  return { status: 'approved', key: row.api_key, email: row.user_email };
+}
+
 async function emailForApiKey(key) {
   if (typeof key !== 'string' || !key.startsWith('aa_live_') || key.length > 100) return null;
   const row = await q1(`UPDATE api_keys SET last_used_at=NOW() WHERE key_hash=$1 AND revoked_at IS NULL RETURNING user_email`, [hashKey(key)]);
@@ -940,6 +987,7 @@ async function pruneStorage() {
   counts.listings = (await q(`DELETE FROM listings WHERE COALESCE(posted_at, first_seen) < NOW() - ($1 || ' days')::interval AND last_seen < NOW() - ($2 || ' days')::interval RETURNING 1`,
     [String(CURRENT_POSTED_DAYS), String(CURRENT_SEEN_DAYS)])).length;
   counts.source_cache = (await q(`DELETE FROM source_cache WHERE fetched_at < NOW() - INTERVAL '3 days' RETURNING 1`)).length;
+  counts.agent_connects = (await q(`DELETE FROM agent_connects WHERE expires_at < NOW() RETURNING 1`)).length;
   counts.operation_events = (await q(`DELETE FROM operation_events WHERE created_at < NOW() - INTERVAL '30 days' RETURNING 1`)).length;
   return counts;
 }
@@ -1023,7 +1071,7 @@ async function deleteAccount(userEmail) {
   try {
     await client.query('BEGIN');
     await client.query('DELETE FROM operation_events WHERE operation_id IN (SELECT id FROM operations WHERE user_email=$1)', [owner]);
-    for (const table of ['user_activity','decisions','evidence','resume_files','schedules','runs','jobs','kits','profiles','purchases','api_keys','resume_structures','chat_messages','kit_shares']) {
+    for (const table of ['user_activity','decisions','evidence','resume_files','schedules','runs','jobs','kits','profiles','purchases','api_keys','resume_structures','chat_messages','kit_shares','agent_connects']) {
       await client.query(`DELETE FROM ${table} WHERE user_email=$1`, [owner]);
     }
     // Feedback stays so the product can be fixed, but stops being theirs.
@@ -1116,7 +1164,7 @@ module.exports = {
   getAccountExport, deleteAccount,
   roleKeyFor, cacheKeyFor, getCachedSources, putCachedSource,
   upsertListings, getListings, countListings, getIngestState, recordIngest, withIngestLock,
-  createApiKey, listApiKeys, revokeApiKey, emailForApiKey, getResumeStructure, saveResumeStructure, pruneStorage, storageStats,
+  createApiKey, listApiKeys, revokeApiKey, emailForApiKey, createAgentConnect, getAgentConnect, approveAgentConnect, claimAgentConnect, getResumeStructure, saveResumeStructure, pruneStorage, storageStats,
   kitShareToken, kitForShare, addFeedback, feedbackSeenToday,
   resetTestKits, addChatMessage, getChatMessages, lastChatMeta, lastChatPrompt, claimChatPrompt, updateChatMeta, hasChatHistory, clearChat,
   getUser, getOrCreateUser, addUserCredits, deductUserCredits, chargeCredits, countVoiceNotesToday,

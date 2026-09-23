@@ -58,7 +58,7 @@ for (const method of ['get','post','put','patch','delete']) {
     (req, res, next) => { try { Promise.resolve(handler(req,res,next)).catch(next); } catch (e) { next(e); } }));
 }
 const PORT = process.env.PORT || 5000;
-const VERSION = '0.47.0';
+const VERSION = '0.48.0';
 const IS_PRODUCTION = process.env.NODE_ENV === 'production';
 const APP_ORIGIN = process.env.APP_ORIGIN || 'http://localhost:5000';
 const ALLOWED_WEB_ORIGINS = new Set(
@@ -3869,9 +3869,18 @@ app.get('/agents', (req, res) => {
     path: '/agents',
     body: `<h1>Use applyapply from your agent</h1>
 <p>Give your own agent (Claude, ChatGPT, Cursor, or anything that speaks MCP or HTTP) an applyapply API key, and it can search current job listings, run sourcing, and write tailored application kits for you. It spends your credits the same way the website and extension do, and like them it never submits an application: you review and submit.</p>
-<h2>1. Create a key</h2>
+<h2>1. Get a key</h2>
 <p>Sign in, open <a href="/setup">Profile &amp; settings</a>, and create a key under Agent access. Keys start with <code>aa_live_</code>, are shown once, and can be revoked there at any time.</p>
-<h2>2. Connect over MCP</h2>
+<p>An agent can also ask for its own key, with one approval from the person, the way a TV asks you to enter a code:</p>
+${code(`curl -X POST ${origin}/agent/connect -H "Content-Type: application/json" -d '{"name":"Claude"}'
+# -> { "code": "H4KP-92QB", "poll_token": "...", "verification_url": "${origin}/connect?code=H4KP-92QB" }
+# Ask the person to open that URL and approve, then:
+curl -X POST ${origin}/agent/token -H "Content-Type: application/json" -d '{"code":"H4KP-92QB","poll_token":"..."}'
+# 428 until approved, then -> { "api_key": "aa_live_..." }`)}
+<p>Codes last 15 minutes and work once. The person sees what the agent will be able to do before approving, and can revoke it later in Profile and settings.</p>
+<h2>2. Set up the account</h2>
+<p>New accounts start with free credits. Call <code>get_account</code> first: it says what is missing. A resume matters most, since every tailored resume is built from it, so send its full text with <code>update_profile</code> along with target roles and location. Buying more credits needs a card, so an agent cannot do it: when the balance runs out the API answers 402 with a link for the person.</p>
+<h2>3. Connect over MCP</h2>
 <p>Claude Code:</p>
 ${code(`claude mcp add --transport http applyapply ${origin}/mcp --header "Authorization: Bearer aa_live_..."`)}
 <p>Any client that takes an MCP config file:</p>
@@ -3879,7 +3888,7 @@ ${code(JSON.stringify({ mcpServers: { applyapply: { type: 'http', url: origin + 
 <p>Then ask it something like "find Head of Product roles posted today and write a kit for the best one".</p>
 <h2>Tools</h2>
 <ul>${MCP_TOOLS.map(t => `<li><b>${t.name}</b>: ${escapeHtml(t.description)}</li>`).join('')}</ul>
-<h2>Or call the HTTP API</h2>
+<h2>4. Or call the HTTP API</h2>
 <p>Every tool is a plain HTTP route. Send the key as <code>Authorization: Bearer aa_live_...</code>.</p>
 ${code(`curl ${origin}/auth/me -H "Authorization: Bearer $APPLYAPPLY_KEY"
 curl -X POST ${origin}/generate -H "Authorization: Bearer $APPLYAPPLY_KEY" \\
@@ -3925,6 +3934,8 @@ app.get('/openapi.json', (req, res) => {
     security: [{ apiKey: [] }],
     components: { securitySchemes: { apiKey: { type: 'http', scheme: 'bearer', description: 'A personal API key (aa_live_...) created at ' + origin + '/setup' } } },
     paths: {
+      '/agent/connect': { post: { summary: 'Ask for an API key: returns a code for the person to approve (no auth)', security: [], requestBody: json('The agent', { name: { type: 'string' } }), responses: ok('Code and verification URL') } },
+      '/agent/token': { post: { summary: 'Collect the key once the person approves (no auth)', security: [], requestBody: json('Code and poll token', { code: { type: 'string' }, poll_token: { type: 'string' } }, ['code', 'poll_token']), responses: { ...ok('The API key'), 428: { description: 'Not approved yet' } } } },
       '/auth/me': { get: { summary: 'Account email and credit balance', responses: ok('Account') } },
       '/profile': {
         get: { summary: 'The saved profile', responses: ok('Profile') },
@@ -3966,7 +3977,7 @@ app.get('/llms.txt', (req, res) => {
 
 ## For agents
 
-Create a personal API key at ${origin}/setup, then use MCP at ${origin}/mcp (bearer token) or the HTTP API at ${origin}/openapi.json. Tools cover searching current listings, running a job search, writing and fetching kits, rewriting resumes, saving the person's answers, and the pipeline.
+An agent can request its own key: POST ${origin}/agent/connect returns a short code, the person approves it at ${origin}/connect, and POST ${origin}/agent/token returns the key (a person can also create one at ${origin}/setup). Then use MCP at ${origin}/mcp (bearer token) or the HTTP API at ${origin}/openapi.json. Buying credits needs a card and stays with the person; new accounts start with free credits. Tools cover searching current listings, running a job search, writing and fetching kits, rewriting resumes, saving the person's answers, and the pipeline.
 
 ## Pages
 
@@ -3979,6 +3990,75 @@ Create a personal API key at ${origin}/setup, then use MCP at ${origin}/mcp (bea
 - [Terms of Service](${origin}/terms)
 - [Support](${origin}/support)
 `);
+});
+
+// ── Connecting an agent ───────────────────────────────────────────────────────
+// An agent cannot receive an email or click a button, so it asks for a code,
+// shows the person where to approve it, and collects its own key once they do.
+// The person's sign-in is the only human step, which is right: it is their
+// account and their credits.
+app.post('/agent/connect', authLimiter, async (req, res) => {
+  const { code, pollToken, minutes } = await db.createAgentConnect(req.body?.name);
+  const origin = APP_ORIGIN.replace(/\/$/, '');
+  res.json({ code, poll_token: pollToken, expires_in_minutes: minutes,
+    verification_url: `${origin}/connect?code=${encodeURIComponent(code)}`,
+    instructions: `Ask the person to open ${origin}/connect and approve the code ${code}. Then poll POST ${origin}/agent/token with {"code","poll_token"} until it returns an api_key.` });
+});
+
+app.post('/agent/token', apiLimiter, async (req, res) => {
+  const result = await db.claimAgentConnect(req.body?.code, req.body?.poll_token);
+  if (result.status === 'approved') return res.json({ api_key: result.key, account: result.email, next: 'Send it as Authorization: Bearer <api_key>. Set a resume with update_profile before writing kits.' });
+  if (result.status === 'pending') return res.status(428).json({ error: 'Not approved yet. The person needs to approve the code, then poll again.' });
+  res.status(404).json({ error: 'That code has expired or was already used. Start again with POST /agent/connect.' });
+});
+
+app.get('/connect', async (req, res) => {
+  const asked = await db.getAgentConnect(req.query.code).catch(() => null);
+  const code = String(req.query.code || '').toUpperCase().slice(0, 20);
+  legalPage(res, {
+    title: 'Connect an agent — applyapply',
+    desc: 'Approve an AI agent to use your applyapply account.',
+    path: '/connect',
+    body: `<h1>Connect an agent</h1>
+${asked ? `<p><b>${escapeHtml(asked.name)}</b> is asking to use your applyapply account: to search listings, write application kits and manage your pipeline, spending your credits. It cannot buy credits, create other keys, export or delete your account, and it cannot submit applications.</p>
+<p>Approve it only if you started this.</p>
+<div style="margin:22px 0"><code style="font-size:22px;letter-spacing:.12em">${escapeHtml(asked.code)}</code></div>
+<button id="approve" style="padding:13px 24px;background:#fff;color:#000;border:0;border-radius:8px;font-size:16px;font-weight:700;cursor:pointer;font-family:inherit">Approve this agent</button>
+<div id="st" style="margin-top:12px;min-height:22px;font-size:15px"></div>`
+      : `<p>Ask the agent for its code, then open this page with it, for example <code>/connect?code=ABCD-1234</code>.</p>
+<form onsubmit="event.preventDefault();location.href='/connect?code='+encodeURIComponent(document.getElementById('c').value.trim().toUpperCase())">
+  <input id="c" placeholder="ABCD-1234" style="padding:12px;background:#0a0a0a;border:1px solid #333;color:#fff;font:inherit;font-size:16px;border-radius:8px">
+  <button type="submit" style="padding:12px 18px;background:#fff;color:#000;border:0;border-radius:8px;font-weight:700;cursor:pointer;font-family:inherit">Continue</button>
+</form>`}
+<script>
+var CODE=${scriptJSON(code)};
+var btn=document.getElementById('approve');
+if(btn)btn.addEventListener('click',function(){
+  var st=document.getElementById('st'),key='';
+  try{key=localStorage.getItem('aa_session')||'';}catch(e){}
+  if(!key){location.href='/login?return='+encodeURIComponent('/connect?code='+CODE);return;}
+  btn.disabled=true;st.textContent='Connecting';
+  fetch('/connect/approve',{method:'POST',headers:{'Content-Type':'application/json','x-api-key':key},body:JSON.stringify({code:CODE})})
+    .then(function(r){return r.json().then(function(d){return {ok:r.ok,d:d};});})
+    .then(function(x){
+      if(!x.ok)throw new Error(x.d.error||'Could not connect');
+      st.textContent='Connected. The agent can start now. Manage or revoke it in Profile and settings.';
+      btn.textContent='Approved';
+    })
+    .catch(function(e){btn.disabled=false;st.textContent=e.message;});
+});
+</script>`,
+  });
+});
+
+app.post('/connect/approve', apiLimiter, async (req, res) => {
+  const email = requireSession(req, res); if (!email) return;
+  const asked = await db.getAgentConnect(req.body?.code);
+  if (!asked) return res.status(404).json({ error: 'That code has expired. Ask the agent for a new one.' });
+  if (asked.user_email) return res.status(409).json({ error: 'That code was already used.' });
+  const { key } = await db.createApiKey(email, asked.name);
+  if (!await db.approveAgentConnect(asked.code, email, key)) return res.status(409).json({ error: 'That code was already used.' });
+  res.json({ ok: true });
 });
 
 app.get('/api-keys', async (req, res) => {

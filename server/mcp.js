@@ -10,13 +10,15 @@ const PROTOCOL_VERSIONS = ['2025-06-18', '2025-03-26', '2024-11-05'];
 const str = (description, extra = {}) => ({ type: 'string', description, ...extra });
 
 const TOOLS = [
-  { name: 'get_account', description: 'Your applyapply account: email and credit balance.', inputSchema: { type: 'object', properties: {} } },
+  { name: 'get_account', description: 'The account: email, credit balance, and whether it is ready to write applications (a resume and target roles are set). Check this first: without a resume the kits are weak.', inputSchema: { type: 'object', properties: {} } },
   { name: 'get_profile', description: 'Your saved profile: contact details, target roles, location preference, work authorization, background.', inputSchema: { type: 'object', properties: {} } },
   { name: 'update_profile', description: 'Update profile fields. Only the fields you pass change.', inputSchema: { type: 'object', properties: {
     first_name: str('First name'), last_name: str('Last name'), phone: str('Phone'), linkedin: str('LinkedIn URL'), location: str('City, region'),
     location_pref: str('Where you will work', { enum: ['remote', 'hybrid', 'any'] }), target_roles: str('Comma-separated job titles, e.g. "Head of Product, Director of Product"'),
     salary: str('Minimum annual base salary in USD'), work_authorization: str('Authorized to work in the US', { enum: ['', 'yes', 'no'] }),
     sponsorship: str('Needs visa sponsorship', { enum: ['', 'yes', 'no'] }), bio: str('Background the application writer uses: experience, achievements, numbers'),
+    resume: str('The full text of the person\'s resume, as they wrote it. Every tailored resume is built from this, so paste it verbatim rather than summarising.'),
+    current_employer: str('Current employer'), school: str('School'), website: str('Personal site'),
   } } },
   { name: 'search_listings', description: 'Search applyapply\'s ledger of current public job listings (a16z and Sequoia portfolio boards, Himalayas, We Work Remotely, Hacker News Who is hiring). Free. Matches titles by words against your target roles unless you pass roles.', inputSchema: { type: 'object', properties: {
     roles: str('Comma-separated titles to match instead of your profile\'s target roles'),
@@ -88,9 +90,13 @@ module.exports = function mountMcp(app, { db, port, limiter, sourceNames }) {
   }
 
   const handlers = {
-    get_account: req => call(req, 'GET', '/auth/me'),
+    get_account: async req => {
+      const [account, profile] = await Promise.all([call(req, 'GET', '/auth/me'), call(req, 'GET', '/profile').catch(() => ({}))]);
+      const missing = [!profile?.resume_text && 'resume', !profile?.target_roles && 'target_roles', !profile?.location && 'location'].filter(Boolean);
+      return { ...account, ready_to_apply: !missing.length, missing, kit_costs_credits: 10 };
+    },
     get_profile: req => call(req, 'GET', '/profile'),
-    update_profile: (req, args) => call(req, 'POST', '/profile', args),
+    update_profile: (req, args) => call(req, 'POST', '/profile', { ...args, ...(args.resume ? { resume_text: args.resume, resume: undefined } : {}) }),
     search_listings: searchListings,
     list_sources: async req => (await call(req, 'GET', '/source/catalog')).map(s => ({ name: s.name, credits: s.credits, default: s.on, description: s.desc })),
     start_sourcing_run: (req, args) => call(req, 'POST', '/source/run', args.sources ? { sources: args.sources } : {}),
