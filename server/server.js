@@ -69,7 +69,7 @@ for (const method of ['get','post','put','patch','delete']) {
     (req, res, next) => { try { Promise.resolve(handler(req,res,next)).catch(next); } catch (e) { next(e); } }));
 }
 const PORT = process.env.PORT || 5000;
-const VERSION = '0.67.0';
+const VERSION = '0.68.0';
 const IS_PRODUCTION = process.env.NODE_ENV === 'production';
 const APP_ORIGIN = process.env.APP_ORIGIN || 'http://localhost:5000';
 const ALLOWED_WEB_ORIGINS = new Set(
@@ -1032,6 +1032,110 @@ function chatUser(req, res) {
   if (!chatTesters().has(email.toLowerCase())) { res.status(403).json({ error: 'The text line is in private testing.' }); return null; }
   return email;
 }
+// Everything in the ledger, and what it would do for this person. A run that
+// says "2,790 pulled, 4 fit" is not a claim anybody should have to take on
+// trust: this is the 2,790, marked with what matched and why.
+app.get('/listings', async (req, res) => {
+  const userEmail = reqUserEmail(req);
+  const profile = userEmail ? await db.getProfileByUserEmail(userEmail).catch(() => null) : null;
+  const matcher = targetMatcher(profile || {}, classifierFor(await titleClasses()));
+  const rows = await db.getListings(ACTIVE_SOURCES.map(x => x.name), 0).catch(() => []);
+  const kits = userEmail ? new Set((await db.getKits(userEmail).catch(() => [])).map(k => k.url)) : new Set();
+  const mine = userEmail ? new Set((await db.getJobs(null, 500, userEmail).catch(() => [])).map(j => j.url)) : new Set();
+
+  const seen = rows.map(r => {
+    const c = matcher.classify(r.role || '');
+    return { ...r, fits: matcher.test(r.role || ''), fns: c.functions || [], band: c.seniority || null,
+      inPipeline: mine.has(r.url), hasKit: kits.has(r.url) };
+  });
+  const fitting = seen.filter(r => r.fits).length;
+  const bySource = {};
+  for (const r of seen) bySource[r.source] = (bySource[r.source] || 0) + 1;
+
+  res.setHeader('Cache-Control', 'no-store');
+  res.send(`<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+${metaHead({title:'Every listing · applyapply', desc:'Every job listing applyapply has pulled, and which ones fit you.', path:'/listings', noindex:true})}
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+html{overflow-x:hidden}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#000;color:#fff;-webkit-font-smoothing:antialiased;overflow-x:hidden}
+a{color:inherit;text-decoration:none}
+.nav{display:flex;justify-content:space-between;align-items:center;padding:16px 20px;border-bottom:1px solid #111;font-size:13px}
+.nav a{margin-left:14px}
+.wrap{max-width:900px;margin:0 auto;padding:28px 20px 80px}
+h1{font-size:20px;font-weight:700;letter-spacing:-.03em;margin-bottom:6px}
+.sub{font-size:14px;color:#c4c4c4;margin-bottom:18px;line-height:1.6}
+.tools{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:16px;align-items:center}
+input,select{padding:8px 11px;background:#0a0a0a;border:1px solid #222;color:#fff;font-family:inherit;font-size:14px;outline:none}
+input:focus,select:focus{border-color:#555}
+#q{flex:1 1 220px}
+.row{display:grid;grid-template-columns:1fr auto;gap:12px;padding:12px 0;border-top:1px solid #151515;align-items:baseline}
+.co{font-size:15px;font-weight:600}
+.ro{font-size:14px;color:#c4c4c4}
+.meta{font-size:12px;color:#8f8f8f;margin-top:3px}
+.tags{display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end;font-size:11px}
+.tag{padding:2px 7px;border:1px solid #222;color:#9a9a9a;white-space:nowrap}
+.tag.fit{border-color:#2a3a2a;color:#4ade80}
+.tag.kit{border-color:#2f4f6f;color:#7fb3ff}
+.empty{padding:40px 0;color:#c4c4c4}
+.count{font-size:13px;color:#8f8f8f;margin-bottom:10px}
+</style></head><body>
+<nav class="nav"><a href="/"><b>applyapply</b></a><span><a href="/pipeline">Pipeline</a><a href="/sourcing">Sourcing</a><a href="/setup">Profile</a></span></nav>
+<div class="wrap">
+<h1>Every listing we hold</h1>
+<p class="sub">${seen.length.toLocaleString()} listings across ${Object.keys(bySource).length} sources. ${fitting.toLocaleString()} match what you are targeting${profile?.target_functions ? ` (${escapeHtml(profile.target_functions)})` : ''}. The rest are here too, so a run that says "${seen.length.toLocaleString()} pulled, ${fitting.toLocaleString()} fit" is something you can check rather than trust.</p>
+<div class="tools">
+  <input id="q" placeholder="Search company or role">
+  <select id="only">
+    <option value="fit">Only what fits me</option>
+    <option value="all">Everything</option>
+    <option value="rest">Everything else</option>
+  </select>
+  <select id="src"><option value="">All sources</option>${Object.keys(bySource).sort().map(n => `<option value="${escapeHtml(n)}">${escapeHtml(n)} (${bySource[n]})</option>`).join('')}</select>
+</div>
+<div class="count" id="count"></div>
+<div id="list"></div>
+</div>
+<script>
+var ROWS = ${scriptJSON(seen.map(r => ({ c: r.company || '', r: r.role || '', l: r.location || '', s: r.source,
+  u: r.url, p: r.posted_at || r.first_seen, f: r.fits, fn: r.fns, b: r.band, k: r.hasKit, m: r.inPipeline })))};
+function esc(t){return String(t==null?'':t).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
+function when(v){ if(!v) return ''; var d=Math.floor((Date.now()-new Date(v).getTime())/86400000);
+  return d<=0?'today':d===1?'yesterday':d<7?d+' days ago':d<14?'last week':Math.floor(d/7)+' weeks ago'; }
+function render(){
+  var q=document.getElementById('q').value.trim().toLowerCase();
+  var only=document.getElementById('only').value, src=document.getElementById('src').value;
+  var rows=ROWS.filter(function(r){
+    if(only==='fit'&&!r.f)return false;
+    if(only==='rest'&&r.f)return false;
+    if(src&&r.s!==src)return false;
+    if(q&&(r.c+' '+r.r).toLowerCase().indexOf(q)<0)return false;
+    return true;
+  });
+  document.getElementById('count').textContent=rows.length.toLocaleString()+' of '+ROWS.length.toLocaleString();
+  document.getElementById('list').innerHTML=rows.length?rows.slice(0,400).map(function(r){
+    return '<div class="row"><div><div class="co">'+esc(r.c)+'</div><div class="ro">'+esc(r.r)+'</div>'
+      +'<div class="meta">'+[esc(r.l),esc(r.s),when(r.p)].filter(Boolean).join(' · ')+'</div></div>'
+      +'<div class="tags">'
+      +(r.f?'<span class="tag fit">fits you</span>':'')
+      +(r.fn&&r.fn.length?'<span class="tag">'+esc(r.fn.join(', '))+(r.b?' · '+esc(r.b):'')+'</span>':'<span class="tag">unclassified</span>')
+      +(r.k?'<span class="tag kit">kit written</span>':'')
+      +(r.m?'<span class="tag">in pipeline</span>':'')
+      +'<a class="tag" href="'+esc(r.u)+'" target="_blank" rel="noopener">open</a>'
+      +'</div></div>';
+  }).join('')+(rows.length>400?'<div class="count" style="margin-top:14px">Showing the first 400.</div>':'')
+  :'<div class="empty">Nothing here. Try "Everything".</div>';
+}
+['q','only','src'].forEach(function(id){document.getElementById(id).addEventListener('input',render);});
+var params=new URLSearchParams(location.search);
+if(params.get('src'))document.getElementById('src').value=params.get('src');
+if(params.get('only'))document.getElementById('only').value=params.get('only');
+if(params.get('src'))document.getElementById('only').value=params.get('only')||'all';
+render();
+</script>
+</body></html>`);
+});
+
 // A job link we texted. Records that they looked, then sends them to the
 // employer's own page. No interstitial: the tap should feel like the posting.
 app.get('/j/:token', apiLimiter, async (req, res) => {
@@ -5327,7 +5431,7 @@ app.get('/sourcing', async (req, res) => {
           search_date: ['best-effort 24h', "Google's date filter is used. Listings without a date may be older."],
         }[src.windowPrecision];
         const statParts = src.error ? [`<span class="badge" title="${esc(src.error)}">failed · credits returned</span>`] : [
-          `${nTotal} pulled${src.windowCount != null && src.windowCount !== nTotal ? ` · ${src.windowCount} in window` : ''}${precision ? ` <span class="badge" title="${esc(precision[1])}">${precision[0]}</span>` : ''}`,
+          `<a href="/listings?src=${encodeURIComponent(src.name)}" style="color:inherit;text-decoration:underline;text-decoration-color:#333">${nTotal} pulled</a>${src.windowCount != null && src.windowCount !== nTotal ? ` · ${src.windowCount} in window` : ''}${precision ? ` <span class="badge" title="${esc(precision[1])}">${precision[0]}</span>` : ''}`,
           fitJobs.length ? `<strong>${fitJobs.length} fit</strong>` : '0 fit',
           kitCount ? `${kitCount} kit${kitCount>1?'s':''}` : '',
           openedCount ? `${openedCount} opened` : '',
@@ -6433,6 +6537,8 @@ a{text-decoration:none;color:inherit}
 .pf-n{font-size:10px;color:#b9b9b9;margin-left:2px}
 .pf.on .pf-n{color:#888}
 .pl-list{flex:1;overflow-y:auto}
+.pi-company{padding:14px 14px 4px;font-size:11px;font-weight:700;letter-spacing:.07em;text-transform:uppercase;color:#fff;display:flex;justify-content:space-between;align-items:baseline;gap:8px}
+.pi-n{font-size:10px;font-weight:400;letter-spacing:0;text-transform:none;color:#8f8f8f}
 .pitem{padding:10px 14px;border-bottom:1px solid #0d0d0d;cursor:pointer;transition:background .08s}
 .pitem:hover{background:#080808}
 .pitem.on{background:#111;box-shadow:inset 2px 0 0 #fff}
@@ -6692,22 +6798,11 @@ function renderFacets() {
   });
   var fnKeys = Object.keys(fns).sort(function(a,b){return fns[b]-fns[a];});
   var bandKeys = Object.keys(bands).sort(function(a,b){return BANDS_ORDER.indexOf(a)-BANDS_ORDER.indexOf(b);});
-  if (fnKeys.length < 2 && bandKeys.length < 2 && !textFilter) { host.innerHTML=''; host.hidden=true; return; }
+  // Only a search box. Chips for function and level were controls nobody
+  // reached for, in front of the list people came to read.
+  if (inStatus.length < 6 && !textFilter) { host.innerHTML=''; host.hidden=true; return; }
   host.hidden = false;
-  host.innerHTML =
-    (fnKeys.length > 1 ? fnKeys.map(function(f){
-      return '<button class="pf' + (fnFilter===f?' on':'') + '" data-fn="' + f + '">' + (FN_LABELS[f]||f) + '<span class="pf-n">' + fns[f] + '</span></button>';
-    }).join('') : '')
-    + (bandKeys.length > 1 ? bandKeys.map(function(b){
-      return '<button class="pf' + (bandFilter===b?' on':'') + '" data-band="' + b + '">' + (BAND_LABELS[b]||b) + '<span class="pf-n">' + bands[b] + '</span></button>';
-    }).join('') : '')
-    + '<input id="pl-search" class="pf-search" placeholder="Filter by company or title" value="' + esc(textFilter) + '">';
-  host.querySelectorAll('[data-fn]').forEach(function(b){
-    b.addEventListener('click', function(){ fnFilter = fnFilter===b.dataset.fn ? '' : b.dataset.fn; selIdx=-1; renderFacets(); renderList(); });
-  });
-  host.querySelectorAll('[data-band]').forEach(function(b){
-    b.addEventListener('click', function(){ bandFilter = bandFilter===b.dataset.band ? '' : b.dataset.band; selIdx=-1; renderFacets(); renderList(); });
-  });
+  host.innerHTML = '<input id="pl-search" class="pf-search" placeholder="Search company or role" value="' + esc(textFilter) + '">';
   var box = document.getElementById('pl-search');
   if (box) box.addEventListener('input', function(){
     textFilter = box.value; selIdx=-1; renderList();
@@ -6717,11 +6812,21 @@ var BANDS_ORDER = ['ic','senior','lead','director','exec'];
 
 function getFiltered() {
   var rows = filter === 'all' ? JOBS.slice() : JOBS.filter(function(j){ return j.status===filter; });
-  if (fnFilter) rows = rows.filter(function(j){ return (j.fns||[]).indexOf(fnFilter) >= 0; });
-  if (bandFilter) rows = rows.filter(function(j){ return j.band === bandFilter; });
   var q = textFilter.trim().toLowerCase();
   if (q) rows = rows.filter(function(j){ return ((j.company||'') + ' ' + (j.role||'')).toLowerCase().indexOf(q) >= 0; });
-  return rows;
+  // Companies together, best first, so the list reads as employers and their
+  // roles rather than as a stream.
+  var best = {};
+  rows.forEach(function(j){
+    var c = j.company || j.url;
+    var score = (9 - (j.tier ?? 9)) * 100 + (j.fit_score || 0);
+    if (!(c in best) || score > best[c]) best[c] = score;
+  });
+  return rows.sort(function(a, b){
+    var ca = a.company || a.url, cb = b.company || b.url;
+    if (ca !== cb) return best[cb] - best[ca] || ca.localeCompare(cb);
+    return (a.tier ?? 9) - (b.tier ?? 9) || (b.fit_score || 0) - (a.fit_score || 0);
+  });
 }
 
 function renderList() {
@@ -6733,14 +6838,23 @@ function renderList() {
     return;
   }
   list.innerHTML = '';
+  var lastCompany = null;
   listItems.forEach(function(j, i) {
+    var company = j.company || j.url;
+    if (company !== lastCompany) {
+      var head = document.createElement('div');
+      head.className = 'pi-company';
+      var atThis = listItems.filter(function(x){ return (x.company || x.url) === company; }).length;
+      head.innerHTML = esc(company) + (atThis > 1 ? '<span class="pi-n">' + atThis + ' roles</span>' : '');
+      list.appendChild(head);
+      lastCompany = company;
+    }
     var el = document.createElement('div');
     el.className = 'pitem';
     el.id = 'pitem-' + i;
-    var fit = j.fit_score ? ' &middot; ' + j.fit_score + '/10' : '';
-    el.innerHTML = '<div class="pi-co">' + esc(j.company||j.url) + '</div>'
-      + '<div class="pi-role">' + esc(j.role||'') + '</div>'
-      + '<div class="pi-meta">' + esc(j.location||'') + fit + '</div>';
+    var bits = [esc(j.location||''), j.fit_score ? j.fit_score + '/10' : '', j.found_at ? esc(j.found_at) : ''].filter(Boolean);
+    el.innerHTML = '<div class="pi-role">' + esc(j.role||'') + '</div>'
+      + '<div class="pi-meta">' + bits.join(' &middot; ') + '</div>';
     (function(idx){ el.addEventListener('click', function(){ selectItem(idx); }); })(i);
     list.appendChild(el);
   });
