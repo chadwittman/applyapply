@@ -29,6 +29,7 @@ const fastKit = require('./fast-kit');
 const fieldMap = require('./field-map');
 const { FUNCTION_NAMES, BANDS, targetPreferences } = require('./roles');
 const { classifierFor } = require('./title-class');
+const interest = require('./interest');
 const card = require('./card');
 const sendblue = require('./sendblue');
 const { targetMatcher } = require('./roles');
@@ -69,7 +70,7 @@ for (const method of ['get','post','put','patch','delete']) {
     (req, res, next) => { try { Promise.resolve(handler(req,res,next)).catch(next); } catch (e) { next(e); } }));
 }
 const PORT = process.env.PORT || 5000;
-const VERSION = '0.69.0';
+const VERSION = '0.70.0';
 const IS_PRODUCTION = process.env.NODE_ENV === 'production';
 const APP_ORIGIN = process.env.APP_ORIGIN || 'http://localhost:5000';
 const ALLOWED_WEB_ORIGINS = new Set(
@@ -1046,6 +1047,15 @@ function chatUser(req, res) {
 // times on Himalayas, each with its own URL. That is one job to a reader, so
 // they collapse into one row that remembers when we first saw it and where
 // else it is open.
+// Remote, hybrid or on-site, which is the first thing anybody filters by.
+function workplaceOf(row) {
+  const where = `${row.l || ''} ${row.places ? row.places.join(' ') : ''}`.toLowerCase();
+  if (/hybrid/.test(where)) return 'hybrid';
+  if (row.remote === true || /\bremote\b|anywhere|work from home/.test(where)) return 'remote';
+  if (!where.trim()) return 'unknown';
+  return 'onsite';
+}
+
 function collapse(rows) {
   const byRole = new Map();
   for (const r of rows) {
@@ -1053,7 +1063,7 @@ function collapse(rows) {
     const first = byRole.get(key);
     const seenAt = r.first_seen || r.posted_at;
     if (!first) {
-      byRole.set(key, { c: r.company || '', r: r.role || '', l: r.location || '', s: r.source, u: r.url,
+      byRole.set(key, { c: r.company || '', r: r.role || '', l: r.location || '', s: r.source, u: r.url, remote: r.remote,
         p: r.posted_at || r.first_seen, fs: seenAt, f: r.fits, fn: r.fns, b: r.band, k: r.hasKit, m: r.inPipeline,
         also: [], places: r.location ? [r.location] : [] });
       continue;
@@ -1066,7 +1076,7 @@ function collapse(rows) {
     first.m = first.m || r.inPipeline;
   }
   return [...byRole.values()].map(x => ({ ...x, n: x.also.length + 1, also: undefined,
-    places: x.places.slice(0, 4) }));
+    places: x.places.slice(0, 4), w: workplaceOf(x) }));
 }
 
 // Everything in the ledger, and what it would do for this person. A run that
@@ -1086,6 +1096,24 @@ app.get('/listings', async (req, res) => {
       inPipeline: mine.has(r.url), hasKit: kits.has(r.url) };
   });
   const fitting = seen.filter(r => r.fits).length;
+
+  // Interest scores for the rows this person is most likely to read: what
+  // fits, newest first, capped, and cached so a page fills in over a few
+  // visits rather than costing anything on every one.
+  let interestBy = new Map();
+  if (userEmail && process.env.TYPESAFE_API_KEY && profile) {
+    interestBy = await db.getInterest(userEmail).catch(() => new Map());
+    const unscored = collapse(seen).filter(r => r.f && !interestBy.has(r.u))
+      .sort((a, b) => new Date(b.fs || 0) - new Date(a.fs || 0));
+    if (unscored.length) {
+      const scored = await interest.scoreJobs(process.env.TYPESAFE_API_KEY, profile,
+        unscored.map(r => ({ url: r.u, company: r.c, role: r.r, location: r.l })));
+      if (scored.length) {
+        await db.saveInterest(userEmail, scored).catch(() => {});
+        for (const { url, score } of scored) interestBy.set(url, score);
+      }
+    }
+  }
   const bySource = {};
   for (const r of seen) bySource[r.source] = (bySource[r.source] || 0) + 1;
 
@@ -1106,7 +1134,8 @@ h1{font-size:20px;font-weight:700;letter-spacing:-.03em;margin-bottom:6px}
 input,select{padding:8px 11px;background:#0a0a0a;border:1px solid #222;color:#fff;font-family:inherit;font-size:14px;outline:none}
 input:focus,select:focus{border-color:#555}
 #q{flex:1 1 220px}
-.row{display:grid;grid-template-columns:1fr auto;gap:12px;padding:12px 0;border-top:1px solid #151515;align-items:baseline}
+.row{display:grid;grid-template-columns:1fr auto;gap:12px;padding:13px 10px;margin:0 -10px;border-top:1px solid #151515;align-items:baseline;color:inherit}
+.row:hover{background:#0b0b0b}
 .co{font-size:15px;font-weight:600}
 .ro{font-size:14px;color:#c4c4c4}
 .meta{font-size:12px;color:#8f8f8f;margin-top:3px}
@@ -1131,6 +1160,23 @@ input:focus,select:focus{border-color:#555}
     <option value="all">All jobs</option>
     <option value="fit">Things you might be interested in</option>
   </select>
+  <select id="where">
+    <option value="">Anywhere</option>
+    <option value="remote">Remote</option>
+    <option value="hybrid">Hybrid</option>
+    <option value="onsite">On-site</option>
+  </select>
+  <select id="age">
+    <option value="">Any time</option>
+    <option value="1">Last 24 hours</option>
+    <option value="7">Last week</option>
+    <option value="30">Last month</option>
+  </select>
+  <select id="sort">
+    <option value="new">Newest first</option>
+    <option value="interest">Most interesting to me</option>
+    <option value="company">By company</option>
+  </select>
   <select id="src"><option value="">All sources</option>${Object.keys(bySource).sort().map(n => `<option value="${escapeHtml(n)}">${escapeHtml(n)} (${bySource[n]})</option>`).join('')}</select>
 </div>
 <div class="count" id="count"></div>
@@ -1138,41 +1184,58 @@ input:focus,select:focus{border-color:#555}
 </div>
 <script>
 var FITTING = ${fitting};
-var ROWS = ${scriptJSON(collapse(seen))};
+var ROWS = ${scriptJSON(collapse(seen).map(r => ({ ...r, i: interestBy.get(r.u) ?? null })))};
+var SIGNED_IN = ${userEmail ? 'true' : 'false'};
+var HAS_TARGETING = ${matcher.functions.length ? 'true' : 'false'};
 function esc(t){return String(t==null?'':t).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
 function when(v){ if(!v) return ''; var d=Math.floor((Date.now()-new Date(v).getTime())/86400000);
   return d<=0?'today':d===1?'yesterday':d<7?d+' days ago':d<14?'last week':Math.floor(d/7)+' weeks ago'; }
 function render(){
   var q=document.getElementById('q').value.trim().toLowerCase();
   var only=document.getElementById('only').value, src=document.getElementById('src').value;
+  var where=document.getElementById('where').value, age=document.getElementById('age').value;
+  var sort=document.getElementById('sort').value;
+  var cutoff=age?Date.now()-Number(age)*86400000:0;
   var rows=ROWS.filter(function(r){
     if(only==='fit'&&!r.f)return false;
     if(src&&r.s!==src)return false;
+    if(where&&r.w!==where)return false;
+    if(cutoff){ var t=new Date(r.p||r.fs||0).getTime(); if(!t||t<cutoff)return false; }
     if(q&&(r.c+' '+r.r).toLowerCase().indexOf(q)<0)return false;
     return true;
   });
+  var newest=function(x){ return new Date(x.p||x.fs||0).getTime(); };
+  if(sort==='company') rows.sort(function(a,b){ return a.c.localeCompare(b.c)||newest(b)-newest(a); });
+  else if(sort==='interest') rows.sort(function(a,b){ return (b.i==null?-1:b.i)-(a.i==null?-1:a.i)||newest(b)-newest(a); });
+  else rows.sort(function(a,b){ return newest(b)-newest(a); });
   document.getElementById('count').textContent=rows.length.toLocaleString()+' of '+ROWS.length.toLocaleString();
   document.getElementById('list').innerHTML=rows.length?rows.slice(0,400).map(function(r){
     var where = r.n>1 ? (r.places.length>1 ? r.places.slice(0,3).join(', ')+(r.n>3?' +'+(r.n-3)+' more':'') : r.n+' postings') : esc(r.l);
     var meta = [where, esc(r.s), r.p?'posted '+when(r.p):'', r.fs?'first seen '+when(r.fs):''].filter(Boolean).join(' · ');
-    return '<div class="row"><div><div class="co">'+esc(r.c)+'</div><div class="ro">'+esc(r.r)+'</div>'
+    var stars = r.i!=null ? '<span class="tag fit" title="How well this matches you">'+['no','weak','ok','good','strong'][Math.round(r.i)]+' match</span>' : '';
+    return '<a class="row" href="'+esc(r.u)+'" target="_blank" rel="noopener">'
+      +'<div><div class="co">'+esc(r.c)+'</div><div class="ro">'+esc(r.r)+'</div>'
       +'<div class="meta">'+meta+'</div></div>'
       +'<div class="tags">'
-      +(r.f?'<span class="tag fit">fits you</span>':'')
+      +stars
+      +(r.f&&r.i==null?'<span class="tag fit">fits you</span>':'')
+      +(r.w&&r.w!=='unknown'?'<span class="tag">'+r.w+'</span>':'')
       +(r.n>1?'<span class="tag">'+r.n+' postings</span>':'')
-      +(r.fn&&r.fn.length?'<span class="tag">'+esc(r.fn.join(', '))+(r.b?' · '+esc(r.b):'')+'</span>':'<span class="tag">unclassified</span>')
       +(r.k?'<span class="tag kit">kit written</span>':'')
       +(r.m?'<span class="tag">in pipeline</span>':'')
-      +'<a class="tag" href="'+esc(r.u)+'" target="_blank" rel="noopener">open</a>'
-      +'</div></div>';
+      +'</div></a>';
   }).join('')+(rows.length>400?'<div class="count" style="margin-top:14px">Showing the first 400.</div>':'')
   :'<div class="empty">'+(only==='fit'&&!FITTING?'Nothing matches your targeting yet. <a href="/setup#search" style="text-decoration:underline">Say what you are looking for</a> and this fills up.':'Nothing matches that search.')+'</div>';
 }
-['q','only','src'].forEach(function(id){document.getElementById(id).addEventListener('input',render);});
+['q','only','src','where','age','sort'].forEach(function(id){document.getElementById(id).addEventListener('input',render);});
 var params=new URLSearchParams(location.search);
 if(params.get('src'))document.getElementById('src').value=params.get('src');
 if(params.get('only'))document.getElementById('only').value=params.get('only');
 if(params.get('src'))document.getElementById('only').value=params.get('only')||'all';
+if(!params.get('only')&&SIGNED_IN&&HAS_TARGETING){
+  document.getElementById('only').value='fit';
+  if(ROWS.some(function(r){return r.i!=null;}))document.getElementById('sort').value='interest';
+}
 render();
 </script>
 </body></html>`);

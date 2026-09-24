@@ -48,6 +48,18 @@ assert.ok(bjak[0].fs, 'and when we first saw it');
 assert.match(grouped, /postings, since boards list one job once per location/);
 console.log('PASS: one role posted in three places is one job, dated from first sight');
 
+// The classic controls any job board has, and a row you can click.
+const board = await (await fetch(origin + '/listings', { headers: { authorization: 'Bearer ' + T } })).text();
+for (const control of ['id="where"', 'id="age"', 'id="sort"', '>Remote<', '>Hybrid<', '>On-site<', '>Last 24 hours<', '>Most interesting to me<']) {
+  assert.ok(board.includes(control), 'the page offers ' + control);
+}
+assert.ok(board.includes('<a class="row" href='), 'the whole row is the link, not a word at the end of it');
+const payload = JSON.parse(board.match(/var ROWS = (\[[\s\S]*?\]);\n/)[1]);
+const remote = payload.find(r => r.c === 'Watershed');
+assert.equal(remote.w, 'remote', 'a remote job is marked remote: ' + JSON.stringify(remote.l));
+assert.equal(payload.find(r => r.c === 'Acme').w, 'onsite', 'and an office job is not');
+console.log('PASS: remote, recency and sorting, with the row itself clickable');
+
 // Signed out it still renders rather than erroring: it is the catalogue.
 assert.equal((await fetch(origin + '/listings')).status, 200);
 await db.pool.end();

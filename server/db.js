@@ -183,6 +183,19 @@ async function initSchema() {
     )
   `);
 
+  // How interesting one job looks to one person, decided once and kept. The
+  // page shows hundreds of rows; scoring them all on every visit would be slow
+  // and pointless, so this is filled a slice at a time and reused.
+  await q(`
+    CREATE TABLE IF NOT EXISTS job_interest (
+      user_email TEXT NOT NULL,
+      url TEXT NOT NULL,
+      score REAL NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      PRIMARY KEY (user_email, url)
+    )
+  `);
+
   // A short link per person per posting, so that tapping it is an event we
   // see. The employer's own URL is what they land on; we learn that they
   // looked, which is the difference between guessing what to show next and
@@ -930,6 +943,23 @@ async function spendPhoneClaim(code) {
 }
 
 
+
+// ── How interesting a job looks to one person ─────────────────────────────────
+
+async function getInterest(userEmail) {
+  const rows = await q(`SELECT url, score FROM job_interest WHERE user_email = $1`, [requireOwner(userEmail)]);
+  return new Map(rows.map(r => [r.url, Number(r.score)]));
+}
+
+async function saveInterest(userEmail, scores) {
+  for (const { url, score } of scores) {
+    await q(`INSERT INTO job_interest (user_email, url, score) VALUES ($1,$2,$3)
+             ON CONFLICT (user_email, url) DO UPDATE SET score = EXCLUDED.score, created_at = NOW()`,
+      [requireOwner(userEmail), url, score]);
+  }
+  return scores.length;
+}
+
 // ── Tracked job links ─────────────────────────────────────────────────────────
 
 async function jobLinkToken(userEmail, url) {
@@ -1379,7 +1409,7 @@ async function deleteAccount(userEmail) {
   try {
     await client.query('BEGIN');
     await client.query('DELETE FROM operation_events WHERE operation_id IN (SELECT id FROM operations WHERE user_email=$1)', [owner]);
-    for (const table of ['user_activity','decisions','evidence','facts','phone_links','resume_files','schedules','runs','jobs','kits','profiles','purchases','api_keys','resume_structures','chat_messages','job_links','kit_shares','agent_connects','oauth_codes']) {
+    for (const table of ['user_activity','decisions','evidence','facts','phone_links','resume_files','schedules','runs','jobs','kits','profiles','purchases','api_keys','resume_structures','chat_messages','job_links','job_interest','kit_shares','agent_connects','oauth_codes']) {
       await client.query(`DELETE FROM ${table} WHERE user_email=$1`, [owner]);
     }
     // Feedback stays so the product can be fixed, but stops being theirs.
@@ -1468,7 +1498,7 @@ module.exports = {
   saveResumeFile, getResumeFile, getResumeFileMeta,
   getEvidence, addEvidenceQuestions, addAnsweredEvidence, setEvidenceAnswer, deleteEvidence,
   getFacts, addFact, deleteFact,
-  jobLinkToken, openJobLink, openedJobs,
+  jobLinkToken, openJobLink, openedJobs, getInterest, saveInterest,
   accountForPhone, phoneLink, phonesForUser, createPhoneCode, checkPhoneCode, linkPhone, unlinkPhone, setPhoneStopped, createPhoneClaim, spendPhoneClaim,
   getSetting, setSetting,
   getSchedule, setSchedule, getDueSchedules, markScheduleRun, getAllEnabledSchedules,
