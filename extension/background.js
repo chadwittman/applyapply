@@ -342,14 +342,36 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
     for (const key of injected) if (key.startsWith(tabId + ':')) injected.delete(key);
     iframeQuestionsMap.delete(tabId);
   }
-  // Opening a page never opens the sidebar. Only the toolbar action does.
+  // Opening a page never opens the sidebar on its own, with one exception:
+  // the person clicked this job in our pipeline a moment ago.
+  if (changeInfo.status === 'complete' && openedByUs.has(tabId)) {
+    openedByUs.delete(tabId);
+    if (tab?.url && isEmbeddedJobPage(tab.url)) openSidebar(tab).catch(() => {});
+  }
 });
 
-chrome.action.onClicked.addListener(async tab => {
-  // Without host access to a site Chrome omits tab.url entirely. That is the
-  // intended state now: the extension asks for named ATS domains only, and
-  // automatic detection everywhere else is opt-in. On a site we cannot see,
-  // clicking the toolbar icon still injects through activeTab.
+// Opening a job from applyapply's own pipeline is a decision to work on that
+// job. Waiting for a second click on the toolbar to say so again is a step
+// that exists for no reason, so a tab opened by our own page opens the sidebar
+// by itself. Everywhere else still waits to be asked.
+const openedByUs = new Set();
+
+chrome.tabs.onCreated.addListener(async tab => {
+  if (!tab.openerTabId || !tab.id) return;
+  try {
+    const opener = await chrome.tabs.get(tab.openerTabId);
+    // tab.url is only readable for hosts we have permission for, which is
+    // exactly the check we want: it is our page or it is nothing.
+    // SERVER is whichever origin this install talks to, and it is only known
+    // once storage has been read; the cloud origin is always ours.
+    const from = opener?.url ? new URL(opener.url).origin : '';
+    if (from && (from === SERVER || from === CLOUD_URL || from === LEGACY_CLOUD_URL)) openedByUs.add(tab.id);
+  } catch { /* no access to the opener means it was not us */ }
+});
+
+chrome.tabs.onRemoved.addListener(tabId => openedByUs.delete(tabId));
+
+async function openSidebar(tab) {
   const url = tab.url;
   if (!url || !isEmbeddedJobPage(url)) {
     await chrome.tabs.create({ url: `${SERVER}/pipeline` });
@@ -386,7 +408,9 @@ chrome.action.onClicked.addListener(async tab => {
       args: [ats],
     }).then(doInject).catch(doInject);
   }
-});
+}
+
+chrome.action.onClicked.addListener(openSidebar);
 
 chrome.tabs.onRemoved.addListener(tabId => {
   for (const key of injected) {
