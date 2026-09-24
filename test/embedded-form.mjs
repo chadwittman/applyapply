@@ -88,6 +88,18 @@ try {
   assert.ok(await frame.evaluate(() => window.__sent.includes('FRAME_FILLED')), 'the worker was told');
   assert.deepEqual(errors, [], 'no page errors');
   console.log('PASS: an embedded board fills from the frame that holds the fields');
+
+  // And when the frame cannot be reached at all, the page says which problem
+  // it is and offers the form's own URL, instead of "nothing matched".
+  const embedUrl = await page.mainFrame().evaluate(() => {
+    for (const f of document.querySelectorAll('iframe')) {
+      const src = f.src || '';
+      if (/greenhouse\.io\/embed|lever\.co\/jobs-embed|ashbyhq\.com\/.*\/embed|myworkdayjobs\.com/i.test(src)) return src;
+    }
+    return null;
+  });
+  assert.ok(embedUrl && embedUrl.includes('job_app'), 'the embedded form has a URL of its own to offer: ' + embedUrl);
+  console.log('PASS: an unreachable embed is named, with its own page offered');
 } finally {
   await browser.close();
   await db.pool.end();

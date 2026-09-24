@@ -846,7 +846,18 @@ function bindEvents() {
         } else if (!currentApp) {
           note.textContent = 'No fields matched. Generate a kit for this job to answer its questions.';
         } else {
-          note.textContent = 'Nothing matched — try re-fill';
+          // Say which of the two it is, rather than "nothing matched" for both.
+          const embed = embeddedFormUrl();
+          if (embed) {
+            note.textContent = 'This application is inside an embedded form this page will not let me reach. ';
+            const open = document.createElement('a');
+            open.href = embed; open.target = '_blank'; open.rel = 'noopener';
+            open.textContent = 'Open the form on its own page →';
+            open.style.cssText = 'color:#fff;text-decoration:underline;cursor:pointer';
+            note.appendChild(open);
+          } else {
+            note.textContent = 'Nothing matched — try re-fill';
+          }
         }
       }
     });
@@ -1224,6 +1235,17 @@ async function mappedFill() {
     if (String(target.el.value || '').trim()) filled++;
   }
   return filled;
+}
+
+// An embedded board: the fields are in someone else's iframe. If we could not
+// reach it, that frame's own URL is a page where everything works normally, so
+// offer it rather than leaving the applicant with a button that does nothing.
+function embeddedFormUrl() {
+  for (const f of document.querySelectorAll('iframe')) {
+    const src = f.src || '';
+    if (/greenhouse\.io\/embed|lever\.co\/jobs-embed|ashbyhq\.com\/.*\/embed|myworkdayjobs\.com/i.test(src)) return src;
+  }
+  return null;
 }
 
 function deterministicFill(app) {
