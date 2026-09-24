@@ -28,6 +28,7 @@ const fastKit = require('./fast-kit');
 const fieldMap = require('./field-map');
 const { FUNCTION_NAMES, BANDS, targetPreferences } = require('./roles');
 const { classifierFor } = require('./title-class');
+const card = require('./card');
 const { evaluateResumeMatch } = require('./typesafe');
 const scriptJSON = value => JSON.stringify(value).replace(/</g, '\\u003c');
 const usage = require('./usage');
@@ -61,7 +62,7 @@ for (const method of ['get','post','put','patch','delete']) {
     (req, res, next) => { try { Promise.resolve(handler(req,res,next)).catch(next); } catch (e) { next(e); } }));
 }
 const PORT = process.env.PORT || 5000;
-const VERSION = '0.56.0';
+const VERSION = '0.57.0';
 const IS_PRODUCTION = process.env.NODE_ENV === 'production';
 const APP_ORIGIN = process.env.APP_ORIGIN || 'http://localhost:5000';
 const ALLOWED_WEB_ORIGINS = new Set(
@@ -777,6 +778,23 @@ app.post('/k/:token/rewrite', apiLimiter, async (req, res) => {
   if (r.status !== 200) return res.status(502).json({ error: r.data?.error || 'The resume could not be rewritten. Try again.' });
   res.json({ ok: true });
 });
+// The card Messages, Slack and every other unfurler shows for a kit link. Same
+// token as the page, so it is exactly as private as the kit itself, and it is
+// fetched by a crawler with no session.
+app.get('/k/:token/card.png', apiLimiter, async (req, res) => {
+  const found = await db.kitForShare(req.params.token).catch(() => null);
+  const png = found ? card.kitCard(found.kit) : null;
+  if (!png) {
+    res.setHeader('Cache-Control', 'public, max-age=600');
+    return res.sendFile(path.join(__dirname, '..', 'brand', 'og.png'));
+  }
+  res.setHeader('Content-Type', 'image/png');
+  res.setHeader('X-Robots-Tag', 'noindex');
+  // A kit changes when it is rewritten, so this is short-lived by design.
+  res.setHeader('Cache-Control', 'public, max-age=900');
+  res.send(png);
+});
+
 app.get('/k/:token', apiLimiter, async (req, res) => {
   const found = await sharedKit(req, res); if (!found) return;
   const { profile } = found, kit = await withAnsweredGaps(found.kit, found.owner), t = kit.tailored || {};
@@ -797,7 +815,26 @@ app.get('/k/:token', apiLimiter, async (req, res) => {
   const gapItems = [...(cov.answered || []).map(a => ({ q: a.question, a: a.answer })), ...(cov.gaps || []).map(q => ({ q, a: '' }))];
   const rows = copyRow('First name', profile.first_name) + copyRow('Last name', profile.last_name) + copyRow('Email', profile.email) + copyRow('Phone', profile.phone) + copyRow('LinkedIn', profile.linkedin) + copyRow('Website', profile.website) + copyRow('Location', profile.location);
   res.type('html').send(`<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-<meta name="robots" content="noindex"><title>${escapeHtml(kit.company || 'Your kit')} · applyapply</title><link rel="icon" href="/brand/icon-32.png">
+<meta name="robots" content="noindex"><title>${escapeHtml(kit.role ? kit.role + ' at ' + (kit.company || '') : kit.company || 'Your kit')} · applyapply</title><link rel="icon" href="/brand/icon-32.png">
+${(() => {
+  // What the link looks like when it is sent to someone, or to yourself in
+  // Messages: the job, what is ready, and a card drawn for this kit.
+  const ready = card.piecesFor(kit);
+  const score = kit.tailored_resume?.jev_match?.score;
+  const desc = [ready.join(' · ') || 'Your application kit',
+    Number.isFinite(Number(score)) ? `${Math.round((Number(score) / 5) * 100)}% match` : null,
+    'Tap any line to copy it.'].filter(Boolean).join(' · ');
+  const img = APP_ORIGIN.replace(/\/$/, '') + base + '/card.png';
+  return `<meta property="og:type" content="website">
+<meta property="og:site_name" content="applyapply">
+<meta property="og:title" content="${escapeHtml(kit.role ? kit.role + ' at ' + (kit.company || '') : 'Your application kit')}">
+<meta property="og:description" content="${escapeHtml(desc)}">
+<meta property="og:image" content="${escapeHtml(img)}">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:image" content="${escapeHtml(img)}">`;
+})()}
 <style>
 *{box-sizing:border-box}body{margin:0;background:#000;color:#fff;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;-webkit-font-smoothing:antialiased}
 .wrap{max-width:560px;margin:0 auto;padding:calc(20px + env(safe-area-inset-top)) 16px calc(40px + env(safe-area-inset-bottom))}
@@ -2914,8 +2951,12 @@ async function fetchATSFormQuestions(url) {
       const i = parts.indexOf('jobs');
       if (i !== -1 && parts[0] && parts[i + 1]) return await greenhouseQuestions(parts[0], parts[i + 1]);
     } else if (qp.has('gh_jid')) {
-      const q = await greenhouseQuestions(slug, qp.get('gh_jid'));
-      if (q) return q;
+      // Same board resolution the description uses: the host is often not the
+      // company, and the board token is in the path instead.
+      for (const token of greenhouseTokenGuesses(u, parts)) {
+        const q = await greenhouseQuestions(token, qp.get('gh_jid'));
+        if (q) return q;
+      }
     }
 
     if (host.includes('lever.co') && parts.length >= 2) {
@@ -2940,11 +2981,34 @@ async function fetchATSFormQuestions(url) {
 // posting itself; use those first for URLs on those platforms.
 // Board tokens to try for a Greenhouse job embedded on a company's own
 // careers domain (pinterestcareers.com/...?gh_jid=123 -> "pinterest").
+// Which Greenhouse board a gh_jid belongs to. The host is usually the company
+// ("contentstack.com"), but plenty of employers front their board with someone
+// else's domain: Contentstack serves theirs from
+// ats.comparably.com/api/v1/gh/contentstack/jobs/<id>, where guessing from the
+// host asks Greenhouse for a board called "ats" and gets a 404, so the posting
+// looked like it had no application questions at all.
 function greenhouseTokenGuesses(u, parts) {
-  const host = u.hostname.replace(/^www\./, '').split('.')[0].toLowerCase();
-  return [...new Set([host, host.replace(/(careers|jobs|hiring|talent)$/, ''), parts[0], (parts[0] || '').replace(/(careers|jobs)$/, '')]
-    .map(t => String(t || '').replace(/[^a-z0-9]/gi, '').toLowerCase()).filter(t => t.length > 2))];
+  const jobsAt = parts.findIndex(p => p === 'jobs' || p === 'job');
+  const ghAt = parts.findIndex(p => p === 'gh' || p === 'greenhouse');
+  // "careers.acme.com" is acme; "ats.comparably.com" is not the employer at
+  // all, so the path is tried first and the host is only a guess after it.
+  const labels = u.hostname.replace(/^www\./, '').split('.');
+  const hostLabels = labels.slice(0, Math.max(1, labels.length - 1));
+  const candidates = [
+    ghAt >= 0 ? parts[ghAt + 1] : null,
+    jobsAt > 0 ? parts[jobsAt - 1] : null,
+    ...hostLabels,
+    ...hostLabels.map(l => l.replace(/(careers|jobs|hiring|talent)$/, '')),
+    parts[0], (parts[0] || '').replace(/(careers|jobs)$/, ''),
+  ];
+  // Words that name a system or a page rather than an employer.
+  const generic = new Set(['api', 'v1', 'v2', 'gh', 'greenhouse', 'embed', 'boards', 'board', 'jobs', 'job',
+    'www', 'ats', 'careers', 'career', 'apply', 'application', 'openings', 'talent', 'hiring', 'recruiting', 'co', 'com']);
+  return [...new Set(candidates
+    .map(t => String(t || '').replace(/[^a-z0-9]/gi, '').toLowerCase())
+    .filter(t => t.length > 2 && !generic.has(t) && !/^\d+$/.test(t)))].slice(0, 6);
 }
+
 
 async function fetchATSJobText(url) {
   const u = new URL(url);
@@ -7150,4 +7214,4 @@ if (require.main === module) {
     });
 }
 
-module.exports = { app, runScheduledSourcing, prepareKits, fetchATSJobText };
+module.exports = { app, runScheduledSourcing, prepareKits, fetchATSJobText, fetchATSFormQuestions, greenhouseTokenGuesses };

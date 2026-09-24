@@ -20,7 +20,7 @@ require.cache[require.resolve(path.resolve(__dirname, '../server/public-fetch'))
       : { ok: false, status: 404, headers: {}, text: async () => '', json: async () => ({}) };
   },
 } };
-const { fetchATSJobText } = requireServer('./server');
+const { fetchATSJobText, fetchATSFormQuestions, greenhouseTokenGuesses } = requireServer('./server');
 
 (async () => {
   const workday = await fetchATSJobText('https://devoted.wd1.myworkdayjobs.com/en-US/Devoted/details/Product-Leader_R3649');
@@ -39,4 +39,38 @@ const { fetchATSJobText } = requireServer('./server');
 
   assert.equal(await fetchATSJobText('https://careers.example.com/jobs/123'), null, 'Unknown sites fall back to the page');
   console.log('PASS: Workday, embedded Greenhouse and Lever links reach the posting itself');
+
+  // The employer's board token is not always in the host. Contentstack serves
+  // its Greenhouse board from ats.comparably.com, where guessing from the host
+  // asked for a board called "ats" and the posting looked question-free.
+  const guesses = url => { const u = new URL(url); return greenhouseTokenGuesses(u, u.pathname.split('/').filter(Boolean)); };
+  assert.equal(guesses('https://ats.comparably.com/api/v1/gh/contentstack/jobs/7999429003?gh_jid=7999429003')[0], 'contentstack');
+  assert.equal(guesses('https://careers.acme.com/openings?gh_jid=123')[0], 'acme', 'careers.acme.com is acme, not careers');
+  assert.equal(guesses('https://www.acmecareers.com/jobs/456?gh_jid=456')[0], 'acmecareers');
+  assert.ok(guesses('https://www.acmecareers.com/jobs/456?gh_jid=456').includes('acme'), 'and acme is tried too');
+  for (const generic of ['api', 'v1', 'gh', 'jobs', 'ats', 'careers', 'boards']) {
+    assert.ok(!guesses('https://ats.comparably.com/api/v1/gh/contentstack/jobs/1?gh_jid=1').includes(generic), generic + ' is not an employer');
+  }
+
+  // And the questions follow the same resolution, not the host alone.
+  // greenhouseQuestions calls global fetch, so that is what gets watched.
+  const realFetch = globalThis.fetch;
+  const boardsAsked = [];
+  globalThis.fetch = async (url) => {
+    boardsAsked.push(String(url));
+    if (!String(url).includes('/boards/contentstack/')) return { ok: false, status: 404, json: async () => ({}) };
+    return { ok: true, status: 200, json: async () => ({ questions: [
+      { label: 'First Name', fields: [{ name: 'first_name' }] },
+      { label: 'Are you willing to travel?', fields: [{ name: 'question_1' }] },
+      { label: 'Do you have a Non-Compete in place?', fields: [{ name: 'question_2' }] },
+    ] }) };
+  };
+  try {
+    const qs = await fetchATSFormQuestions('https://ats.comparably.com/api/v1/gh/contentstack/jobs/7999429003?gh_jid=7999429003');
+    assert.deepEqual(qs, ['Are you willing to travel?', 'Do you have a Non-Compete in place?'],
+      'the real questions come back, without the fields we fill from the profile');
+    assert.ok(boardsAsked.some(u => u.includes('/boards/contentstack/jobs/7999429003')), boardsAsked.join(' '));
+    assert.ok(!boardsAsked.some(u => u.includes('/boards/ats/')), 'and the host is never mistaken for the employer');
+  } finally { globalThis.fetch = realFetch; }
+  console.log('PASS: a board fronted by someone else\'s domain still resolves');
 })().catch(e => { console.error(e); process.exitCode = 1; });

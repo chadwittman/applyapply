@@ -27,6 +27,17 @@
     b.className = 'b ' + (m.direction === 'in' ? 'out' : 'in');
     b.dataset.dir = m.direction;
     b.innerHTML = (m.voice ? '<span class="voice-tag">🎤 voice note</span><br>' : '') + linkify(m.body);
+    // Messages unfurls a kit link into a card. Show the same card here, or the
+    // test line looks nothing like the thing it is testing.
+    const kit = m.body.match(/\/k\/([A-Za-z0-9_-]{8,})/);
+    if (kit && m.direction !== 'in') {
+      const card = document.createElement('a');
+      card.className = 'unfurl';
+      card.href = m.body.match(/https?:\/\/[^\s<]*\/k\/[A-Za-z0-9_-]+/)?.[0] || '#';
+      card.target = '_blank'; card.rel = 'noopener';
+      card.innerHTML = '<img src="/k/' + kit[1] + '/card.png" alt="" loading="lazy">';
+      thread.appendChild(card);
+    }
     // Tap to copy, standing in for long-press → Copy in Messages.
     b.addEventListener('click', e => { if (e.target.tagName === 'A') return; navigator.clipboard.writeText(m.body).then(() => toast('Copied')); });
     thread.appendChild(b);
