@@ -23,7 +23,13 @@ assert.match(page, /Every listing we hold/);
 assert.match(page, /"c":"Watershed"[^}]*"f":true/, 'the product role fits');
 assert.match(page, /"c":"Acme"[^}]*"f":false/, 'the engineering role does not');
 assert.match(page, /"c":"Orb"[^}]*"f":false/, 'and the recruiter role is nobody\'s target');
-assert.match(page, /match what you are targeting/);
+assert.match(page, /fit what you are looking for/, 'it says how many fit');
+// The page opens on everything. A first view that can be empty is how a page
+// holding twelve thousand jobs looks broken.
+assert.match(page, /<option value="all">All jobs<\/option>\s*<option value="fit">/, 'all jobs is the default option');
+// And somebody who has not said what they want is told that, not shown zero.
+const anon = await (await fetch(origin + '/listings')).text();
+assert.match(anon, /Sign in.*to see which ones fit you/s);
 console.log('PASS: every listing is browsable, with what we decided about each');
 
 // Signed out it still renders rather than erroring: it is the catalogue.

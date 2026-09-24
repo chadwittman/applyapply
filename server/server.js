@@ -69,7 +69,7 @@ for (const method of ['get','post','put','patch','delete']) {
     (req, res, next) => { try { Promise.resolve(handler(req,res,next)).catch(next); } catch (e) { next(e); } }));
 }
 const PORT = process.env.PORT || 5000;
-const VERSION = '0.68.0';
+const VERSION = '0.68.1';
 const IS_PRODUCTION = process.env.NODE_ENV === 'production';
 const APP_ORIGIN = process.env.APP_ORIGIN || 'http://localhost:5000';
 const ALLOWED_WEB_ORIGINS = new Set(
@@ -1083,13 +1083,16 @@ input:focus,select:focus{border-color:#555}
 <nav class="nav"><a href="/"><b>applyapply</b></a><span><a href="/pipeline">Pipeline</a><a href="/sourcing">Sourcing</a><a href="/setup">Profile</a></span></nav>
 <div class="wrap">
 <h1>Every listing we hold</h1>
-<p class="sub">${seen.length.toLocaleString()} listings across ${Object.keys(bySource).length} sources. ${fitting.toLocaleString()} match what you are targeting${profile?.target_functions ? ` (${escapeHtml(profile.target_functions)})` : ''}. The rest are here too, so a run that says "${seen.length.toLocaleString()} pulled, ${fitting.toLocaleString()} fit" is something you can check rather than trust.</p>
+<p class="sub">${seen.length.toLocaleString()} listings across ${Object.keys(bySource).length} sources, refreshed every few hours. ${
+  !userEmail ? `<a href="/login" style="text-decoration:underline">Sign in</a> to see which ones fit you.`
+  : matcher.functions.length ? `${fitting.toLocaleString()} fit what you are looking for${matcher.derived ? ' (worked out from your saved titles)' : ''}.`
+  : `You have not said what you are looking for yet, so nothing is marked as fitting. <a href="/setup#search" style="text-decoration:underline">Tell us</a> and this page marks them.`
+}</p>
 <div class="tools">
   <input id="q" placeholder="Search company or role">
   <select id="only">
-    <option value="fit">Only what fits me</option>
-    <option value="all">Everything</option>
-    <option value="rest">Everything else</option>
+    <option value="all">All jobs</option>
+    <option value="fit">Things you might be interested in</option>
   </select>
   <select id="src"><option value="">All sources</option>${Object.keys(bySource).sort().map(n => `<option value="${escapeHtml(n)}">${escapeHtml(n)} (${bySource[n]})</option>`).join('')}</select>
 </div>
@@ -1097,6 +1100,7 @@ input:focus,select:focus{border-color:#555}
 <div id="list"></div>
 </div>
 <script>
+var FITTING = ${fitting};
 var ROWS = ${scriptJSON(seen.map(r => ({ c: r.company || '', r: r.role || '', l: r.location || '', s: r.source,
   u: r.url, p: r.posted_at || r.first_seen, f: r.fits, fn: r.fns, b: r.band, k: r.hasKit, m: r.inPipeline })))};
 function esc(t){return String(t==null?'':t).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
@@ -1107,7 +1111,6 @@ function render(){
   var only=document.getElementById('only').value, src=document.getElementById('src').value;
   var rows=ROWS.filter(function(r){
     if(only==='fit'&&!r.f)return false;
-    if(only==='rest'&&r.f)return false;
     if(src&&r.s!==src)return false;
     if(q&&(r.c+' '+r.r).toLowerCase().indexOf(q)<0)return false;
     return true;
@@ -1124,7 +1127,7 @@ function render(){
       +'<a class="tag" href="'+esc(r.u)+'" target="_blank" rel="noopener">open</a>'
       +'</div></div>';
   }).join('')+(rows.length>400?'<div class="count" style="margin-top:14px">Showing the first 400.</div>':'')
-  :'<div class="empty">Nothing here. Try "Everything".</div>';
+  :'<div class="empty">'+(only==='fit'&&!FITTING?'Nothing matches your targeting yet. <a href="/setup#search" style="text-decoration:underline">Say what you are looking for</a> and this fills up.':'Nothing matches that search.')+'</div>';
 }
 ['q','only','src'].forEach(function(id){document.getElementById(id).addEventListener('input',render);});
 var params=new URLSearchParams(location.search);
