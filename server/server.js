@@ -64,7 +64,7 @@ for (const method of ['get','post','put','patch','delete']) {
     (req, res, next) => { try { Promise.resolve(handler(req,res,next)).catch(next); } catch (e) { next(e); } }));
 }
 const PORT = process.env.PORT || 5000;
-const VERSION = '0.59.0';
+const VERSION = '0.60.0';
 const IS_PRODUCTION = process.env.NODE_ENV === 'production';
 const APP_ORIGIN = process.env.APP_ORIGIN || 'http://localhost:5000';
 const ALLOWED_WEB_ORIGINS = new Set(
@@ -1061,6 +1061,46 @@ app.post('/text/connect', apiLimiter, async (req, res) => {
   if (!phone) return res.status(400).json({ error: 'That link has expired. Text the line again for a fresh one.' });
   await db.linkPhone(phone, email);
   await sendblue.send(phone, 'Connected. Send me a job link and I will write your application kit.').catch(() => {});
+  res.json({ ok: true, phone });
+});
+
+// Verify a number by holding it, not by proving an email. The person types
+// their number while signed in, we text a code, they type it back here. Two
+// limiters: one on how often an account can ask, one on the number itself, so
+// this cannot be used to text somebody repeatedly.
+const codeLimiter = rateLimit({ windowMs: 10 * 60_000, max: 5, standardHeaders: true, legacyHeaders: false,
+  keyGenerator: req => reqUserEmail(req) || req.ip });
+
+app.post('/text/verify', codeLimiter, async (req, res) => {
+  const email = reqUserEmail(req);
+  if (!email) return res.status(401).json({ error: 'Sign in required' });
+  if (!sendblue.configured()) return res.status(503).json({ error: 'The text line is not switched on yet.' });
+  const phone = sendblue.normalizePhone(req.body?.phone);
+  if (!phone) return res.status(400).json({ error: 'That does not look like a phone number.' });
+  const code = await db.createPhoneCode(phone, email);
+  try {
+    await sendblue.send(phone, `${code} is your applyapply code. It expires in 10 minutes.`);
+  } catch (e) {
+    console.error('[text verify]', e.message);
+    return res.status(502).json({ error: 'Could not text that number. Check it and try again.' });
+  }
+  res.json({ ok: true, phone });
+});
+
+app.post('/text/verify/confirm', codeLimiter, async (req, res) => {
+  const email = reqUserEmail(req);
+  if (!email) return res.status(401).json({ error: 'Sign in required' });
+  const phone = sendblue.normalizePhone(req.body?.phone);
+  if (!phone) return res.status(400).json({ error: 'That does not look like a phone number.' });
+  const check = await db.checkPhoneCode(phone, req.body?.code);
+  if (!check.ok) {
+    const message = { expired: 'That code expired. Send a new one.', too_many: 'Too many tries. Send a new code.',
+      none: 'Send a code to that number first.' }[check.reason] || 'That code is not right.';
+    return res.status(400).json({ error: message });
+  }
+  // The code went to the number; the session says who asked. Both are needed.
+  if (check.user_email !== email) return res.status(400).json({ error: 'That code was sent for a different account.' });
+  await db.linkPhone(phone, email);
   res.json({ ok: true, phone });
 });
 
@@ -2473,6 +2513,15 @@ Numbers beat adjectives. Name the companies."></textarea>
     <div class="grp-label">Text line</div>
     <div class="lead" id="textLead"></div>
     <div id="numberList"></div>
+    <div class="actions" id="addNumber">
+      <input id="phoneInput" placeholder="(512) 555-0123" style="flex:1 1 180px"/>
+      <button type="button" class="btn" id="sendCode" onclick="sendPhoneCode()">Text me a code</button>
+    </div>
+    <div class="actions" id="codeRow" hidden>
+      <input id="codeInput" inputmode="numeric" maxlength="6" placeholder="6-digit code" style="flex:1 1 140px"/>
+      <button type="button" class="btn" onclick="confirmPhoneCode()">Confirm</button>
+      <button type="button" class="btn-ghost" onclick="sendPhoneCode()">Resend</button>
+    </div>
     <div class="hint" id="textStatus" style="margin-top:10px"></div>
   </div>
   <div class="grp">
@@ -2991,6 +3040,7 @@ async function loadNumbers(){
   const r=await fetch('/text/numbers',{headers:{'x-api-key':key}});if(!r.ok)return;
   const d=await r.json();
   if(!d.line&&!(d.numbers||[]).length)return;
+  document.getElementById('addNumber').hidden=!d.line;
   grp.hidden=false;
   document.getElementById('textLead').textContent=d.line
     ? 'Text ' + d.line + ' a job link and the kit comes back as a message. A number works only after you connect it from the link the line texts you.'
@@ -3002,6 +3052,38 @@ async function loadNumbers(){
       }).join('')
     : '<div class="empty">No number connected yet.</div>';
 }
+// Holding the phone is the proof. No link to open, no email involved.
+let PENDING_PHONE='';
+async function sendPhoneCode(){
+  const key=getKey(),st=document.getElementById('textStatus');
+  const phone=(document.getElementById('phoneInput').value||'').trim();
+  if(!key){st.textContent='Sign in first.';return;}
+  if(!phone){st.textContent='Type your mobile number first.';return;}
+  st.textContent='Texting a code…';
+  const r=await fetch('/text/verify',{method:'POST',headers:{'content-type':'application/json','x-api-key':key},body:JSON.stringify({phone:phone})});
+  const d=await r.json().catch(function(){return {};});
+  if(!r.ok){st.textContent=d.error||'Could not send that code.';return;}
+  PENDING_PHONE=d.phone;
+  document.getElementById('codeRow').hidden=false;
+  document.getElementById('codeInput').focus();
+  st.textContent='Sent to '+d.phone+'. It expires in 10 minutes.';
+}
+async function confirmPhoneCode(){
+  const key=getKey(),st=document.getElementById('textStatus');
+  const code=(document.getElementById('codeInput').value||'').trim();
+  if(!key||!code)return;
+  st.textContent='Checking…';
+  const r=await fetch('/text/verify/confirm',{method:'POST',headers:{'content-type':'application/json','x-api-key':key},body:JSON.stringify({phone:PENDING_PHONE,code:code})});
+  const d=await r.json().catch(function(){return {};});
+  if(!r.ok){st.textContent=d.error||'That code is not right.';return;}
+  document.getElementById('codeRow').hidden=true;
+  document.getElementById('codeInput').value='';document.getElementById('phoneInput').value='';
+  st.textContent='Connected '+d.phone+'. Text a job link and the kit comes back.';
+  loadNumbers();
+}
+document.getElementById('codeInput').addEventListener('keydown',function(e){ if(e.key==='Enter'){e.preventDefault();confirmPhoneCode();} });
+document.getElementById('phoneInput').addEventListener('keydown',function(e){ if(e.key==='Enter'){e.preventDefault();sendPhoneCode();} });
+
 async function removeNumber(phone){
   const key=getKey();
   if(!key||!confirm('Disconnect '+phone+'? Texting from it will no longer reach your account.'))return;

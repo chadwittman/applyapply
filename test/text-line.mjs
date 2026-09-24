@@ -89,4 +89,43 @@ await fetch(origin + '/text/numbers/' + encodeURIComponent(STRANGER), { method: 
 assert.deepEqual(await db.phonesForUser(OWNER), []);
 console.log('PASS: numbers belong to one account and can be removed by it');
 
+// ── Verifying by holding the phone, instead of by email ──────────────────────
+// The code goes to the number and the session says who asked: one proves the
+// phone, the other proves the account, and neither is enough alone.
+const CODE_PHONE = '+15125550777';
+const smsCode = await db.createPhoneCode(CODE_PHONE, OWNER);
+assert.match(smsCode, /^\d{6}$/);
+
+// It is never stored where a database read would reveal it.
+const stored = await db.pool.query('SELECT code_hash FROM phone_codes WHERE phone=$1', [CODE_PHONE]);
+assert.notEqual(stored.rows[0].code_hash, smsCode);
+assert.equal(stored.rows[0].code_hash.length, 64);
+
+// Wrong guesses are bounded, and burn the code rather than the patience.
+for (let i = 0; i < 5; i++) assert.equal((await db.checkPhoneCode(CODE_PHONE, '000000')).ok, false);
+assert.equal((await db.checkPhoneCode(CODE_PHONE, smsCode)).reason, 'too_many', 'the right code does not save a burnt one');
+
+// A fresh code works exactly once.
+const again = await db.createPhoneCode(CODE_PHONE, OWNER);
+assert.equal((await db.checkPhoneCode(CODE_PHONE, again)).user_email, OWNER);
+assert.equal((await db.checkPhoneCode(CODE_PHONE, again)).reason, 'none', 'and cannot be replayed');
+
+// Asking again replaces the pending code rather than leaving two that work.
+const first = await db.createPhoneCode(CODE_PHONE, OWNER);
+const second = await db.createPhoneCode(CODE_PHONE, OWNER);
+assert.equal((await db.checkPhoneCode(CODE_PHONE, first)).ok, false, 'the older code stops working');
+assert.equal((await db.checkPhoneCode(CODE_PHONE, second)).ok, true);
+
+// Over HTTP: signing in is still required, and a code raised by one account
+// cannot be confirmed by another.
+const confirm = (phone, c, email) => fetch(origin + '/text/verify/confirm', { method: 'POST',
+  headers: { 'content-type': 'application/json', authorization: 'Bearer ' + T(email) }, body: JSON.stringify({ phone, code: c }) });
+assert.equal((await fetch(origin + '/text/verify', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' })).status, 401);
+const mine = await db.createPhoneCode(CODE_PHONE, OWNER);
+assert.equal((await confirm(CODE_PHONE, mine, OTHER)).status, 400, 'a code for one account does not connect another');
+const good = await db.createPhoneCode(CODE_PHONE, OWNER);
+assert.equal((await confirm('(512) 555-0777', good, OWNER)).status, 200, 'and reads the number however it is typed');
+assert.equal(await db.accountForPhone(CODE_PHONE), OWNER);
+console.log('PASS: a number is verified by holding it, with the account proved separately');
+
 await db.pool.end();

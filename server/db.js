@@ -170,6 +170,19 @@ async function initSchema() {
     )
   `);
   await q(`CREATE INDEX IF NOT EXISTS idx_phone_links_user ON phone_links (user_email)`);
+  // A code texted to a number the person typed in, to prove they hold it. The
+  // code itself is never stored: possession of the phone is the proof, and a
+  // stolen database should not hand anybody a working code.
+  await q(`
+    CREATE TABLE IF NOT EXISTS phone_codes (
+      phone TEXT PRIMARY KEY,
+      code_hash TEXT NOT NULL,
+      user_email TEXT NOT NULL,
+      attempts INTEGER NOT NULL DEFAULT 0,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
+
   // A one-time code texted to an unrecognised number, spent in the browser.
   await q(`
     CREATE TABLE IF NOT EXISTS phone_claims (
@@ -854,6 +867,38 @@ async function setPhoneStopped(phone, stopped) {
   await q(`UPDATE phone_links SET stopped = $2 WHERE phone = $1`, [phone, Boolean(stopped)]);
 }
 
+
+// A six-digit code, hashed at rest. One pending code per number: asking again
+// replaces the last one rather than leaving several working at once.
+const hashCode = code => require('crypto').createHash('sha256').update(String(code)).digest('hex');
+
+async function createPhoneCode(phone, userEmail) {
+  const code = String(require('crypto').randomInt(0, 1_000_000)).padStart(6, '0');
+  await q(`INSERT INTO phone_codes (phone, code_hash, user_email, attempts, created_at)
+           VALUES ($1,$2,$3,0,NOW())
+           ON CONFLICT (phone) DO UPDATE SET code_hash = EXCLUDED.code_hash, user_email = EXCLUDED.user_email, attempts = 0, created_at = NOW()`,
+    [phone, hashCode(code), requireOwner(userEmail)]);
+  return code;
+}
+
+// Guessing is bounded: five wrong answers burn the code, and it expires on its
+// own. A correct code is spent, so it cannot be replayed.
+async function checkPhoneCode(phone, code) {
+  const row = await q1(`SELECT code_hash, user_email, attempts, created_at FROM phone_codes WHERE phone = $1`, [phone]);
+  if (!row) return { ok: false, reason: 'none' };
+  if (Date.now() - new Date(row.created_at).getTime() > 10 * 60 * 1000) {
+    await q(`DELETE FROM phone_codes WHERE phone = $1`, [phone]);
+    return { ok: false, reason: 'expired' };
+  }
+  if (row.attempts >= 5) return { ok: false, reason: 'too_many' };
+  if (row.code_hash !== hashCode(String(code || '').trim())) {
+    await q(`UPDATE phone_codes SET attempts = attempts + 1 WHERE phone = $1`, [phone]);
+    return { ok: false, reason: 'wrong', left: Math.max(0, 4 - row.attempts) };
+  }
+  await q(`DELETE FROM phone_codes WHERE phone = $1`, [phone]);
+  return { ok: true, user_email: row.user_email };
+}
+
 async function createPhoneClaim(phone) {
   const code = require('crypto').randomBytes(12).toString('base64url');
   await q(`INSERT INTO phone_claims (code, phone) VALUES ($1,$2)`, [code, phone]);
@@ -1370,7 +1415,7 @@ module.exports = {
   saveResumeFile, getResumeFile, getResumeFileMeta,
   getEvidence, addEvidenceQuestions, addAnsweredEvidence, setEvidenceAnswer, deleteEvidence,
   getFacts, addFact, deleteFact,
-  accountForPhone, phoneLink, phonesForUser, linkPhone, unlinkPhone, setPhoneStopped, createPhoneClaim, spendPhoneClaim,
+  accountForPhone, phoneLink, phonesForUser, createPhoneCode, checkPhoneCode, linkPhone, unlinkPhone, setPhoneStopped, createPhoneClaim, spendPhoneClaim,
   getSetting, setSetting,
   getSchedule, setSchedule, getDueSchedules, markScheduleRun, getAllEnabledSchedules,
   getAccountExport, deleteAccount,
