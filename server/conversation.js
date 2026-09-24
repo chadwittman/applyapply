@@ -7,6 +7,7 @@
 // as they do on the site and in the extension.
 const http = require('http');
 const { readIntent, pickFromList, factFrom } = require('./intent');
+const agent = require('./agent');
 const fs = require('fs');
 const pathlib = require('path');
 
@@ -54,7 +55,7 @@ const WHAT_I_AM = [
 // are being asked before they answer.
 const listGaps = gaps => gaps.map(g => '• ' + String(g).replace(/\s+/g, ' ').trim()).join('\n');
 
-module.exports = function conversation({ db, port, signToken, origin, kitLink, resumeCost = 8, polish = null, deliver = null, ledgerMatches = null, react = null, typeSafeKey = null, askModel = null }) {
+module.exports = function conversation({ db, port, signToken, origin, kitLink, resumeCost = 8, polish = null, deliver = null, ledgerMatches = null, react = null, typeSafeKey = null, askModel = null, callModel = null }) {
   const typing = new Map(); // email -> since (ms); the test page shows dots
 
   function api(email, method, path, body) {
@@ -113,7 +114,7 @@ module.exports = function conversation({ db, port, signToken, origin, kitLink, r
       const parts = [
         `${(kit.company || 'this role').toLowerCase()}: done.`,
         link,
-        `resume${score ? ` (${Math.round((Number(score) / 5) * 100)}% match)` : ''}, cover letter, ${answers ? `${answers} answer${answers === 1 ? '' : 's'}` : 'your details'}. tap anything to copy.`,
+        `resume${score ? ` (${Math.round((Number(score) / 5) * 100)}% match)` : ''}, cover letter, ${answers ? `${answers} answer${answers === 1 ? '' : 's'}` : 'your details'}, ready to paste.`,
         gaps.length ? `can't show ${gaps.length === 1 ? 'one thing' : `${gaps.length} things`} it asks for:\n${listGaps(gaps)}\n\n👍 or "yes" and i'll ask, one at a time, then redo the resume (${resumeCost} credits).` : null,
       ].filter(Boolean);
       await say(email, parts.join('\n\n'), { kind: gaps.length ? 'resume_offer' : 'kit', url: kit.url, kit_id: kit.id, link, gaps });
@@ -357,6 +358,38 @@ module.exports = function conversation({ db, port, signToken, origin, kitLink, r
         default: break;
       }
     }
+    // Everything that is not a carrier obligation goes to the agent: it reads
+    // what they said, does the work with the same operations the website uses,
+    // and writes the reply itself. The command router below is the fallback
+    // for when the model cannot be reached.
+    if (callModel && VOICE) {
+      const [me, prompt2, last] = await Promise.all([
+        api(email, 'GET', '/auth/me'),
+        db.lastChatPrompt(email, ['gap_question']).catch(() => null),
+        db.lastChatPrompt(email, ['kit', 'resume_offer']).catch(() => null),
+      ]);
+      const profile = await db.getProfileByUserEmail(email).catch(() => null);
+      const reply = await agent.run({
+        voice: VOICE,
+        message,
+        context: {
+          credits: me.data?.credits,
+          listed: await lastList(email),
+          openQuestion: prompt2?.meta?.done ? null : prompt2?.meta?.question || null,
+          lastKit: last?.meta?.url ? `${last.meta.url}` : null,
+          targeting: [profile?.target_functions, profile?.target_seniority].filter(Boolean).join(' at '),
+        },
+        callModel,
+        invoke: toolbox(email),
+        log: line => console.log(`[agent] ${email}: ${line}`),
+      }).catch(e => { console.error('[agent]', e.message); return null; });
+      if (reply) {
+        const text = reply.replace(/\u2014/g, ',').trim();
+        const meta = await db.lastChatMeta(email, 'matches').catch(() => null);
+        return say(email, text, meta?.meta?.hidden ? { ...meta.meta, hidden: false } : null);
+      }
+    }
+
     // A question the command list does not cover. Rather than a menu, answer
     // it from the voice file: what applyapply is, does, refuses and costs.
     // Nothing here acts or spends, so a model writes the words and nothing
@@ -368,6 +401,103 @@ module.exports = function conversation({ db, port, signToken, origin, kitLink, r
       if (text && text.length < 700) return say(email, text);
     }
     return say(email, HELP);
+  }
+
+  // ── The agent ────────────────────────────────────────────────────────────
+  // Every tool is the operation the website performs, called with this
+  // person's own session, so a kit written from a text is charged, owned and
+  // refused exactly as one written from a browser.
+  function toolbox(email) {
+    const listed = () => lastList(email);
+    return async (name, input) => {
+      switch (name) {
+        case 'list_matches': {
+          const jobs = await bestThree(email);
+          if (jobs.length) await db.addChatMessage(email, 'out', '', { kind: 'matches', jobs: jobs.map(j => ({ url: j.url, company: j.company, role: j.role })), hidden: true });
+          return { roles: jobs.map((j, i) => ({ n: i + 1, company: j.company, role: j.role, location: j.location || '' })) };
+        }
+        case 'write_kit': {
+          let url = String(input.url || '').trim();
+          if (!url && Number(input.choice)) url = (await listed())[Number(input.choice) - 1]?.url || '';
+          if (!url) return { error: 'No job to write. Ask them which one, or ask for the link.' };
+          const r = await api(email, 'POST', '/generate', { url });
+          if (r.status === 402) return { error: 'out of credits', top_up: `${origin}/buy` };
+          if (r.status !== 200 || !r.data?.tailored) return { error: r.data?.error || 'could not read that posting' };
+          const kit = r.data;
+          const token = kitLink ? await kitLink(email, kit.id).catch(() => null) : null;
+          const link = token ? `${origin}/k/${token}` : `${origin}/${kit.url}`;
+          const gaps = kit.tailored_resume?.coverage?.gaps || [];
+          const score = kit.tailored_resume?.jev_match?.score;
+          await db.addChatMessage(email, 'out', '', { kind: gaps.length ? 'resume_offer' : 'kit', url: kit.url, kit_id: kit.id, link, gaps, hidden: true });
+          return { company: kit.company, role: kit.role, link, credits_spent: 10,
+            match_percent: score ? Math.round((Number(score) / 5) * 100) : null,
+            answered_questions: (kit.tailored.qa || []).filter(x => x.a).length,
+            things_the_resume_cannot_show: gaps };
+        }
+        case 'rewrite_resume': {
+          const last = await db.lastChatPrompt(email, ['kit', 'resume_offer', 'gap_question']);
+          if (!last?.meta?.kit_id) return { error: 'no application written yet' };
+          const r = await api(email, 'POST', '/resume-tailor', { appId: last.meta.kit_id });
+          if (r.status === 402) return { error: 'out of credits', top_up: `${origin}/buy` };
+          if (r.status !== 200) return { error: 'could not rewrite it; their answers are saved' };
+          const score = r.data.jev_match?.score;
+          return { link: last.meta.link || `${origin}/${last.meta.url}`, credits_spent: resumeCost,
+            match_percent: score ? Math.round((Number(score) / 5) * 100) : null,
+            used_answers: Number(r.data.evidence_used) || 0, still_missing: r.data.coverage?.gaps || [] };
+        }
+        case 'start_search': {
+          const r = await api(email, 'POST', '/source/run', {});
+          if (r.status === 402) return { error: 'out of credits', top_up: `${origin}/buy` };
+          if (r.status !== 200) return { error: r.data?.error || 'could not start a search' };
+          return r.data.status === 'already_running' ? { already_running: true } : { searching_sources: r.data.sources.length };
+        }
+        case 'account': {
+          const [me, status] = await Promise.all([api(email, 'GET', '/auth/me'), api(email, 'GET', '/source/status')]);
+          const c = status.data?.counts || {};
+          return { credits: me.data?.credits ?? 0, kit_costs: 10, top_up: `${origin}/buy`,
+            searching: Boolean(status.data?.active), pipeline: { new: c.new || 0, applying: c.applying || 0, applied: c.applied || 0 } };
+        }
+        case 'remember_fact': {
+          const text = factFrom(input.text || '');
+          if (text.length < 4) return { error: 'nothing to record' };
+          const r = await api(email, 'POST', '/facts', { text });
+          return r.status === 200 ? { recorded: text } : { error: 'could not record that' };
+        }
+        case 'list_corrections': {
+          const r = await api(email, 'GET', '/facts');
+          return { corrections: (r.data?.facts || []).map((f, i) => ({ n: i + 1, text: f.text })) };
+        }
+        case 'forget_correction': {
+          const r = await api(email, 'GET', '/facts');
+          const fact = (r.data?.facts || [])[Number(input.choice) - 1];
+          if (!fact) return { error: 'no correction at that position' };
+          await api(email, 'DELETE', '/facts/' + fact.id, null);
+          return { dropped: fact.text };
+        }
+        case 'set_job_status': {
+          const job = (await listed())[Number(input.choice) - 1];
+          if (!job) return { error: 'no role at that position' };
+          const r = await api(email, 'POST', '/sourced/status', { url: job.url, status: input.status === 'applied' ? 'applied' : 'skipped' });
+          return r.status === 200 ? { company: job.company, role: job.role, status: input.status } : { error: 'could not update it' };
+        }
+        case 'save_answer': {
+          const prompt = await db.lastChatPrompt(email, ['gap_question']);
+          if (!prompt?.meta?.question) return { error: 'no question is open' };
+          if (!await db.claimChatPrompt(prompt.id)) return { error: 'already answered' };
+          const answer = polish ? await polish(email, input.answer, prompt.meta.question, prompt.meta.kit_id) : input.answer;
+          await api(email, 'POST', '/interview/context', { question: prompt.meta.question, answer });
+          const open = prompt.meta.open || [];
+          if (open.length) {
+            const [next, ...rest] = open;
+            await say(email, `${prompt.meta.gaps.length - rest.length} of ${prompt.meta.gaps.length}: ${next}`,
+              { ...prompt.meta, kind: 'gap_question', question: next, open: rest, answered: (prompt.meta.answered || 0) + 1 });
+            return { saved: true, asked_them_next: next };
+          }
+          return { saved: true, no_questions_left: true, suggest: 'offer to redo the resume with their answers' };
+        }
+        default: return { error: 'no such tool' };
+      }
+    };
   }
 
   // Voice notes are free up to a couple of minutes and a normal day's use.

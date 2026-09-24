@@ -93,7 +93,7 @@ try {
   }
   assert.equal((await phone.request.get(origin + '/k/AAAAAAAAAAAAAAAA')).status(), 404);
   await phone.screenshot({ path: '/tmp/applyapply-kitlink.png', fullPage: true });
-  console.log('PASS: the kit link opens without sign-in, with PDFs, the tailored resume, tap-to-copy and gap answers');
+  console.log('PASS: the kit link opens without sign-in, with PDFs, the tailored resume, copying and gap answers');
 
   got = await send(page, 'yes', '1 of 2');
   assert.match(got.at(-1), /1 of 2: Built a consumer product/);
@@ -128,11 +128,12 @@ try {
   assert.match(got.at(-1), /1\) ChatCo, Head of Product[\s\S]*2\) ChatCo2, Director of Product/);
   got = await send(page, 'skip 2', 'skipped');
   assert.equal((await db.getJobByUrl(job2, email))?.status, 'skipped');
-  got = await send(page, '1', 'tap anything to copy');
+  got = await send(page, '1', 'ready to paste');
   got = await send(page, 'credits', 'credits');
   assert.match(got.at(-1), new RegExp('^' + (await db.getUser(email)).credits + ' credits'));
   const everythingSent = (await db.getChatMessages(email, 0)).filter(m => m.direction === 'out').map(m => m.body).join('\n');
   assert.ok(!everythingSent.includes('\u2014'), 'no em dashes in anything we send');
+  assert.ok(!/tap (anything|any line|to copy)/i.test(everythingSent), 'a text message cannot promise tapping: there is nothing to tap in Messages');
   console.log('PASS: matches, pick, skip and credits');
 
 

@@ -69,7 +69,7 @@ for (const method of ['get','post','put','patch','delete']) {
     (req, res, next) => { try { Promise.resolve(handler(req,res,next)).catch(next); } catch (e) { next(e); } }));
 }
 const PORT = process.env.PORT || 5000;
-const VERSION = '0.63.0';
+const VERSION = '0.64.0';
 const IS_PRODUCTION = process.env.NODE_ENV === 'production';
 const APP_ORIGIN = process.env.APP_ORIGIN || 'http://localhost:5000';
 const ALLOWED_WEB_ORIGINS = new Set(
@@ -983,6 +983,21 @@ const chat = require('./conversation')({ db, port: PORT, origin: APP_ORIGIN.repl
   typeSafeKey: process.env.TYPESAFE_API_KEY || null,
   // Small and fast: this writes a sentence or two, never a kit.
   askModel: prompt => callClaude(prompt, 400, MODEL_ANTHROPIC),
+  // Tool calling for the text line. Haiku: this decides and writes a sentence,
+  // it does not write the resume. OpenRouter has no tools here, so the
+  // deterministic router stays the fallback.
+  callModel: async ({ system, messages, tools }) => {
+    // Read at call time: `keys` is resolved further down this file, and the
+    // server would not boot if this were decided here.
+    if (keys?.provider !== 'anthropic') return null;
+    const r = await providerFetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: { 'x-api-key': keys.key, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
+      body: JSON.stringify({ model: MODEL_ANTHROPIC, max_tokens: 700, system, messages, tools }),
+    });
+    if (!r.ok) throw new Error(`Anthropic ${r.status}: ${(await r.text()).slice(0, 200)}`);
+    return r.json();
+  },
   ledgerMatches: async email => {
     const profile = await db.getProfileByUserEmail(email).catch(() => null);
     if (!profile) return [];
