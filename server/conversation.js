@@ -33,7 +33,7 @@ function findJobLink(text) {
 // are being asked before they answer.
 const listGaps = gaps => gaps.map(g => '• ' + String(g).replace(/\s+/g, ' ').trim()).join('\n');
 
-module.exports = function conversation({ db, port, signToken, origin, kitLink, resumeCost = 8, polish = null }) {
+module.exports = function conversation({ db, port, signToken, origin, kitLink, resumeCost = 8, polish = null, deliver = null }) {
   const typing = new Map(); // email -> since (ms); the test page shows dots
 
   function api(email, method, path, body) {
@@ -52,8 +52,14 @@ module.exports = function conversation({ db, port, signToken, origin, kitLink, r
     });
   }
 
+  // Saved first, sent second. The thread in the database is the record: the
+  // test page reads it, the real line is one more place the same message goes,
+  // and a delivery failure must not lose what was said.
   async function say(email, bodies, meta = null) {
-    for (const body of [].concat(bodies).filter(Boolean)) await db.addChatMessage(email, 'out', body, meta);
+    for (const body of [].concat(bodies).filter(Boolean)) {
+      await db.addChatMessage(email, 'out', body, meta);
+      if (deliver) await deliver(email, body, meta).catch(e => console.error('[deliver]', e.message));
+    }
   }
 
   async function withTyping(email, fn) {

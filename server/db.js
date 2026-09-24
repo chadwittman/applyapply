@@ -156,6 +156,30 @@ async function initSchema() {
   `);
   await q(`CREATE INDEX IF NOT EXISTS idx_facts_user ON facts (user_email)`);
 
+  // A phone number that has proved it belongs to an account. The number alone
+  // is never the credential: anyone can put any number in the From field of a
+  // message, so a number reaches an account only after somebody signed in on
+  // the web and confirmed it there.
+  await q(`
+    CREATE TABLE IF NOT EXISTS phone_links (
+      phone TEXT PRIMARY KEY,
+      user_email TEXT NOT NULL,
+      verified_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      last_seen_at TIMESTAMPTZ,
+      stopped BOOLEAN NOT NULL DEFAULT FALSE
+    )
+  `);
+  await q(`CREATE INDEX IF NOT EXISTS idx_phone_links_user ON phone_links (user_email)`);
+  // A one-time code texted to an unrecognised number, spent in the browser.
+  await q(`
+    CREATE TABLE IF NOT EXISTS phone_claims (
+      code TEXT PRIMARY KEY,
+      phone TEXT NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      used_at TIMESTAMPTZ
+    )
+  `);
+
   // Small key/value store for settings that must outlive a deploy. The sourcing
   // schedule lived in logs/schedule.json on the ephemeral disk, so every deploy
   // reset it to disabled and silently stopped the nightly run.
@@ -791,6 +815,59 @@ async function unclassifiedTitles(limit = 4000) {
   return rows.map(r => r.role);
 }
 
+
+// ── Phone numbers ─────────────────────────────────────────────────────────────
+
+// The link whatever its state, so STOP and START can be acted on. Routing a
+// conversation uses accountForPhone, which refuses a stopped number.
+async function phoneLink(phone) {
+  return q1(`SELECT phone, user_email, stopped FROM phone_links WHERE phone = $1`, [phone]);
+}
+
+async function accountForPhone(phone) {
+  const row = await q1(`SELECT user_email, stopped FROM phone_links WHERE phone = $1`, [phone]);
+  if (!row || row.stopped) return null;
+  await q(`UPDATE phone_links SET last_seen_at = NOW() WHERE phone = $1`, [phone]).catch(() => {});
+  return row.user_email;
+}
+
+async function phonesForUser(userEmail) {
+  return q(`SELECT phone, verified_at, stopped FROM phone_links WHERE user_email = $1 ORDER BY verified_at`, [requireOwner(userEmail)]);
+}
+
+// One number belongs to one account: linking it again moves it, rather than
+// leaving two accounts both claiming the same phone.
+async function linkPhone(phone, userEmail) {
+  await q(`INSERT INTO phone_links (phone, user_email) VALUES ($1,$2)
+           ON CONFLICT (phone) DO UPDATE SET user_email = EXCLUDED.user_email, verified_at = NOW(), stopped = FALSE`,
+    [phone, requireOwner(userEmail)]);
+  return { phone, user_email: userEmail };
+}
+
+async function unlinkPhone(phone, userEmail) {
+  await q(`DELETE FROM phone_links WHERE phone = $1 AND user_email = $2`, [phone, requireOwner(userEmail)]);
+}
+
+// STOP is a standing instruction, not a one-off: the number stays on record so
+// a later START can lift it, and nothing is sent meanwhile.
+async function setPhoneStopped(phone, stopped) {
+  await q(`UPDATE phone_links SET stopped = $2 WHERE phone = $1`, [phone, Boolean(stopped)]);
+}
+
+async function createPhoneClaim(phone) {
+  const code = require('crypto').randomBytes(12).toString('base64url');
+  await q(`INSERT INTO phone_claims (code, phone) VALUES ($1,$2)`, [code, phone]);
+  return code;
+}
+
+// Spent once, and only while fresh: a code in an old text cannot be replayed.
+async function spendPhoneClaim(code) {
+  const row = await q1(`UPDATE phone_claims SET used_at = NOW()
+     WHERE code = $1 AND used_at IS NULL AND created_at > NOW() - INTERVAL '30 minutes'
+     RETURNING phone`, [String(code || '')]);
+  return row?.phone || null;
+}
+
 // ── Resume file ───────────────────────────────────────────────────────────────
 
 async function saveResumeFile(userEmail, filename, mime, buffer) {
@@ -1204,7 +1281,7 @@ async function deleteAccount(userEmail) {
   try {
     await client.query('BEGIN');
     await client.query('DELETE FROM operation_events WHERE operation_id IN (SELECT id FROM operations WHERE user_email=$1)', [owner]);
-    for (const table of ['user_activity','decisions','evidence','facts','resume_files','schedules','runs','jobs','kits','profiles','purchases','api_keys','resume_structures','chat_messages','kit_shares','agent_connects','oauth_codes']) {
+    for (const table of ['user_activity','decisions','evidence','facts','phone_links','resume_files','schedules','runs','jobs','kits','profiles','purchases','api_keys','resume_structures','chat_messages','kit_shares','agent_connects','oauth_codes']) {
       await client.query(`DELETE FROM ${table} WHERE user_email=$1`, [owner]);
     }
     // Feedback stays so the product can be fixed, but stops being theirs.
@@ -1293,6 +1370,7 @@ module.exports = {
   saveResumeFile, getResumeFile, getResumeFileMeta,
   getEvidence, addEvidenceQuestions, addAnsweredEvidence, setEvidenceAnswer, deleteEvidence,
   getFacts, addFact, deleteFact,
+  accountForPhone, phoneLink, phonesForUser, linkPhone, unlinkPhone, setPhoneStopped, createPhoneClaim, spendPhoneClaim,
   getSetting, setSetting,
   getSchedule, setSchedule, getDueSchedules, markScheduleRun, getAllEnabledSchedules,
   getAccountExport, deleteAccount,

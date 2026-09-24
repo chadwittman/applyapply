@@ -88,6 +88,17 @@ await call('POST', '/schedule', ALICE, { hour: pastH, minute: 0, enabled: true }
 const due = await db.getDueSchedules(now[0], now[1]);
 ok('not immediately due', !due.some(r => r.user_email === 'alice@test.local'), `due rows: ${due.length}`);
 
+// The failure this guards: at 00:20, a schedule saved for 23:00 reads as
+// "later today" by the clock, while the due query reads the most recent 23:00
+// as last night — an hour inside its catch-up window — and charges for a run
+// nobody asked for. True at any hour, so the test says so at any hour.
+for (const [h, m] of [[23, 0], [0, 5], [12, 30], [now[0], (now[1] + 59) % 60]]) {
+  await call('POST', '/schedule', ALICE, { hour: h, minute: m, enabled: true });
+  const rows = await db.getDueSchedules(now[0], now[1]);
+  ok(`saving ${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')} does not fire now`,
+    !rows.some(r => r.user_email === 'alice@test.local'), `due rows: ${rows.length}`);
+}
+
 console.log('\n── 8. a missed tick still gets picked up ──');
 await db.setSchedule('bob@test.local', { hour: now[0], minute: now[1], enabled: true, sources: null }, false);
 const due2 = await db.getDueSchedules(now[0], now[1] + 1 > 59 ? now[1] : now[1] + 1);

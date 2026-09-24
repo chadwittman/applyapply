@@ -29,6 +29,7 @@ const fieldMap = require('./field-map');
 const { FUNCTION_NAMES, BANDS, targetPreferences } = require('./roles');
 const { classifierFor } = require('./title-class');
 const card = require('./card');
+const sendblue = require('./sendblue');
 const { normalizeResumeDates } = require('./resume-dates');
 const { evaluateResumeMatch } = require('./typesafe');
 const scriptJSON = value => JSON.stringify(value).replace(/</g, '\\u003c');
@@ -63,7 +64,7 @@ for (const method of ['get','post','put','patch','delete']) {
     (req, res, next) => { try { Promise.resolve(handler(req,res,next)).catch(next); } catch (e) { next(e); } }));
 }
 const PORT = process.env.PORT || 5000;
-const VERSION = '0.58.0';
+const VERSION = '0.59.0';
 const IS_PRODUCTION = process.env.NODE_ENV === 'production';
 const APP_ORIGIN = process.env.APP_ORIGIN || 'http://localhost:5000';
 const ALLOWED_WEB_ORIGINS = new Set(
@@ -938,7 +939,16 @@ if (rw) rw.addEventListener('click', function () {
 // accounts in IMESSAGE_TESTERS can use it until the Sendblue line goes live.
 const chat = require('./conversation')({ db, port: PORT, origin: APP_ORIGIN.replace(/\/$/, ''), kitLink: (email, kitId) => db.kitShareToken(email, kitId), resumeCost: CREDIT_COSTS.resume,
   polish: (email, text, question, kitId) => polishAnswer(email, text, { question, kit: null }).catch(e => { console.error('[polish]', e.message); return text; }),
-  signToken: email => jwt.sign({ email }, loadJwtSecret(), { expiresIn: '15m' }) });
+  signToken: email => jwt.sign({ email }, loadJwtSecret(), { expiresIn: '15m' }),
+  // Every reply also goes to any number this account has proved it owns. The
+  // thread on /imessage and the thread on a phone are the same conversation.
+  deliver: async (email, body) => {
+    if (!sendblue.configured()) return;
+    for (const row of await db.phonesForUser(email).catch(() => [])) {
+      if (row.stopped) continue;
+      await sendblue.send(row.phone, body);
+    }
+  } });
 const chatTesters = () => new Set(String(process.env.IMESSAGE_TESTERS || 'wittman.c@gmail.com').toLowerCase().split(',').map(e => e.trim()).filter(Boolean));
 function chatUser(req, res) {
   const email = reqUserEmail(req);
@@ -946,6 +956,127 @@ function chatUser(req, res) {
   if (!chatTesters().has(email.toLowerCase())) { res.status(403).json({ error: 'The text line is in private testing.' }); return null; }
   return email;
 }
+// ── The real text line ───────────────────────────────────────────────────────
+// Sendblue posts every inbound message here. A number is not a credential, so
+// an unrecognised one is answered with a link and nothing else: no kits, no
+// credits, no confirmation that the number is or is not on an account.
+
+const textLineLimiter = rateLimit({ windowMs: 60_000, max: 60, standardHeaders: true, legacyHeaders: false });
+
+app.post('/sendblue/webhook', textLineLimiter, express.json({ limit: '256kb' }), async (req, res) => {
+  // Sendblue retries on a non-200, and a retried kit is a charged kit, so this
+  // acknowledges first and works afterwards.
+  res.status(200).json({ ok: true });
+  try {
+    const { from, content, isOutbound } = sendblue.parseInbound(req.body);
+    if (isOutbound || !from || !content) return;
+
+    // STOP and START act on the link whatever its state — read through
+    // accountForPhone, a stopped number looks like a stranger and could never
+    // turn itself back on.
+    const link = await db.phoneLink(from);
+
+    if (sendblue.STOP.test(content)) {
+      if (link) await db.setPhoneStopped(from, true);
+      return void await sendblue.send(from, 'Stopped. You will not get another message from applyapply. Text START to turn it back on.').catch(() => {});
+    }
+    if (sendblue.START.test(content)) {
+      if (link) await db.setPhoneStopped(from, false);
+      return void await sendblue.send(from, link ? 'Back on. Send me a job link whenever you want a kit.' : 'Text me a job link to get started.').catch(() => {});
+    }
+
+    const email = await db.accountForPhone(from);
+    if (sendblue.HELP.test(content) && !email) {
+      return void await sendblue.send(from, `applyapply writes your job application: a tailored resume, a cover note and answers. Connect your account at ${APP_ORIGIN.replace(/\/$/, '')}/text. Reply STOP to stop.`).catch(() => {});
+    }
+
+    if (!email) {
+      // One link, good for half an hour, spent in a browser where the person
+      // is signed in. Until then this number is nobody.
+      const code = await db.createPhoneClaim(from);
+      const link = `${APP_ORIGIN.replace(/\/$/, '')}/text/connect?c=${encodeURIComponent(code)}`;
+      return void await sendblue.send(from, `Tap to connect this number to your applyapply account:\n${link}\n\nIt expires in 30 minutes. Reply STOP to stop.`).catch(() => {});
+    }
+
+    await db.addChatMessage(email, 'in', content, { channel: 'sms' }).catch(() => {});
+    await chat.handle(email, content);
+  } catch (e) {
+    console.error('[sendblue webhook]', e.message);
+  }
+});
+
+// What to do with the number, for anyone who lands here from a text or a link.
+app.get('/text', apiLimiter, (req, res) => {
+  const line = sendblue.configured() ? (sendblue.normalizePhone(process.env.SENDBLUE_FROM_NUMBER) || null) : null;
+  legalPage(res, {
+    title: 'The applyapply text line',
+    desc: 'Text a job link and get the application kit back as a message.',
+    path: '/text',
+    body: `<h1>Text your job links</h1>
+${line
+  ? `<p>Text <b>${escapeHtml(line)}</b> a job posting link. The kit comes back as a message: a tailored resume, a cover note, and answers to the form's questions, on a page you can copy from.</p>
+<p>The first time you text, you will get a link back. Open it while signed in and that number is connected to your account. Until then the number is nobody, so a message from it cannot spend your credits.</p>`
+  : '<p>The text line is not switched on yet.</p>'}
+<p>Reply STOP at any time to stop messages, START to turn them back on, and HELP for what the line can do. You can disconnect a number from <a href="/setup#account" style="color:#fff;text-decoration:underline">Profile and settings</a>.</p>`,
+  });
+});
+
+// The page the texted link opens. Binding happens here, in a signed-in
+// browser, which is the only place we know who the person is.
+app.get('/text/connect', apiLimiter, async (req, res) => {
+  const code = String(req.query.c || '');
+  legalPage(res, {
+    title: 'Connect your number — applyapply',
+    desc: 'Connect a phone number to your applyapply account.',
+    path: '/text/connect',
+    body: `<h1>Connect this number</h1>
+<p>Texting applyapply from this number will write kits and spend credits on your account. Only connect a number you use.</p>
+<div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:22px">
+  <button id="go" style="padding:13px 24px;background:#fff;color:#000;border:0;border-radius:8px;font-size:16px;font-weight:700;cursor:pointer;font-family:inherit">Connect my number</button>
+</div>
+<div id="st" style="margin-top:14px;min-height:22px;font-size:15px"></div>
+<script>
+var CODE=${scriptJSON(code)};
+document.getElementById('go').addEventListener('click',function(){
+  var st=document.getElementById('st'),key='';
+  try{key=localStorage.getItem('aa_session')||'';}catch(e){}
+  if(!key){location.href='/login?return='+encodeURIComponent(location.pathname+location.search);return;}
+  this.disabled=true;st.textContent='Connecting';
+  fetch('/text/connect',{method:'POST',headers:{'Content-Type':'application/json','x-api-key':key},body:JSON.stringify({code:CODE})})
+    .then(function(r){return r.json().then(function(d){return {ok:r.ok,d:d};});})
+    .then(function(x){
+      if(!x.ok)throw new Error(x.d.error||'Could not connect that number');
+      st.textContent='Connected '+x.d.phone+'. Text a job link and I will write the kit.';
+    })
+    .catch(function(e){st.textContent=e.message;document.getElementById('go').disabled=false;});
+});
+</script>`,
+  });
+});
+
+app.post('/text/connect', apiLimiter, async (req, res) => {
+  const email = reqUserEmail(req);
+  if (!email) return res.status(401).json({ error: 'Sign in required' });
+  const phone = await db.spendPhoneClaim(req.body?.code);
+  if (!phone) return res.status(400).json({ error: 'That link has expired. Text the line again for a fresh one.' });
+  await db.linkPhone(phone, email);
+  await sendblue.send(phone, 'Connected. Send me a job link and I will write your application kit.').catch(() => {});
+  res.json({ ok: true, phone });
+});
+
+app.get('/text/numbers', async (req, res) => {
+  const email = reqUserEmail(req);
+  if (!email) return res.status(401).json({ error: 'Sign in required' });
+  res.json({ numbers: await db.phonesForUser(email), line: sendblue.configured() ? (process.env.SENDBLUE_FROM_NUMBER || null) : null });
+});
+
+app.delete('/text/numbers/:phone', async (req, res) => {
+  const email = reqUserEmail(req);
+  if (!email) return res.status(401).json({ error: 'Sign in required' });
+  await db.unlinkPhone(sendblue.normalizePhone(req.params.phone) || req.params.phone, email);
+  res.json({ ok: true });
+});
+
 app.get('/imessage', (req, res) => { res.setHeader('Cache-Control', 'no-store'); res.sendFile(path.join(__dirname, 'imessage', 'index.html')); });
 app.get('/imessage/app.js', (req, res) => { res.setHeader('Cache-Control', 'no-store'); res.type('application/javascript').sendFile(path.join(__dirname, 'imessage', 'app.js')); });
 app.get('/imessage/messages', async (req, res) => {
@@ -2338,6 +2469,12 @@ Numbers beat adjectives. Name the companies."></textarea>
     </div>
     <div id="keyList"></div>
   </div>
+  <div class="grp" id="textGrp" hidden>
+    <div class="grp-label">Text line</div>
+    <div class="lead" id="textLead"></div>
+    <div id="numberList"></div>
+    <div class="hint" id="textStatus" style="margin-top:10px"></div>
+  </div>
   <div class="grp">
     <div class="grp-label">Your data</div>
     <div class="lead">Used to run applyapply for you and nothing else. Take a copy, or delete the account and everything in it.</div>
@@ -2844,7 +2981,34 @@ load();
 loadInterview();
 loadFacts();
 loadKeys();
+loadNumbers();
 showResumeFile();
+
+// Numbers that have proved they belong to this account. Connecting happens by
+// texting the line, never from here: the point is to prove the phone.
+async function loadNumbers(){
+  const key=getKey();const grp=document.getElementById('textGrp');if(!key||!grp)return;
+  const r=await fetch('/text/numbers',{headers:{'x-api-key':key}});if(!r.ok)return;
+  const d=await r.json();
+  if(!d.line&&!(d.numbers||[]).length)return;
+  grp.hidden=false;
+  document.getElementById('textLead').textContent=d.line
+    ? 'Text ' + d.line + ' a job link and the kit comes back as a message. A number works only after you connect it from the link the line texts you.'
+    : 'The text line is not switched on yet.';
+  document.getElementById('numberList').innerHTML=(d.numbers||[]).length
+    ? d.numbers.map(function(n){
+        return '<div class="fact"><span style="flex:1">'+escHtml(n.phone)+(n.stopped?' — stopped':'')+'</span>'
+          +'<button type="button" class="btn-ghost" data-p="'+escHtml(n.phone)+'" onclick="removeNumber(this.dataset.p)">Remove</button></div>';
+      }).join('')
+    : '<div class="empty">No number connected yet.</div>';
+}
+async function removeNumber(phone){
+  const key=getKey();
+  if(!key||!confirm('Disconnect '+phone+'? Texting from it will no longer reach your account.'))return;
+  await fetch('/text/numbers/'+encodeURIComponent(phone),{method:'DELETE',headers:{'x-api-key':key}});
+  document.getElementById('textStatus').textContent='Disconnected.';
+  loadNumbers();
+}
 </script>
 </body>
 </html>`);
@@ -4786,14 +4950,14 @@ app.post('/schedule', async (req, res) => {
   const names = Array.isArray(sources) && sources.length
     ? selectSources(sources).map(s => s.name)
     : null;
-  // If the time they picked has already gone by today, treat today as done so
-  // saving the schedule does not immediately trigger a run.
-  const [nowH, nowM] = new Intl.DateTimeFormat('en-US', {
-    timeZone: SCHEDULE_TZ, hour: '2-digit', minute: '2-digit', hour12: false,
-  }).format(new Date()).split(':').map(Number);
-  const passedToday = (h * 60 + m) <= (nowH * 60 + nowM);
+  // Saving a schedule marks the most recent occurrence of that time as done,
+  // so it never triggers a run on the spot. This used to compare wall-clock
+  // minutes — "is 23:00 later than now?" — which at 00:20 says yes, while the
+  // due query correctly reads the most recent 23:00 as last night, an hour
+  // inside its three-hour catch-up window. Saving an evening schedule just
+  // after midnight started a sourcing run and charged for it.
   const row = await db.setSchedule(userEmail,
-    { hour: h, minute: m, frequency, enabled: !!enabled, sources: names, lookback_hours, auto_kits }, passedToday);
+    { hour: h, minute: m, frequency, enabled: !!enabled, sources: names, lookback_hours, auto_kits }, true);
   const selected = selectSources(names);
   res.json({
     ok: true,
