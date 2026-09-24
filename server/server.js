@@ -70,7 +70,7 @@ for (const method of ['get','post','put','patch','delete']) {
     (req, res, next) => { try { Promise.resolve(handler(req,res,next)).catch(next); } catch (e) { next(e); } }));
 }
 const PORT = process.env.PORT || 5000;
-const VERSION = '0.71.0';
+const VERSION = '0.72.0';
 const IS_PRODUCTION = process.env.NODE_ENV === 'production';
 const APP_ORIGIN = process.env.APP_ORIGIN || 'http://localhost:5000';
 const ALLOWED_WEB_ORIGINS = new Set(
@@ -2688,6 +2688,11 @@ input:focus,textarea:focus,select:focus{border-color:#555}
 input::placeholder,textarea::placeholder{color:#a8a8a8}
 select option{background:#111}
 textarea{min-height:170px;resize:vertical;line-height:1.65}
+#resume_text{min-height:300px;font-size:13px;line-height:1.6;white-space:pre-wrap}
+.mic-field{position:relative}
+.mic-btn{position:absolute;top:8px;right:8px;background:none;border:0;font-size:15px;line-height:1;cursor:pointer;opacity:.6;padding:5px;border-radius:50%}
+.mic-btn:hover{opacity:1;background:#161616}
+.mic-btn.on{opacity:1;background:#3a1414}
 .role-pick{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px}
 .role-pill{padding:4px 9px;background:#0a0a0a;border:1px solid #222;color:#8f8f8f;font-size:11px;cursor:pointer;font-family:inherit}
 .role-pill:hover{border-color:#555;color:#ccc}
@@ -2763,7 +2768,6 @@ textarea{min-height:170px;resize:vertical;line-height:1.65}
     <div class="grp-label">Resume</div>
     <div class="resume-drop" id="resumeDrop">
       <input type="file" id="resumeFile" accept=".pdf" style="display:none"/>
-      <textarea id="resume_text" style="display:none"></textarea>
       <div class="resume-drop-label">Drop your resume PDF here, or <span class="resume-drop-browse" onclick="document.getElementById('resumeFile').click()">browse</span></div>
       <div id="resumeStatus"></div>
     </div>
@@ -2773,6 +2777,15 @@ textarea{min-height:170px;resize:vertical;line-height:1.65}
         <a href="#" id="resumeView">View</a>
         <a href="#" id="resumeDownload">Download</a>
       </span>
+    </div>
+    <div class="field" style="margin-top:16px">
+      <label>Your resume, as text</label>
+      <div class="mic-field">
+        <textarea id="resume_text" spellcheck="false" placeholder="Paste your resume here, or drop the PDF above and it fills in.
+
+Every tailored resume is written from this, so it is worth fixing anything the PDF mangled."></textarea>
+        <button type="button" class="mic-btn" data-mic="resume_text" aria-label="Talk">🎤</button>
+      </div>
     </div>
   </div>
 
@@ -2815,6 +2828,7 @@ textarea{min-height:170px;resize:vertical;line-height:1.65}
   <div class="grp">
     <div class="grp-label">Bio</div>
     <div class="field">
+      <div class="mic-field">
       <textarea id="bio" placeholder="What have you built, who for, and what did it drive?
 
 Current role: company, what you built, concrete outcomes.
@@ -2822,6 +2836,8 @@ Prior companies: names, scale, what happened.
 Your edge: two or three things you are uniquely good at.
 
 Numbers beat adjectives. Name the companies."></textarea>
+        <button type="button" class="mic-btn" data-mic="bio" aria-label="Talk">🎤</button>
+      </div>
     </div>
   </div>
 </section>
@@ -3000,6 +3016,24 @@ wireDirty();
 
 function setField(f,v){const el=document.getElementById(f);if(!el||!v)return;el.value=v;}
 
+// Talking works in any box that asks for one. Same behaviour as the kit page
+// and the extension: tap to start, tap to stop, what you say lands in the box.
+document.querySelectorAll('.mic-btn').forEach(function(btn){
+  var target=document.getElementById(btn.dataset.mic), rec=null;
+  if(!target)return;
+  btn.addEventListener('click',function(){
+    var SR=window.SpeechRecognition||window.webkitSpeechRecognition;
+    if(!SR){alert('Talking needs Chrome or Safari.');return;}
+    if(rec){rec.stop();return;}
+    var start=target.value?target.value+'\\n':'';
+    rec=new SR();rec.continuous=true;rec.interimResults=true;rec.lang='en-US';
+    rec.onresult=function(ev){var said='';for(var i=0;i<ev.results.length;i++)said+=ev.results[i][0].transcript;target.value=start+said;markDirty();};
+    rec.onend=function(){rec=null;btn.classList.remove('on');btn.textContent='🎤';markDirty();};
+    rec.onerror=function(){btn.classList.remove('on');btn.textContent='🎤';};
+    rec.start();btn.classList.add('on');btn.textContent='■';
+  });
+});
+
 async function load(){
   const key=getKey();
   const authEl=document.getElementById('authStatus');
@@ -3149,7 +3183,7 @@ async function uploadResume(file){
     syncRolePills();
     showResumeFile();
     markDirty();
-    rs.textContent=filled?filled+' fields filled: career type and target roles are guesses, worth a look before you save.':'Could not extract structured fields: check the values above, or try again.';
+    rs.textContent=filled?filled+' fields filled, and your resume text is below. Career type and target roles are guesses, worth a look before you save.':'Could not read that as text. Paste your resume into the box below instead.';
     rs.style.color=filled?'#4ade80':'#f87171';
   }catch(e){rs.textContent='Error: '+e.message;rs.style.color='#f87171';}
 }
@@ -3765,13 +3799,20 @@ async function callClaude(prompt, maxTokens = 4096, model = null, extra = {}) {
 }
 
 // Strip em dashes and en dashes from all string fields in a JSON object
+// Model prose reaches for an em dash constantly and our writing does not use
+// them, so they become commas. Two things this got wrong before: a period
+// turned "led the team - 12 engineers - through a replatform" into three
+// fragments, and a bulk edit that stripped em dashes from our own copy
+// rewrote this very pattern into a hyphen, which then put a period inside
+// every date range and every hyphenated phrase. The dashes are written as
+// escapes now so no text edit can touch them again.
 function cleanEmDashes(obj) {
   if (typeof obj === 'string') {
     return obj
-      .replace(/\s*-\s*/g, '. ')
-      .replace(/\s*–\s*/g, ', ')
-      .replace(/\.\s*\.\s*/g, '. ')
-      .replace(/\.,/g, ',')
+      .replace(/\s*[\u2014\u2013]\s*/g, ', ')
+      .replace(/,\s*,/g, ',')
+      .replace(/\s+,/g, ',')
+      .replace(/,\s*([.;:!?])/g, '$1')
       .trim();
   }
   if (Array.isArray(obj)) return obj.map(cleanEmDashes);
