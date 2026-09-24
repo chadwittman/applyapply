@@ -76,6 +76,11 @@ promise to do something later: this is the only moment you have.
 Anything that spends credits is worth one short sentence saying what it cost,
 never an apology for it.
 
+When a tool gives you a link, put that exact link in your reply. Telling
+somebody their application is ready without the link is worse than saying
+nothing. When you ask them about a role, name the company: they are reading
+this on a phone, hours later, with no idea which job you mean.
+
 Reply with the message to send them and nothing else. No greeting, no sign-off.`;
 
   const messages = [{ role: 'user', content: message }];
@@ -101,4 +106,13 @@ Reply with the message to send them and nothing else. No greeting, no sign-off.`
   return null;
 }
 
-module.exports = { run, TOOLS, situation, MAX_ROUNDS };
+// The model is told to pass links on, and usually does. This makes sure of it:
+// being told your application is ready with no way to open it is the worst
+// version of this product, and it is one forgotten sentence away at all times.
+function withLinks(text, links = []) {
+  let out = String(text || '').trim();
+  for (const link of links) if (link && !out.includes(link)) out += `\n\n${link}`;
+  return out;
+}
+
+module.exports = { run, TOOLS, situation, MAX_ROUNDS, withLinks };

@@ -59,5 +59,18 @@ const VOICE = '# applyapply\nlower case, short.';
   }
   assert.match(agent.TOOLS.find(t => t.name === 'write_kit').description, /Costs 10 credits/);
   assert.ok(!names.includes('submit_application'), 'submitting is never the agent\'s to do');
+  // Being told your application is ready, with no link, is a dead end.
+  assert.match(agent.TOOLS.find(t => t.name === 'write_kit').description, /resume tailored/);
+  const system = [];
+  await agent.run({ voice: VOICE, message: 'write it', context: { credits: 40 },
+    callModel: async (req) => { system.push(req.system); return { content: [{ type: 'text', text: 'done' }] }; },
+    invoke: async () => ({}) });
+  assert.match(system[0], /put that exact link in your reply/, 'the model is told to pass links on');
+  assert.match(system[0], /name the company/, 'and to say which job it is asking about');
+  // And if it forgets anyway, the link is added rather than lost.
+  const link = 'https://applyapply.xyz/k/abc123';
+  assert.equal(agent.withLinks('your resume is ready.', [link]), `your resume is ready.\n\n${link}`);
+  assert.equal(agent.withLinks(`ready: ${link}`, [link]), `ready: ${link}`, 'not repeated when it is already there');
+  assert.equal(agent.withLinks('nothing to add', []), 'nothing to add');
   console.log('PASS: the agent runs tools, survives their failures, and is bounded');
 })();

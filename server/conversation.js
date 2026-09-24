@@ -117,17 +117,23 @@ module.exports = function conversation({ db, port, signToken, origin, kitLink, r
         `resume${score ? ` (${Math.round((Number(score) / 5) * 100)}% match)` : ''}, cover letter, ${answers ? `${answers} answer${answers === 1 ? '' : 's'}` : 'your details'}, ready to paste.`,
         gaps.length ? `can't show ${gaps.length === 1 ? 'one thing' : `${gaps.length} things`} it asks for:\n${listGaps(gaps)}\n\n👍 or "yes" and i'll ask, one at a time, then redo the resume (${resumeCost} credits).` : null,
       ].filter(Boolean);
-      await say(email, parts.join('\n\n'), { kind: gaps.length ? 'resume_offer' : 'kit', url: kit.url, kit_id: kit.id, link, gaps });
+      await say(email, parts.join('\n\n'), { kind: gaps.length ? 'resume_offer' : 'kit', url: kit.url, kit_id: kit.id, link, gaps, company: kit.company, role: kit.role });
     });
   }
 
   // One question per text, so each can be answered on its own. The rewrite
   // runs once the last one is answered (or the person says done).
+  // Which job this is about. A question arriving on a phone hours later is
+  // unanswerable if it does not say what it is for.
+  const jobLabel = meta => [meta?.company, meta?.role].filter(Boolean).join(', ').toLowerCase();
+
   async function askGap(email, meta) {
     const open = meta.open || meta.gaps;
     const [question, ...rest] = open;
     const total = meta.gaps.length, answered = meta.answered || 0;
-    await say(email, `${total - open.length + 1} of ${total}: ${question}\nyour words, or a voice note. "skip" to pass.`,
+    const n = total - open.length + 1;
+    const about = jobLabel(meta);
+    await say(email, `${about && n === 1 ? `for ${about}.\n\n` : ''}${n} of ${total}: ${question}\nyour words, or a voice note. "skip" to pass.`,
       { ...meta, kind: 'gap_question', question, open: rest, answered });
   }
 
@@ -143,7 +149,7 @@ module.exports = function conversation({ db, port, signToken, origin, kitLink, r
       const move = score && Number.isFinite(was)
         ? pct(score) > pct(was) ? `match ${pct(score)}%, up from ${pct(was)}%.` : `match ${pct(score)}%, about the same.`
         : score ? `match ${pct(score)}%.` : '';
-      await say(email, [note, `resume redone${used ? ` with ${used} of your answers` : ''}. ${move}`.trim(), meta.link || `${origin}/${meta.url}`,
+      await say(email, [note, `${jobLabel(meta) ? jobLabel(meta) + ': ' : ''}resume redone${used ? ` with ${used} of your answers` : ''}. ${move}`.trim(), meta.link || `${origin}/${meta.url}`,
         gaps.length ? `still can't show ${gaps.length === 1 ? 'one thing' : gaps.length + ' things'} the posting asks for:\n${listGaps(gaps)}\n\n👍 or "yes" and i'll ask.` : null].filter(Boolean).join('\n\n'),
       { kind: gaps.length ? 'resume_offer' : 'kit', kit_id: meta.kit_id, url: meta.url, link: meta.link, gaps });
     });
@@ -242,7 +248,7 @@ module.exports = function conversation({ db, port, signToken, origin, kitLink, r
       const skipped = /^(skip|next|pass|no)\b/.test(lower);
       // A bare "yes" is not an answer; keep the question open and nudge.
       if (/^(y|yes|yeah|yep|sure|ok|okay|k)[.! ]*$/.test(lower)) {
-        return say(email, `Tell me what you've done there, in your own words, and I'll save it. Or say "skip".`);
+        return say(email, `tell me what you did there, your words. or "skip".`);
       }
       if (!await db.claimChatPrompt(prompt.id)) return;
       if (!stop && !skipped) {
@@ -369,6 +375,10 @@ module.exports = function conversation({ db, port, signToken, origin, kitLink, r
         db.lastChatPrompt(email, ['kit', 'resume_offer']).catch(() => null),
       ]);
       const profile = await db.getProfileByUserEmail(email).catch(() => null);
+      // What the tools actually produced this turn. A link is the whole point
+      // of the message, and whether the model chooses to repeat one is not
+      // something to leave to chance.
+      const produced = { links: [], job: '' };
       const reply = await agent.run({
         voice: VOICE,
         message,
@@ -380,11 +390,11 @@ module.exports = function conversation({ db, port, signToken, origin, kitLink, r
           targeting: [profile?.target_functions, profile?.target_seniority].filter(Boolean).join(' at '),
         },
         callModel,
-        invoke: toolbox(email),
+        invoke: toolbox(email, produced),
         log: line => console.log(`[agent] ${email}: ${line}`),
       }).catch(e => { console.error('[agent]', e.message); return null; });
       if (reply) {
-        const text = reply.replace(/\u2014/g, ',').trim();
+        const text = agent.withLinks(reply.replace(/\u2014/g, ','), produced.links);
         const meta = await db.lastChatMeta(email, 'matches').catch(() => null);
         return say(email, text, meta?.meta?.hidden ? { ...meta.meta, hidden: false } : null);
       }
@@ -407,7 +417,7 @@ module.exports = function conversation({ db, port, signToken, origin, kitLink, r
   // Every tool is the operation the website performs, called with this
   // person's own session, so a kit written from a text is charged, owned and
   // refused exactly as one written from a browser.
-  function toolbox(email) {
+  function toolbox(email, produced) {
     const listed = () => lastList(email);
     return async (name, input) => {
       switch (name) {
@@ -428,7 +438,9 @@ module.exports = function conversation({ db, port, signToken, origin, kitLink, r
           const link = token ? `${origin}/k/${token}` : `${origin}/${kit.url}`;
           const gaps = kit.tailored_resume?.coverage?.gaps || [];
           const score = kit.tailored_resume?.jev_match?.score;
-          await db.addChatMessage(email, 'out', '', { kind: gaps.length ? 'resume_offer' : 'kit', url: kit.url, kit_id: kit.id, link, gaps, hidden: true });
+          await db.addChatMessage(email, 'out', '', { kind: gaps.length ? 'resume_offer' : 'kit', url: kit.url, kit_id: kit.id, link, gaps, company: kit.company, role: kit.role, hidden: true });
+          produced.links.push(link);
+          produced.job = [kit.company, kit.role].filter(Boolean).join(', ');
           return { company: kit.company, role: kit.role, link, credits_spent: 10,
             match_percent: score ? Math.round((Number(score) / 5) * 100) : null,
             answered_questions: (kit.tailored.qa || []).filter(x => x.a).length,
@@ -441,7 +453,10 @@ module.exports = function conversation({ db, port, signToken, origin, kitLink, r
           if (r.status === 402) return { error: 'out of credits', top_up: `${origin}/buy` };
           if (r.status !== 200) return { error: 'could not rewrite it; their answers are saved' };
           const score = r.data.jev_match?.score;
-          return { link: last.meta.link || `${origin}/${last.meta.url}`, credits_spent: resumeCost,
+          const rewriteLink = last.meta.link || `${origin}/${last.meta.url}`;
+          produced.links.push(rewriteLink);
+          produced.job = [last.meta.company, last.meta.role].filter(Boolean).join(', ');
+          return { link: rewriteLink, credits_spent: resumeCost,
             match_percent: score ? Math.round((Number(score) / 5) * 100) : null,
             used_answers: Number(r.data.evidence_used) || 0, still_missing: r.data.coverage?.gaps || [] };
         }
@@ -489,7 +504,7 @@ module.exports = function conversation({ db, port, signToken, origin, kitLink, r
           const open = prompt.meta.open || [];
           if (open.length) {
             const [next, ...rest] = open;
-            await say(email, `${prompt.meta.gaps.length - rest.length} of ${prompt.meta.gaps.length}: ${next}`,
+            await say(email, `${jobLabel(prompt.meta) ? jobLabel(prompt.meta) + '. ' : ''}${prompt.meta.gaps.length - rest.length} of ${prompt.meta.gaps.length}: ${next}`,
               { ...prompt.meta, kind: 'gap_question', question: next, open: rest, answered: (prompt.meta.answered || 0) + 1 });
             return { saved: true, asked_them_next: next };
           }

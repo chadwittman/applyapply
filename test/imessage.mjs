@@ -97,6 +97,7 @@ try {
 
   got = await send(page, 'yes', '1 of 2');
   assert.match(got.at(-1), /1 of 2: Built a consumer product/);
+  assert.match(got.at(-1), /for chatco, head of product/, 'the first question says which job it is about');
   assert.equal(got.length, 1, 'One question per text');
   got = await send(page, 'Ran the Tallyhouse consumer app, 200k MAU.', '2 of 2');
   assert.match(got.at(-1), /2 of 2: Shipped a browser extension/);
@@ -162,8 +163,10 @@ try {
   await Promise.all([post('yes'), post('yes')]);
   await page.waitForTimeout(3000);
   const outbound = (await db.getChatMessages(email, 0)).filter(m => m.direction === 'out').map(m => m.body);
-  assert.deepEqual(outbound.filter(b => /^\d of 3:/.test(b)).map(b => b.split(':')[0]), ['1 of 3'], 'One question, not two');
-  assert.ok(outbound.some(b => /Tell me what you've done there/.test(b)), 'A bare yes is nudged, not saved as an answer');
+  // The question now leads with the job it is about, so it is matched
+  // anywhere in the message rather than at the start.
+  assert.deepEqual(outbound.flatMap(b => b.match(/(\d) of 3:/g) || []), ['1 of 3:'], 'One question, not two');
+  assert.ok(outbound.some(b => /tell me what you did there/i.test(b)), 'A bare yes is nudged, not saved as an answer');
   console.log('PASS: two replies at once cannot ask the same question twice');
 
   await page.screenshot({ path: '/tmp/applyapply-imessage.png' });
