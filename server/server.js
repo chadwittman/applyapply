@@ -69,7 +69,7 @@ for (const method of ['get','post','put','patch','delete']) {
     (req, res, next) => { try { Promise.resolve(handler(req,res,next)).catch(next); } catch (e) { next(e); } }));
 }
 const PORT = process.env.PORT || 5000;
-const VERSION = '0.64.0';
+const VERSION = '0.64.1';
 const IS_PRODUCTION = process.env.NODE_ENV === 'production';
 const APP_ORIGIN = process.env.APP_ORIGIN || 'http://localhost:5000';
 const ALLOWED_WEB_ORIGINS = new Set(
@@ -220,7 +220,8 @@ app.get('/extension', (req, res) => {
 ${metaHead({title:'Install the extension · applyapply', desc:'Add applyapply to Chrome. It fills job application forms with your generated apply kit.', path:'/extension'})}
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
-body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#000;color:#fff;-webkit-font-smoothing:antialiased}
+html{overflow-x:hidden}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#000;color:#fff;-webkit-font-smoothing:antialiased;overflow-x:hidden}
 a{text-decoration:none;color:inherit}
 ${NAV_CSS}
 .wrap{max-width:660px;margin:0 auto;padding:56px 24px 120px}
@@ -1257,7 +1258,8 @@ ${metaHead({title:'applyapply: job applications, done for you', desc:'Agents fin
 ${structuredData(siteSchema())}
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
-body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#000;color:#fff;line-height:1.5;-webkit-font-smoothing:antialiased}
+html{overflow-x:hidden}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#000;color:#fff;line-height:1.5;-webkit-font-smoothing:antialiased;overflow-x:hidden}
 a{text-decoration:none;color:inherit}
 .nav{display:flex;justify-content:space-between;align-items:center;padding:20px 32px;border-bottom:1px solid #111}
 .nav-logo{font-size:13px;font-weight:700;letter-spacing:-.02em}
@@ -1352,9 +1354,11 @@ hr{border:none;border-top:1px solid #111}
 .price-body{font-size:15px;color:#ccc;line-height:1.75;max-width:480px;margin-top:24px}
 .price-body+.price-body{margin-top:14px}
 .price-cta{margin-top:28px}
-footer{padding:24px 32px;border-top:1px solid #111;display:flex;justify-content:space-between;align-items:center}
+/* Eleven links in a row that could not wrap made the whole page scroll
+   sideways on a phone. Both the footer and the link row wrap now. */
+footer{padding:24px 32px;border-top:1px solid #111;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px}
 .fc{font-size:12px;color:#b9b9b9}
-.fl{display:flex;gap:16px}
+.fl{display:flex;gap:16px;flex-wrap:wrap}
 .fl a{font-size:12px;color:#c4c4c4}
 .fl a:hover{color:#bbb}
 </style>

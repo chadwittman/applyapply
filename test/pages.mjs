@@ -27,5 +27,23 @@ for (const p of ['/', '/login', '/setup', '/sourcing', '/pipeline', '/buy']) {
   console.log(`${clean ? 'PASS' : 'FAIL'}  ${p.padEnd(11)} http ${res.status()}${errs.length ? '  jsErr: ' + errs.join('; ').slice(0, 90) : ''}${bad.length ? '  failedReq: ' + bad.join(', ') : ''}`);
 }
 console.log(`\n${fails ? fails + ' page(s) with errors' : 'all pages clean'}`);
+// Nothing may scroll sideways on a phone. Eleven footer links in a row that
+// could not wrap took the homepage to 615px inside a 390px screen.
+const phone = await browser.newContext({ viewport: { width: 390, height: 844 } });
+const small = await phone.newPage();
+let sloppy = 0;
+for (const p of ['/', '/text', '/about', '/demo', '/buy', '/extension', '/agents', '/faq', '/privacy', '/terms']) {
+  const r = await small.goto(B + p, { waitUntil: 'networkidle' }).catch(() => null);
+  if (!r || r.status() >= 400) continue;
+  await small.waitForTimeout(400);
+  const width = await small.evaluate(() => ({ scroll: document.documentElement.scrollWidth, view: document.documentElement.clientWidth }));
+  const overflows = width.scroll > width.view + 1;
+  if (overflows) sloppy++;
+  console.log(`${overflows ? 'FAIL' : 'PASS'}  ${p.padEnd(11)} ${width.scroll}px in ${width.view}px`);
+}
+await phone.close();
+if (sloppy) { console.error(`${sloppy} page(s) scroll sideways on a phone`); process.exitCode = 1; }
+else console.log('\nno page scrolls sideways at 390px');
+
 await browser.close();
 process.exit(fails ? 1 : 0);
