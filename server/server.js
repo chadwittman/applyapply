@@ -69,7 +69,7 @@ for (const method of ['get','post','put','patch','delete']) {
     (req, res, next) => { try { Promise.resolve(handler(req,res,next)).catch(next); } catch (e) { next(e); } }));
 }
 const PORT = process.env.PORT || 5000;
-const VERSION = '0.62.0';
+const VERSION = '0.63.0';
 const IS_PRODUCTION = process.env.NODE_ENV === 'production';
 const APP_ORIGIN = process.env.APP_ORIGIN || 'http://localhost:5000';
 const ALLOWED_WEB_ORIGINS = new Set(
@@ -894,12 +894,43 @@ ${myAnswers.length ? `<h2>What you've told us</h2>${myAnswers.map(a => block(a.q
 </div>
 <script>
 var BASE = ${scriptJSON(base)};
+// Opened from Messages, this page runs in an in-app web view where
+// navigator.clipboard is often missing or refuses, and the tap did nothing at
+// all while the page promised it would copy. Fall back to a selection, and say
+// so plainly when even that is not allowed.
+function copyText(text) {
+  try {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      return navigator.clipboard.writeText(text).catch(function () { return legacyCopy(text); });
+    }
+  } catch (e) {}
+  return legacyCopy(text);
+}
+function legacyCopy(text) {
+  return new Promise(function (resolve, reject) {
+    var box = document.createElement('textarea');
+    box.value = text;
+    box.setAttribute('readonly', '');
+    box.style.cssText = 'position:fixed;top:0;left:0;opacity:0;font-size:16px';
+    document.body.appendChild(box);
+    box.focus();
+    box.setSelectionRange(0, box.value.length);
+    var ok = false;
+    try { ok = document.execCommand('copy'); } catch (e) { ok = false; }
+    box.remove();
+    ok ? resolve() : reject(new Error('copy refused'));
+  });
+}
 document.addEventListener('click', function (e) {
   var el = e.target.closest('[data-copy]'); if (!el) return;
-  navigator.clipboard.writeText(document.getElementById(el.getAttribute('data-copy')).textContent).then(function () {
-    var label = el.querySelector('.copy'); el.classList.add('done'); if (label) label.textContent = 'Copied';
-    setTimeout(function () { el.classList.remove('done'); if (label) label.textContent = 'Copy'; }, 1400);
-  });
+  var label = el.querySelector('.copy');
+  var said = function (text, keep) {
+    el.classList.add('done'); if (label) label.textContent = text;
+    setTimeout(function () { el.classList.remove('done'); if (label) label.textContent = 'Copy'; }, keep || 1400);
+  };
+  copyText(document.getElementById(el.getAttribute('data-copy')).textContent)
+    .then(function () { said('Copied'); })
+    .catch(function () { said('Press and hold to select', 2600); });
 });
 function saveAnswer(box) {
   var ta = box.querySelector('textarea'), st = box.querySelector('.st'), text = ta.value.trim();
@@ -950,6 +981,8 @@ const chat = require('./conversation')({ db, port: PORT, origin: APP_ORIGIN.repl
   // Roles that fit, read straight from the shared ledger: no search, no
   // credits, so a first text can answer with real jobs.
   typeSafeKey: process.env.TYPESAFE_API_KEY || null,
+  // Small and fast: this writes a sentence or two, never a kit.
+  askModel: prompt => callClaude(prompt, 400, MODEL_ANTHROPIC),
   ledgerMatches: async email => {
     const profile = await db.getProfileByUserEmail(email).catch(() => null);
     if (!profile) return [];

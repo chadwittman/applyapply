@@ -7,6 +7,15 @@
 // as they do on the site and in the extension.
 const http = require('http');
 const { readIntent, pickFromList, factFrom } = require('./intent');
+const fs = require('fs');
+const pathlib = require('path');
+
+// The voice and the claims, in one file, so what applyapply says about itself
+// lives somewhere a person can read and edit rather than scattered through
+// string literals. Borrowed from how OpenClaw gives an agent a SOUL.md.
+const VOICE = (() => {
+  try { return fs.readFileSync(pathlib.join(__dirname, 'voice.md'), 'utf8'); } catch { return ''; }
+})();
 
 // applyapply talks in lower case and says the least it can. A text is read in
 // two seconds on a lock screen, so anything that is not the answer is noise.
@@ -31,11 +40,21 @@ function findJobLink(text) {
   return bare ? 'https://' + bare[1].replace(/[).,;!?]+$/, '') : null;
 }
 
+// What this is, for "what are you?" and for a first hello. The three things it
+// does, in the order they happen to you.
+const WHAT_I_AM = [
+  'i\'m applyapply. three things:',
+  '',
+  'i find job postings that fit you.',
+  'i write a resume tailored to each one, plus the cover letter and the form\'s own questions.',
+  'you read it and send it, in about a minute.',
+].join('\n');
+
 // Never say "3 things" without saying which: the person has to know what they
 // are being asked before they answer.
 const listGaps = gaps => gaps.map(g => '• ' + String(g).replace(/\s+/g, ' ').trim()).join('\n');
 
-module.exports = function conversation({ db, port, signToken, origin, kitLink, resumeCost = 8, polish = null, deliver = null, ledgerMatches = null, react = null, typeSafeKey = null }) {
+module.exports = function conversation({ db, port, signToken, origin, kitLink, resumeCost = 8, polish = null, deliver = null, ledgerMatches = null, react = null, typeSafeKey = null, askModel = null }) {
   const typing = new Map(); // email -> since (ms); the test page shows dots
 
   function api(email, method, path, body) {
@@ -144,9 +163,9 @@ module.exports = function conversation({ db, port, signToken, origin, kitLink, r
   async function welcome(email) {
     const jobs = await bestThree(email);
     if (!jobs.length) {
-      return say(email, 'i\'m applyapply. send a job link and i\'ll write the application: resume, cover letter, the form\'s own questions.\n\nor text "search" and i\'ll go find roles that fit you.');
+      return say(email, `${WHAT_I_AM}\n\nsend me a job link to start, or say "search" and i'll go find roles that fit you.`);
     }
-    return say(email, `i\'m applyapply. i write your job applications.\n\n${jobs.length} that fit you right now:\n${jobs.map((j, i) => `${i + 1}) ${j.company}, ${j.role}`).join('\n')}\n\nreply 1, 2 or 3 and i\'ll write it. or send any job link.`,
+    return say(email, `${WHAT_I_AM}\n\n${jobs.length} that fit you right now:\n${jobs.map((j, i) => `${i + 1}) ${j.company}, ${j.role}`).join('\n')}\n\nreply 1, 2 or 3 and i\'ll write it. or send any job link.`,
       { kind: 'matches', jobs: jobs.map(j => ({ url: j.url, company: j.company, role: j.role })) });
   }
 
@@ -318,6 +337,7 @@ module.exports = function conversation({ db, port, signToken, origin, kitLink, r
         case 'status': return handleOne(email, 'status', { replay: true });
         case 'credits': return handleOne(email, 'credits', { replay: true });
         case 'corrections': return handleOne(email, 'corrections', { replay: true });
+        case 'about': return say(email, `${WHAT_I_AM}\n\nsend me a job link, or say "matches" and i'll show you what fits.`);
         case 'help': return say(email, HELP);
         case 'stop': return say(email, 'okay, i won\'t text you about searches. send a job link anytime.');
         case 'rewrite': return handleOne(email, 'rewrite', { replay: true });
@@ -336,6 +356,16 @@ module.exports = function conversation({ db, port, signToken, origin, kitLink, r
         case 'smalltalk': return say(email, 'anytime. send a job link whenever you have one.');
         default: break;
       }
+    }
+    // A question the command list does not cover. Rather than a menu, answer
+    // it from the voice file: what applyapply is, does, refuses and costs.
+    // Nothing here acts or spends, so a model writes the words and nothing
+    // else.
+    if (askModel && VOICE && /\?$|^(what|who|how|can|do|does|is|are|will|why|should)\b/i.test(message)) {
+      const reply = await askModel(`${VOICE}\n\nSomeone texted applyapply: "${message.slice(0, 500)}"\n\nAnswer them in applyapply's voice, using only what is written above. Reply with the message itself and nothing else.`)
+        .catch(e => { console.error('[concierge]', e.message); return null; });
+      const text = String(reply || '').trim().replace(/^["']|["']$/g, '').replace(/\u2014/g, ',');
+      if (text && text.length < 700) return say(email, text);
     }
     return say(email, HELP);
   }
