@@ -48,6 +48,13 @@ async function send(to, body, { mediaUrl = null, timeout = 15000 } = {}) {
   try { return JSON.parse(text); } catch { return { ok: true }; }
 }
 
+// The id the phone knows a sent message by. Needed to react to it, and to
+// recognise a reply that lands on one message out of several.
+function handleOf(sendResult) {
+  const r = sendResult || {};
+  return r.message_handle || r.messageHandle || r.handle || null;
+}
+
 // A tapback on the message we are answering. Documented fields: the number the
 // conversation is with, the handle of the message being reacted to, and the
 // reaction itself — a name (love, like, laugh, emphasize, question, dislike)
@@ -88,6 +95,21 @@ function readReaction(body) {
 
 // Sendblue posts inbound messages as JSON. Field names have varied across
 // their API versions, so read the ones that mean the same thing.
+function replyTarget(body) {
+  const b = body || {};
+  const direct = b.reply_to_handle || b.replied_to_handle || b.in_reply_to || b.inline_reply_handle || b.thread_handle;
+  if (direct) return String(direct);
+  for (const key of ['reply_to', 'replied_to', 'inline_reply', 'reply', 'context']) {
+    const v = b[key];
+    if (typeof v === 'string' && v.length > 8) return v;
+    if (v && typeof v === 'object') {
+      const nested = v.message_handle || v.handle || v.id;
+      if (nested) return String(nested);
+    }
+  }
+  return null;
+}
+
 function parseInbound(body) {
   const b = body || {};
   const from = normalizePhone(b.from_number ?? b.number ?? b.phone ?? b.fromNumber);
@@ -95,7 +117,7 @@ function parseInbound(body) {
   const media = b.media_url || b.mediaUrl || null;
   const handle = b.message_handle || b.messageHandle || null;
   const isOutbound = String(b.is_outbound ?? b.isOutbound ?? '').toLowerCase() === 'true' || b.is_outbound === true;
-  return { from, content, media, handle, isOutbound, reaction: readReaction(b) };
+  return { from, content, media, handle, isOutbound, reaction: readReaction(b), replyTo: replyTarget(b) };
 }
 
 // Carrier rules, and simple decency: these are answered before anything else
@@ -104,4 +126,4 @@ const STOP = /^\s*(stop|stopall|unsubscribe|cancel|end|quit)\s*$/i;
 const START = /^\s*(start|unstop|resume)\s*$/i;
 const HELP = /^\s*help\s*$/i;
 
-module.exports = { configured, send, react, parseInbound, readReaction, normalizePhone, STOP, START, HELP };
+module.exports = { configured, send, react, handleOf, parseInbound, readReaction, replyTarget, normalizePhone, STOP, START, HELP };

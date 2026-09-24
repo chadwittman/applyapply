@@ -26,7 +26,7 @@ for (const bad of ['', 'hello', '555-0123', null, '+0123']) assert.equal(sendblu
 // Sendblue's field names have moved around; the ones that mean the same thing
 // are all read, and our own outbound messages are not treated as inbound.
 assert.deepEqual(sendblue.parseInbound({ from_number: '(512) 555-0123', content: ' hi ' }),
-  { from: MINE, content: 'hi', media: null, handle: null, isOutbound: false, reaction: null });
+  { from: MINE, content: 'hi', media: null, handle: null, isOutbound: false, reaction: null, replyTo: null });
 assert.equal(sendblue.parseInbound({ number: MINE, message: 'hi' }).from, MINE);
 assert.equal(sendblue.parseInbound({ from_number: MINE, content: 'hi', is_outbound: true }).isOutbound, true);
 
@@ -166,5 +166,27 @@ if (process.env.TYPESAFE_API_KEY) {
   assert.ok(after.some(m => m.direction === 'out' && /credits/.test(m.body)), 'and it answered the question: ' + JSON.stringify(after.map(m => m.body)));
   console.log('PASS: plain english is understood without rewriting their thread');
 }
+
+// ── One message per role, and a reply that lands on one ─────────────────────
+// Sendblue tells us the id a phone knows each sent message by. Replying to one
+// of several is how a phone says "that one", so it has to resolve to the job
+// that message was about rather than to a guess.
+assert.equal(sendblue.handleOf({ message_handle: 'H-42' }), 'H-42');
+assert.equal(sendblue.handleOf({}), null);
+for (const [shape, want] of [
+  [{ reply_to_handle: 'H-1' }, 'H-1'],
+  [{ replied_to_handle: 'H-2' }, 'H-2'],
+  [{ reply_to: { message_handle: 'H-3' } }, 'H-3'],
+  [{ inline_reply: { handle: 'H-4' } }, 'H-4'],
+  [{ content: 'just a message' }, null],
+]) assert.equal(sendblue.replyTarget(shape), want, JSON.stringify(shape));
+
+const row = await db.addChatMessage(OWNER, 'out', '1) Watershed, Head of Product', { kind: 'match_option', url: 'https://boards.greenhouse.io/watershed/jobs/1', company: 'Watershed', role: 'Head of Product' });
+await db.updateChatMeta(row.id, { kind: 'match_option', url: 'https://boards.greenhouse.io/watershed/jobs/1', company: 'Watershed', role: 'Head of Product', handle: 'H-ROLE-1' });
+const found = await db.chatMessageByHandle(OWNER, 'H-ROLE-1');
+assert.equal(found?.meta?.company, 'Watershed', 'a reply on that message finds the role it was about');
+assert.equal(await db.chatMessageByHandle(OWNER, 'H-NOPE'), null);
+assert.equal(await db.chatMessageByHandle(OTHER, 'H-ROLE-1'), null, 'and only within their own conversation');
+console.log('PASS: a reply landing on one message resolves to that role');
 
 await db.pool.end();

@@ -1025,6 +1025,15 @@ async function claimChatPrompt(id) {
   return !!row;
 }
 
+// Which message a reply landed on. The phone's own id for a message we sent,
+// so "reply to the third one" resolves to the third role rather than a guess.
+async function chatMessageByHandle(userEmail, handle) {
+  if (!handle) return null;
+  return q1(`SELECT id, body, meta FROM chat_messages
+     WHERE user_email = $1 AND meta->>'handle' = $2 ORDER BY id DESC LIMIT 1`,
+    [requireOwner(userEmail), String(handle)]);
+}
+
 async function updateChatMeta(id, meta) {
   await q(`UPDATE chat_messages SET meta=$2 WHERE id=$1`, [id, JSON.stringify(meta)]);
 }
@@ -1423,7 +1432,7 @@ module.exports = {
   upsertListings, getListings, countListings, getTitleClasses, saveTitleClasses, unclassifiedTitles, getIngestState, recordIngest, withIngestLock,
   createApiKey, listApiKeys, revokeApiKey, emailForApiKey, registerOauthClient, getOauthClient, createOauthCode, peekOauthCode, spendOauthCode, createAgentConnect, getAgentConnect, approveAgentConnect, claimAgentConnect, getResumeStructure, saveResumeStructure, pruneStorage, storageStats,
   kitShareToken, kitForShare, addFeedback, feedbackSeenToday,
-  resetTestKits, addChatMessage, getChatMessages, lastChatMeta, lastChatPrompt, claimChatPrompt, updateChatMeta, hasChatHistory, clearChat,
+  resetTestKits, addChatMessage, getChatMessages, chatMessageByHandle, lastChatMeta, lastChatPrompt, claimChatPrompt, updateChatMeta, hasChatHistory, clearChat,
   getUser, getOrCreateUser, addUserCredits, deductUserCredits, chargeCredits, countVoiceNotesToday,
   createMagicLink, getMagicLink, useMagicLink,
 };

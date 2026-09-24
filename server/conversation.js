@@ -77,10 +77,14 @@ module.exports = function conversation({ db, port, signToken, origin, kitLink, r
   // Saved first, sent second. The thread in the database is the record: the
   // test page reads it, the real line is one more place the same message goes,
   // and a delivery failure must not lose what was said.
+  // Delivery hands back the id the phone knows this message by, so a reply to
+  // one of several messages can be traced to the thing it is about.
   async function say(email, bodies, meta = null) {
     for (const body of [].concat(bodies).filter(Boolean)) {
-      await db.addChatMessage(email, 'out', body, meta);
-      if (deliver) await deliver(email, body, meta).catch(e => console.error('[deliver]', e.message));
+      const row = await db.addChatMessage(email, 'out', body, meta);
+      if (!deliver) continue;
+      const handle = await deliver(email, body, meta).catch(e => { console.error('[deliver]', e.message); return null; });
+      if (handle && row?.id) await db.updateChatMeta(row.id, { ...(meta || {}), handle }).catch(() => {});
     }
   }
 
@@ -196,7 +200,7 @@ module.exports = function conversation({ db, port, signToken, origin, kitLink, r
 
   // voice: the message was a voice note, already transcribed.
   async function handleOne(email, text, options = {}) {
-    const { voice = false, replay = false, channel = null } = options;
+    const { voice = false, replay = false, channel = null, about = null } = options;
     const message = String(text || '').trim();
     // Recording the message is this function's job, and only this function's:
     // the webhook used to write it too, so every text arrived twice.
@@ -214,6 +218,10 @@ module.exports = function conversation({ db, port, signToken, origin, kitLink, r
     // A thumb on the last message is an answer to it: people reply to a text
     // by reacting to it far more often than by typing the word.
     const tap = options.reaction;
+    if (tap && about?.url) {
+      const yes = ['like', 'love', 'emphasize', 'laugh'].includes(tap.kind) || /^(👍|❤️|🔥|✅|🙌|💯)/u.test(tap.emoji || '');
+      if (yes) return writeKit(email, about.url);
+    }
     if (tap) {
       const yes = ['like', 'love', 'emphasize', 'laugh'].includes(tap.kind) || /^(👍|❤️|🔥|✅|🙌|💯)/u.test(tap.emoji || '');
       const no = tap.kind === 'dislike' || /^(👎|🙅|❌)/u.test(tap.emoji || '');
@@ -383,6 +391,8 @@ module.exports = function conversation({ db, port, signToken, origin, kitLink, r
         voice: VOICE,
         message,
         context: {
+          repliedTo: about ? [about.company, about.role].filter(Boolean).join(', ') : null,
+          repliedToUrl: about?.url || null,
           credits: me.data?.credits,
           listed: await lastList(email),
           openQuestion: prompt2?.meta?.done ? null : prompt2?.meta?.question || null,
@@ -423,8 +433,18 @@ module.exports = function conversation({ db, port, signToken, origin, kitLink, r
       switch (name) {
         case 'list_matches': {
           const jobs = await bestThree(email);
-          if (jobs.length) await db.addChatMessage(email, 'out', '', { kind: 'matches', jobs: jobs.map(j => ({ url: j.url, company: j.company, role: j.role })), hidden: true });
-          return { roles: jobs.map((j, i) => ({ n: i + 1, company: j.company, role: j.role, location: j.location || '' })) };
+          if (!jobs.length) return { roles: [] };
+          // Each role is its own message with its own posting link, so it can
+          // be read, and replied to, on its own.
+          for (let i = 0; i < jobs.length; i++) {
+            const j = jobs[i];
+            await say(email, `${i + 1}) ${j.company}, ${j.role}${j.location ? `\n${j.location}` : ''}\n${j.url}`,
+              { kind: 'match_option', n: i + 1, url: j.url, company: j.company, role: j.role });
+          }
+          await db.addChatMessage(email, 'out', '', { kind: 'matches', jobs: jobs.map(j => ({ url: j.url, company: j.company, role: j.role })), hidden: true });
+          produced.sentRoles = jobs.length;
+          return { roles: jobs.map((j, i) => ({ n: i + 1, company: j.company, role: j.role, location: j.location || '' })),
+            already_sent_to_them: 'Each role was already sent as its own message with its link. Do not list them again: say in one line that they can reply to whichever one they want, or reply with its number.' };
         }
         case 'write_kit': {
           let url = String(input.url || '').trim();

@@ -40,8 +40,9 @@ const TOOLS = [
 
 // The context a reply depends on. Kept small: everything here is sent on every
 // message, and a text line is supposed to be cheap.
-function situation({ credits, listed = [], openQuestion = null, lastKit = null, targeting = '' }) {
+function situation({ credits, listed = [], openQuestion = null, lastKit = null, targeting = '', repliedTo = null, repliedToUrl = null }) {
   const lines = [];
+  if (repliedTo) lines.push(`They replied to your message about ${repliedTo}${repliedToUrl ? ` (${repliedToUrl})` : ''}. Whatever they said is about that role, so use that URL with write_kit rather than asking which one.`);
   lines.push(`They have ${credits ?? 'an unknown number of'} credits.`);
   if (targeting) lines.push(`They are looking for: ${targeting}.`);
   if (listed.length) lines.push(`Roles you listed last, in order:\n${listed.map((j, i) => `${i + 1}. ${j.company}: ${j.role}`).join('\n')}`);
