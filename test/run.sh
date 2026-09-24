@@ -41,7 +41,7 @@ done
 curl -sf --max-time 2 "$APP_ORIGIN/health" >/dev/null
 
 fail=0
-for t in ${AA_TEST_SUITES:-test/isolation.mjs test/kits-and-profiles.mjs test/evidence.mjs test/pages.mjs test/extension-ui.mjs test/source-ui.mjs test/background.cjs test/fast-kit.cjs test/field-map.cjs test/intent.cjs test/voice.cjs test/agent.cjs test/resume-dates.cjs test/targeting.cjs test/title-class.cjs test/card.mjs test/listings.mjs test/embedded-form.mjs test/ats-urls.cjs test/aeo.mjs test/agent-onboarding.mjs test/oauth.mjs test/demo.mjs test/url-prefix.mjs test/feedback.mjs test/facts.mjs test/imessage.mjs test/text-line.mjs test/hardening.cjs}; do
+for t in ${AA_TEST_SUITES:-test/isolation.mjs test/kits-and-profiles.mjs test/evidence.mjs test/pages.mjs test/extension-ui.mjs test/source-ui.mjs test/background.cjs test/fast-kit.cjs test/field-map.cjs test/intent.cjs test/voice.cjs test/agent.cjs test/resume-dates.cjs test/targeting.cjs test/title-class.cjs test/card.mjs test/listings.mjs test/resume-edit.mjs test/embedded-form.mjs test/ats-urls.cjs test/aeo.mjs test/agent-onboarding.mjs test/oauth.mjs test/demo.mjs test/url-prefix.mjs test/feedback.mjs test/facts.mjs test/imessage.mjs test/text-line.mjs test/hardening.cjs}; do
   echo "═══ $t ═══"
   node "$t" || fail=1
 done

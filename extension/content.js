@@ -435,7 +435,11 @@ function buildHTML(serverDown) {
 .qa-q{font-size:9px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:#9a9a9a;margin-bottom:4px;}
 .qa-a{font-size:11px;color:#0a0a0a;line-height:1.6;margin-bottom:6px;}
 .qa-actions{display:flex;align-items:center;gap:6px;}
-.qa-mic{background:#0a0a0a;color:#fff;border:none;border-radius:50%;width:22px;height:22px;font-size:10px;cursor:pointer;display:flex;align-items:center;justify-content:center;flex-shrink:0;}
+/* Just the emoji. A filled dark circle behind it read as a disabled button
+   and made the glyph smaller than it needed to be. */
+.qa-mic{background:none;color:#fff;border:none;border-radius:50%;width:24px;height:24px;font-size:14px;line-height:1;cursor:pointer;display:flex;align-items:center;justify-content:center;flex-shrink:0;padding:0;opacity:.75;transition:opacity .12s,background .12s;}
+.qa-mic:hover{opacity:1;background:#161616;}
+.qa-mic.on{opacity:1;background:#3a1414;}
 
 .cl-btn{
   flex:1 1 92px;padding:7px 9px;

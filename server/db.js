@@ -183,6 +183,21 @@ async function initSchema() {
     )
   `);
 
+  // Lines the candidate rewrote by hand. When somebody edits their resume, they
+  // are telling us how they want to be described, which is worth more than any
+  // instruction we could infer. Kept so later writing follows it.
+  await q(`
+    CREATE TABLE IF NOT EXISTS resume_edits (
+      id SERIAL PRIMARY KEY,
+      user_email TEXT NOT NULL,
+      kit_id TEXT,
+      before TEXT NOT NULL DEFAULT '',
+      after TEXT NOT NULL DEFAULT '',
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
+  await q(`CREATE INDEX IF NOT EXISTS idx_resume_edits_user ON resume_edits (user_email)`);
+
   // How interesting one job looks to one person, decided once and kept. The
   // page shows hundreds of rows; scoring them all on every visit would be slow
   // and pointless, so this is filled a slice at a time and reused.
@@ -944,6 +959,22 @@ async function spendPhoneClaim(code) {
 
 
 
+
+// ── Hand edits to a resume ────────────────────────────────────────────────────
+
+async function saveResumeEdits(userEmail, kitId, edits) {
+  for (const e of edits.slice(0, 40)) {
+    await q(`INSERT INTO resume_edits (user_email, kit_id, before, after) VALUES ($1,$2,$3,$4)`,
+      [requireOwner(userEmail), kitId || null, String(e.before || '').slice(0, 1000), String(e.after || '').slice(0, 1000)]);
+  }
+  return edits.length;
+}
+
+async function getResumeEdits(userEmail, limit = 30) {
+  return q(`SELECT before, after, created_at FROM resume_edits WHERE user_email = $1 ORDER BY created_at DESC LIMIT $2`,
+    [requireOwner(userEmail), limit]);
+}
+
 // ── How interesting a job looks to one person ─────────────────────────────────
 
 async function getInterest(userEmail) {
@@ -1409,7 +1440,7 @@ async function deleteAccount(userEmail) {
   try {
     await client.query('BEGIN');
     await client.query('DELETE FROM operation_events WHERE operation_id IN (SELECT id FROM operations WHERE user_email=$1)', [owner]);
-    for (const table of ['user_activity','decisions','evidence','facts','phone_links','resume_files','schedules','runs','jobs','kits','profiles','purchases','api_keys','resume_structures','chat_messages','job_links','job_interest','kit_shares','agent_connects','oauth_codes']) {
+    for (const table of ['user_activity','decisions','evidence','facts','phone_links','resume_files','schedules','runs','jobs','kits','profiles','purchases','api_keys','resume_structures','chat_messages','job_links','job_interest','resume_edits','kit_shares','agent_connects','oauth_codes']) {
       await client.query(`DELETE FROM ${table} WHERE user_email=$1`, [owner]);
     }
     // Feedback stays so the product can be fixed, but stops being theirs.
@@ -1498,7 +1529,7 @@ module.exports = {
   saveResumeFile, getResumeFile, getResumeFileMeta,
   getEvidence, addEvidenceQuestions, addAnsweredEvidence, setEvidenceAnswer, deleteEvidence,
   getFacts, addFact, deleteFact,
-  jobLinkToken, openJobLink, openedJobs, getInterest, saveInterest,
+  jobLinkToken, openJobLink, openedJobs, getInterest, saveInterest, saveResumeEdits, getResumeEdits,
   accountForPhone, phoneLink, phonesForUser, createPhoneCode, checkPhoneCode, linkPhone, unlinkPhone, setPhoneStopped, createPhoneClaim, spendPhoneClaim,
   getSetting, setSetting,
   getSchedule, setSchedule, getDueSchedules, markScheduleRun, getAllEnabledSchedules,

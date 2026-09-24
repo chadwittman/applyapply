@@ -70,7 +70,7 @@ for (const method of ['get','post','put','patch','delete']) {
     (req, res, next) => { try { Promise.resolve(handler(req,res,next)).catch(next); } catch (e) { next(e); } }));
 }
 const PORT = process.env.PORT || 5000;
-const VERSION = '0.70.0';
+const VERSION = '0.71.0';
 const IS_PRODUCTION = process.env.NODE_ENV === 'production';
 const APP_ORIGIN = process.env.APP_ORIGIN || 'http://localhost:5000';
 const ALLOWED_WEB_ORIGINS = new Set(
@@ -710,6 +710,18 @@ function sendFeedback(){
 // ever goes to the kit's owner. The job's own form can't be pre-filled from
 // a link, so this page holds everything to paste plus the files to attach.
 const { resumePdf, letterPdf } = require('./pdf');
+// The tailored resume as plain text: what the page shows, what an edit is
+// compared against, and what gets copied.
+function resumePlainText(resume) {
+  if (!resume) return '';
+  return [
+    resume.summary,
+    ...(resume.experience || []).map(e => [`${e.company} · ${e.title}${e.dates ? ' · ' + e.dates : ''}`,
+      ...(e.bullets || []).map(b => '• ' + b)].join('\n')),
+    resume.skills?.length ? 'Skills: ' + resume.skills.join(', ') : '',
+  ].filter(Boolean).join('\n\n');
+}
+
 async function sharedKit(req, res) {
   res.setHeader('Cache-Control', 'no-store');
   res.setHeader('X-Robots-Tag', 'noindex');
@@ -777,6 +789,35 @@ app.post('/k/:token/answer', apiLimiter, async (req, res) => {
   const r = await asOwner(found.owner, 'POST', '/interview/context', { question, answer: answer.trim() });
   res.status(r.status === 200 ? 200 : 502).json(r.status === 200 ? { ok: true } : { error: 'Could not save that answer' });
 });
+// The resume, edited by hand. Somebody rewriting their own bullet is telling
+// us how they want to be described, which beats anything we could infer, so
+// the edit is kept and every later rewrite is shown it.
+app.post('/k/:token/resume', apiLimiter, async (req, res) => {
+  const found = await sharedKit(req, res); if (!found) return;
+  const text = String(req.body?.text || '');
+  if (!text.trim() || text.length > 40000) return res.status(400).json({ error: 'Nothing to save' });
+  const kit = found.kit;
+  if (!kit.tailored_resume) return res.status(400).json({ error: 'No resume on this kit' });
+
+  const before = resumePlainText(kit.tailored_resume);
+  if (before.trim() === text.trim()) return res.json({ ok: true, unchanged: true });
+
+  // Line by line, so an edit reads as "this became that" rather than as a
+  // wall of text nobody will look at again.
+  const was = before.split('\n').map(l => l.trim()).filter(Boolean);
+  const now = text.split('\n').map(l => l.trim()).filter(Boolean);
+  const gone = was.filter(l => !now.includes(l));
+  const fresh = now.filter(l => !was.includes(l));
+  const edits = fresh.map((after, i) => ({ before: gone[i] || '', after }));
+  if (gone.length > fresh.length) edits.push(...gone.slice(fresh.length).map(b => ({ before: b, after: '' })));
+
+  kit.tailored_resume.edited_text = text;
+  kit.tailored_resume.edited_at = new Date().toISOString();
+  await db.saveKit({ ...kit, user_email: found.owner });
+  await db.saveResumeEdits(found.owner, kit.id, edits).catch(e => console.error('[resume edits]', e.message));
+  res.json({ ok: true, changes: edits.length });
+});
+
 app.post('/k/:token/rewrite', apiLimiter, async (req, res) => {
   const found = await sharedKit(req, res); if (!found) return;
   const recent = (linkRewrites.get(req.params.token) || []).filter(t => Date.now() - t < 86400000);
@@ -815,7 +856,7 @@ app.get('/k/:token', apiLimiter, async (req, res) => {
   const blanks = (t.qa || []).filter(x => !x.a).map(x => x.q);
   const expires = new Date(found.expires_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
   const resume = kit.tailored_resume;
-  const resumeText = resume ? [resume.summary, ...(resume.experience || []).map(e => [`${e.company} · ${e.title}${e.dates ? ' · ' + e.dates : ''}`, ...(e.bullets || []).map(b => '• ' + b)].join('\n')), resume.skills?.length ? 'Skills: ' + resume.skills.join(', ') : ''].filter(Boolean).join('\n\n') : '';
+  const resumeText = resume ? (resume.edited_text || resumePlainText(resume)) : '';
   const labels = ['', 'Weak', 'Limited', 'Solid', 'Strong', 'Exceptional'];
   const score = resume?.jev_match?.score, was = Number(resume?.previous_match_score);
   const pct = x => Math.round((Number(x) / 5) * 100);
@@ -867,6 +908,10 @@ h2{font-size:12px;letter-spacing:.1em;text-transform:uppercase;margin:30px 0 10p
 .gap-q{font-size:15px;font-weight:600;line-height:1.4;margin-bottom:8px}
 .gap-row{display:flex;gap:8px;align-items:flex-start}
 .gap textarea{flex:1;min-height:72px;background:#0d0d0d;color:#fff;border:1px solid #333;border-radius:10px;padding:10px;font:inherit;font-size:16px;resize:vertical}
+.resume-edit textarea{min-height:340px;line-height:1.55;white-space:pre-wrap}
+.gap-actions{display:flex;gap:8px;align-items:center;margin-top:8px;flex-wrap:wrap}
+.tiny{padding:7px 12px;background:#111;border:1px solid #333;color:#fff;border-radius:8px;font:inherit;font-size:13px;cursor:pointer}
+.tiny:hover{border-color:#666}
 .mic{flex:none;width:44px;height:44px;border-radius:50%;border:0;background:#fff;color:#000;font-size:18px;cursor:pointer}
 .mic.on{background:#ef4444;color:#fff}
 .st{font-size:13px;min-height:18px;margin-top:6px}
@@ -887,7 +932,11 @@ ${block('Why this role', t.why_role)}${block('Cover note', t.cover_note)}${(t.qa
 ${blanks.length ? `<h2>Only you can answer</h2><ul class="left">${blanks.map(q => `<li>${escapeHtml(q)}</li>`).join('')}</ul>` : ''}
 ${resume ? `<h2>Tailored resume</h2>
 ${score ? `<div class="score">Match ${pct(score)}%${Number.isFinite(was) ? `, up from ${pct(was)}%` : ` · ${escapeHtml(labels[Math.round(score)] || 'Reviewed')}`}${resume.evidence_used ? ` · written with ${resume.evidence_used} of your answers` : ''}</div>` : ''}
-${block('Resume', resumeText)}
+<div class="gap resume-edit" id="resume-edit">
+  <div class="gap-q">Resume${resume.edited_text ? ' · you edited this' : ''}</div>
+  <div class="gap-row"><textarea id="resume-text" spellcheck="false">${escapeHtml(resumeText)}</textarea><button class="mic" type="button" aria-label="Talk">🎤</button></div>
+  <div class="gap-actions"><button type="button" class="tiny" id="resume-save">Save my edits</button><button type="button" class="tiny" id="resume-copy">Copy</button><span class="st" id="resume-st"></span></div>
+</div>
 ${gapItems.length ? `<h2>Make it stronger</h2>
 ${gapItems.map((g, i) => `<div class="gap" data-q="${escapeHtml(g.q)}"><div class="gap-q">${escapeHtml(g.q)}</div><div class="gap-row"><textarea id="g${i}" placeholder="Say it or type it. Specifics beat adjectives.">${escapeHtml(g.a)}</textarea><button class="mic" type="button" aria-label="Talk">🎤</button></div><div class="st">${g.a ? 'Saved to your profile' : ''}</div></div>`).join('')}
 <button class="rewrite" id="rewrite">Rewrite resume with my answers · ${CREDIT_COSTS.resume} credits</button><div class="st" id="rewrite-st"></div>` : ''}` : ''}
@@ -942,23 +991,55 @@ function saveAnswer(box) {
     .then(function (r) { if (!r.ok) throw 0; box.setAttribute('data-saved', text); st.textContent = 'Saved to your profile'; })
     .catch(function () { st.textContent = 'Not saved. Tap outside the box to retry.'; });
 }
-[].forEach.call(document.querySelectorAll('.gap'), function (box) {
-  var ta = box.querySelector('textarea'), mic = box.querySelector('.mic'), timer = null, rec = null;
-  box.setAttribute('data-saved', ta.value.trim());
-  ta.addEventListener('input', function () { clearTimeout(timer); timer = setTimeout(function () { saveAnswer(box); }, 900); });
-  ta.addEventListener('blur', function () { clearTimeout(timer); saveAnswer(box); });
+// Talking works on every box on this page, the resume included. One
+// implementation, so a new text field cannot quietly ship without it.
+function wireMic(box, onDone) {
+  var ta = box.querySelector('textarea'), mic = box.querySelector('.mic'), st = box.querySelector('.st'), rec = null;
+  if (!ta || !mic) return;
   mic.addEventListener('click', function () {
     var SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-    if (!SR) { box.querySelector('.st').textContent = 'Talking needs Safari or Chrome.'; return; }
+    if (!SR) { if (st) st.textContent = 'Talking needs Safari or Chrome.'; return; }
     if (rec) { rec.stop(); return; }
     var start = ta.value ? ta.value + ' ' : '';
     rec = new SR(); rec.continuous = true; rec.interimResults = true; rec.lang = 'en-US';
     rec.onresult = function (ev) { var said = ''; for (var i = 0; i < ev.results.length; i++) said += ev.results[i][0].transcript; ta.value = start + said; };
-    rec.onend = function () { rec = null; mic.classList.remove('on'); mic.textContent = '🎤'; saveAnswer(box); };
-    rec.onerror = function () { box.querySelector('.st').textContent = 'Allow the microphone to talk.'; };
+    rec.onend = function () { rec = null; mic.classList.remove('on'); mic.textContent = '🎤'; if (onDone) onDone(); };
+    rec.onerror = function () { if (st) st.textContent = 'Allow the microphone to talk.'; };
     rec.start(); mic.classList.add('on'); mic.textContent = '■';
   });
+}
+
+[].forEach.call(document.querySelectorAll('.gap'), function (box) {
+  if (box.id === 'resume-edit') return; // saves to its own place, below
+  var ta = box.querySelector('textarea'), timer = null;
+  box.setAttribute('data-saved', ta.value.trim());
+  ta.addEventListener('input', function () { clearTimeout(timer); timer = setTimeout(function () { saveAnswer(box); }, 900); });
+  ta.addEventListener('blur', function () { clearTimeout(timer); saveAnswer(box); });
+  wireMic(box, function () { saveAnswer(box); });
 });
+
+// The resume, edited by hand. What changed is recorded, so the next rewrite
+// is shown how this person actually wants to be described.
+var resumeBox = document.getElementById('resume-edit');
+if (resumeBox) {
+  var rta = document.getElementById('resume-text'), rst = document.getElementById('resume-st');
+  var saveResume = function () {
+    var text = rta.value;
+    rst.textContent = 'Saving';
+    fetch(BASE + '/resume', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text: text }) })
+      .then(function (r) { return r.json().then(function (d) { return { ok: r.ok, d: d }; }); })
+      .then(function (x) {
+        if (!x.ok) throw new Error(x.d.error || 'Not saved');
+        rst.textContent = x.d.unchanged ? 'No changes' : x.d.changes + (x.d.changes === 1 ? ' change saved' : ' changes saved') + '. later rewrites follow it.';
+      })
+      .catch(function (e) { rst.textContent = e.message; });
+  };
+  document.getElementById('resume-save').addEventListener('click', saveResume);
+  document.getElementById('resume-copy').addEventListener('click', function () {
+    copyText(rta.value).then(function () { rst.textContent = 'Copied'; }).catch(function () { rst.textContent = 'Press and hold to select'; });
+  });
+  wireMic(resumeBox, null);
+}
 var rw = document.getElementById('rewrite');
 if (rw) rw.addEventListener('click', function () {
   var st = document.getElementById('rewrite-st');
@@ -4464,7 +4545,7 @@ Follow those decisions:
   const prompt = `Rewrite this candidate's resume experience for ${target}.
 
 ORIGINAL RESUME: the primary source of real facts (companies, titles, dates, numbers). Do not invent, merge, or drop any role. Do not invent a number, metric, or outcome that appears in neither the resume nor the additional evidence below:
-${profile.resume_text.slice(0, 6000)}${await evidenceBlock(userEmail)}${await factsBlock(userEmail)}
+${profile.resume_text.slice(0, 6000)}${await evidenceBlock(userEmail)}${await factsBlock(userEmail)}${await editsBlock(userEmail)}
 
 WHY THIS ROLE / WHAT TO EMPHASIZE (from an earlier pass on this same application):
 ${t.why_role || t.headline || 'No additional context: use judgment based on the role title.'}
@@ -4558,6 +4639,17 @@ app.post('/resume-tailor', requireCredits('resume'), async (req, res) => {
 // generated kit it tends to survive into the next. These outrank every other
 // source, including the resume, and a claim they contradict must not be
 // written at all — not softened, not hedged.
+// Lines somebody rewrote by hand. This is the strongest signal we have about
+// how they want to be described, so it goes in above the model's own habits.
+async function editsBlock(userEmail) {
+  if (!userEmail) return '';
+  const rows = await db.getResumeEdits(userEmail, 20).catch(() => []);
+  const real = rows.filter(r => (r.after || '').trim());
+  if (!real.length) return '';
+  return `\n\nHOW THIS CANDIDATE EDITS THEIR OWN RESUME. They rewrote these lines by hand after we wrote them. Match this phrasing, length and level of detail, and do not undo these edits:\n` +
+    real.map(r => r.before ? `- they changed "${r.before}" to "${r.after}"` : `- they added "${r.after}"`).join('\n');
+}
+
 async function factsBlock(userEmail) {
   if (!userEmail) return '';
   const rows = await db.getFacts(userEmail).catch(() => []);
