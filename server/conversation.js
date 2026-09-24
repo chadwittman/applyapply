@@ -208,6 +208,15 @@ module.exports = function conversation({ db, port, signToken, origin, kitLink, r
       const fromLedger = await ledgerMatches(email).catch(() => []);
       rows = fromLedger.filter(j => !written.has(j.url));
     }
+    // The same role reached us from two places, or from one board twenty
+    // times. Offer it once.
+    const byRole = new Set();
+    rows = rows.filter(j => {
+      const key = `${String(j.company || '').trim().toLowerCase()}|${String(j.role || '').trim().toLowerCase()}`;
+      if (byRole.has(key)) return false;
+      byRole.add(key);
+      return true;
+    });
     const sentAlready = new Set((await db.getActivity(email, 'texted').catch(() => [])).map(a => a.url));
     const rank = j => (sentAlready.has(j.url) ? 1 : 0) + (opened.has(j.url) ? 1 : 0);
     return rows

@@ -32,6 +32,22 @@ const anon = await (await fetch(origin + '/listings')).text();
 assert.match(anon, /Sign in.*to see which ones fit you/s);
 console.log('PASS: every listing is browsable, with what we decided about each');
 
+// Boards list one job once per location. That is one job to a reader.
+await db.upsertListings('Himalayas', [
+  { url: 'https://example.com/d1', company: 'Bjak', role: 'Mobile Engineer', location: 'Remote, Malaysia', posted_at: new Date().toISOString() },
+  { url: 'https://example.com/d2', company: 'Bjak', role: 'Mobile Engineer', location: 'Remote, Thailand', posted_at: new Date().toISOString() },
+  { url: 'https://example.com/d3', company: 'bjak', role: 'mobile engineer', location: 'Remote, Vietnam', posted_at: new Date().toISOString() },
+]);
+const grouped = await (await fetch(origin + '/listings', { headers: { authorization: 'Bearer ' + T } })).text();
+const rows = JSON.parse(grouped.match(/var ROWS = (\[[\s\S]*?\]);\n/)[1]);
+const bjak = rows.filter(r => r.c.toLowerCase() === 'bjak');
+assert.equal(bjak.length, 1, 'one job, not three: ' + JSON.stringify(bjak.map(r => r.l)));
+assert.equal(bjak[0].n, 3, 'and it says how many postings it stands for');
+assert.equal(bjak[0].places.length, 3, 'with where they are');
+assert.ok(bjak[0].fs, 'and when we first saw it');
+assert.match(grouped, /postings, since boards list one job once per location/);
+console.log('PASS: one role posted in three places is one job, dated from first sight');
+
 // Signed out it still renders rather than erroring: it is the catalogue.
 assert.equal((await fetch(origin + '/listings')).status, 200);
 await db.pool.end();

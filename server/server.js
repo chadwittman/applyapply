@@ -69,7 +69,7 @@ for (const method of ['get','post','put','patch','delete']) {
     (req, res, next) => { try { Promise.resolve(handler(req,res,next)).catch(next); } catch (e) { next(e); } }));
 }
 const PORT = process.env.PORT || 5000;
-const VERSION = '0.68.1';
+const VERSION = '0.69.0';
 const IS_PRODUCTION = process.env.NODE_ENV === 'production';
 const APP_ORIGIN = process.env.APP_ORIGIN || 'http://localhost:5000';
 const ALLOWED_WEB_ORIGINS = new Set(
@@ -1005,8 +1005,18 @@ const chat = require('./conversation')({ db, port: PORT, origin: APP_ORIGIN.repl
     const matcher = targetMatcher(profile, classifierFor(await titleClasses()));
     if (!matcher.functions.length && !matcher.titles) return [];
     const rows = await db.getListings(ACTIVE_SOURCES.map(x => x.name), 0).catch(() => []);
-    return rows.filter(r => matcher.test(r.role)).slice(0, 10)
-      .map(r => ({ url: r.url, company: r.company, role: r.role, location: r.location }));
+    // One role posted in twenty cities is one role to offer, not twenty.
+    const seen = new Set();
+    const out = [];
+    for (const r of rows) {
+      if (!matcher.test(r.role)) continue;
+      const key = `${String(r.company || '').trim().toLowerCase()}|${String(r.role || '').trim().toLowerCase()}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push({ url: r.url, company: r.company, role: r.role, location: r.location, first_seen: r.first_seen });
+      if (out.length >= 10) break;
+    }
+    return out;
   },
   react: async (email, emoji) => {
     if (!sendblue.configured()) return;
@@ -1032,6 +1042,33 @@ function chatUser(req, res) {
   if (!chatTesters().has(email.toLowerCase())) { res.status(403).json({ error: 'The text line is in private testing.' }); return null; }
   return email;
 }
+// Boards list the same job once per location: bjak posts one role twenty-one
+// times on Himalayas, each with its own URL. That is one job to a reader, so
+// they collapse into one row that remembers when we first saw it and where
+// else it is open.
+function collapse(rows) {
+  const byRole = new Map();
+  for (const r of rows) {
+    const key = `${(r.company || '').trim().toLowerCase()}|${(r.role || '').trim().toLowerCase()}`;
+    const first = byRole.get(key);
+    const seenAt = r.first_seen || r.posted_at;
+    if (!first) {
+      byRole.set(key, { c: r.company || '', r: r.role || '', l: r.location || '', s: r.source, u: r.url,
+        p: r.posted_at || r.first_seen, fs: seenAt, f: r.fits, fn: r.fns, b: r.band, k: r.hasKit, m: r.inPipeline,
+        also: [], places: r.location ? [r.location] : [] });
+      continue;
+    }
+    first.also.push(r.url);
+    if (r.location && !first.places.includes(r.location)) first.places.push(r.location);
+    if (seenAt && (!first.fs || new Date(seenAt) < new Date(first.fs))) first.fs = seenAt;
+    first.f = first.f || r.fits;
+    first.k = first.k || r.hasKit;
+    first.m = first.m || r.inPipeline;
+  }
+  return [...byRole.values()].map(x => ({ ...x, n: x.also.length + 1, also: undefined,
+    places: x.places.slice(0, 4) }));
+}
+
 // Everything in the ledger, and what it would do for this person. A run that
 // says "2,790 pulled, 4 fit" is not a claim anybody should have to take on
 // trust: this is the 2,790, marked with what matched and why.
@@ -1083,7 +1120,7 @@ input:focus,select:focus{border-color:#555}
 <nav class="nav"><a href="/"><b>applyapply</b></a><span><a href="/pipeline">Pipeline</a><a href="/sourcing">Sourcing</a><a href="/setup">Profile</a></span></nav>
 <div class="wrap">
 <h1>Every listing we hold</h1>
-<p class="sub">${seen.length.toLocaleString()} listings across ${Object.keys(bySource).length} sources, refreshed every few hours. ${
+<p class="sub">${collapse(seen).length.toLocaleString()} jobs across ${Object.keys(bySource).length} sources, refreshed every few hours${seen.length !== collapse(seen).length ? ` (${seen.length.toLocaleString()} postings, since boards list one job once per location)` : ''}. ${
   !userEmail ? `<a href="/login" style="text-decoration:underline">Sign in</a> to see which ones fit you.`
   : matcher.functions.length ? `${fitting.toLocaleString()} fit what you are looking for${matcher.derived ? ' (worked out from your saved titles)' : ''}.`
   : `You have not said what you are looking for yet, so nothing is marked as fitting. <a href="/setup#search" style="text-decoration:underline">Tell us</a> and this page marks them.`
@@ -1101,8 +1138,7 @@ input:focus,select:focus{border-color:#555}
 </div>
 <script>
 var FITTING = ${fitting};
-var ROWS = ${scriptJSON(seen.map(r => ({ c: r.company || '', r: r.role || '', l: r.location || '', s: r.source,
-  u: r.url, p: r.posted_at || r.first_seen, f: r.fits, fn: r.fns, b: r.band, k: r.hasKit, m: r.inPipeline })))};
+var ROWS = ${scriptJSON(collapse(seen))};
 function esc(t){return String(t==null?'':t).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
 function when(v){ if(!v) return ''; var d=Math.floor((Date.now()-new Date(v).getTime())/86400000);
   return d<=0?'today':d===1?'yesterday':d<7?d+' days ago':d<14?'last week':Math.floor(d/7)+' weeks ago'; }
@@ -1117,10 +1153,13 @@ function render(){
   });
   document.getElementById('count').textContent=rows.length.toLocaleString()+' of '+ROWS.length.toLocaleString();
   document.getElementById('list').innerHTML=rows.length?rows.slice(0,400).map(function(r){
+    var where = r.n>1 ? (r.places.length>1 ? r.places.slice(0,3).join(', ')+(r.n>3?' +'+(r.n-3)+' more':'') : r.n+' postings') : esc(r.l);
+    var meta = [where, esc(r.s), r.p?'posted '+when(r.p):'', r.fs?'first seen '+when(r.fs):''].filter(Boolean).join(' · ');
     return '<div class="row"><div><div class="co">'+esc(r.c)+'</div><div class="ro">'+esc(r.r)+'</div>'
-      +'<div class="meta">'+[esc(r.l),esc(r.s),when(r.p)].filter(Boolean).join(' · ')+'</div></div>'
+      +'<div class="meta">'+meta+'</div></div>'
       +'<div class="tags">'
       +(r.f?'<span class="tag fit">fits you</span>':'')
+      +(r.n>1?'<span class="tag">'+r.n+' postings</span>':'')
       +(r.fn&&r.fn.length?'<span class="tag">'+esc(r.fn.join(', '))+(r.b?' · '+esc(r.b):'')+'</span>':'<span class="tag">unclassified</span>')
       +(r.k?'<span class="tag kit">kit written</span>':'')
       +(r.m?'<span class="tag">in pipeline</span>':'')
