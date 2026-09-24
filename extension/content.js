@@ -226,6 +226,7 @@ function finishBar(bar) {
 }
 
 const IN_FRAME = window.self !== window.top;
+let frameTopUrl = '';
 
 async function init() {
   if (suppressReinject) return;
@@ -237,7 +238,15 @@ async function init() {
   // In an iframe: skip sidebar, just fill fields + report form questions to parent
   if (IN_FRAME) {
     try {
-      const url = window.top?.location?.href || location.href;
+      // window.top.location throws across origins, which is exactly the case
+      // that matters: an embedded board. The worker knows the tab's URL.
+      let url = location.href;
+      try { url = window.top?.location?.href || url; } catch {}
+      if (url === location.href && chrome?.runtime?.sendMessage) {
+        const top = await new Promise(r => chrome.runtime.sendMessage({ type: 'GET_TOP_URL' }, r)).catch(() => null);
+        if (top?.url) url = top.url;
+      }
+      frameTopUrl = url;
       const res = await serverFetch(`/application?url=${encodeURIComponent(url)}`);
       if (res.ok) currentApp = res.data;
     } catch {}
@@ -256,6 +265,22 @@ async function init() {
       }
     }, 2500);
     observeFields();
+    if (chrome?.runtime?.onMessage) {
+      chrome.runtime.onMessage.addListener((m, _sender, respond) => {
+        if (m?.type !== 'DO_FILL') return;
+        (async () => {
+          if (!currentApp && frameTopUrl) {
+            try { const res = await serverFetch(`/application?url=${encodeURIComponent(frameTopUrl)}`); if (res.ok) currentApp = res.data; } catch {}
+          }
+          let filled = 0;
+          try { filled = deterministicFill(currentApp)?.filled || 0; } catch {}
+          try { filled += await mappedFill(); } catch {}
+          chrome.runtime.sendMessage({ type: 'FRAME_FILLED', filled });
+          respond?.({ filled });
+        })();
+        return true;
+      });
+    }
     return;
   }
 
@@ -779,6 +804,20 @@ function bindEvents() {
       }
       // Anything the rules left empty gets one pass by meaning before the
       // count is reported, so an unfamiliar label is not a blank field.
+      // An embedded board keeps its fields in a cross-origin iframe, so the
+      // top frame has nothing to fill and the click looked like a no-op. Ask
+      // every frame, and count what they did.
+      let inFrames = 0;
+      if (!result?.filled && chrome?.runtime?.sendMessage) {
+        try {
+          if (note) note.textContent = 'Filling the application…';
+          await new Promise(r => chrome.runtime.sendMessage({ type: 'FILL_FRAMES' }, r));
+          await new Promise(r => setTimeout(r, 2600));
+          const tally = await new Promise(r => chrome.runtime.sendMessage({ type: 'GET_FRAME_FILLS' }, r));
+          inFrames = Number(tally?.filled) || 0;
+          if (inFrames) result = { ...(result || { skipped: 0 }), filled: (result?.filled || 0) + inFrames };
+        } catch {}
+      }
       try {
         if (note && unplacedFields().length) note.textContent = 'Placing the fields the rules did not recognise…';
         const mapped = await mappedFill();

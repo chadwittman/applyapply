@@ -55,6 +55,7 @@ let voicePending = null; // { tabId, frameId, question }
 
 // Iframe form questions — keyed by tabId, set by iframe content script, read by main frame
 const iframeQuestionsMap = new Map();
+const frameFills = new Map();
 
 async function ensureOffscreen() {
   try {
@@ -95,6 +96,37 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg.type === 'STORE_IFRAME_QUESTIONS') {
     if (sender.tab?.id) iframeQuestionsMap.set(sender.tab.id, msg.questions);
     return;
+  }
+
+  // A form inside a cross-origin iframe cannot read the page it is embedded
+  // in, so it cannot tell which job it is looking at. The worker can: it is the
+  // only party that sees both.
+  if (msg.type === 'GET_TOP_URL') {
+    sendResponse({ url: sender.tab?.url || '' });
+    return true;
+  }
+
+  // Fill every frame of this tab. The sidebar lives in the top frame, and on an
+  // embedded board (Comparably fronting Greenhouse, say) the top frame holds no
+  // fields at all, so filling only there did visibly nothing.
+  if (msg.type === 'FILL_FRAMES') {
+    const tabId = sender.tab?.id;
+    if (!tabId) { sendResponse({ filled: 0 }); return true; }
+    frameFills.set(tabId, 0);
+    chrome.tabs.sendMessage(tabId, { type: 'DO_FILL' }).catch(() => {});
+    sendResponse({ ok: true });
+    return true;
+  }
+
+  if (msg.type === 'FRAME_FILLED') {
+    const tabId = sender.tab?.id;
+    if (tabId) frameFills.set(tabId, (frameFills.get(tabId) || 0) + (Number(msg.filled) || 0));
+    return;
+  }
+
+  if (msg.type === 'GET_FRAME_FILLS') {
+    sendResponse({ filled: frameFills.get(sender.tab?.id) || 0 });
+    return true;
   }
 
   if (msg.type === 'GET_IFRAME_QUESTIONS') {
