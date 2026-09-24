@@ -54,7 +54,7 @@ try {
   let got = await send(page, 'check this out ' + job1.replace('https://', ''), 'redo the resume');
   assert.equal(got.length, 1, 'One reply, not a wall of messages: ' + JSON.stringify(got));
   assert.equal(got[0].split('\n\n').length, 5, 'Link, contents, gaps and offer in that one message');
-  assert.match(got[0], /^chatco — done\./, 'the card on the link carries company and role, so the text does not repeat them');
+  assert.match(got[0], /^chatco: done\./, 'the card on the link carries company and role, so the text does not repeat them');
   const kitLink = got[0].match(/https?:\/\/\S+\/k\/[A-Za-z0-9_-]{16}/)?.[0];
   assert.match(got[0], /\n\nhttps?:\S+\/k\/[A-Za-z0-9_-]{16}\n\n/, 'the link stands on its own line so it unfurls');
   assert.match(got[0], /resume \(64% match\), cover letter/);
@@ -125,12 +125,14 @@ try {
   console.log('PASS: long voice notes are charged, short ones are free');
 
   got = await send(page, 'matches', "reply 1, 2 or 3");
-  assert.match(got.at(-1), /1\) ChatCo — Head of Product[\s\S]*2\) ChatCo2 — Director of Product/);
+  assert.match(got.at(-1), /1\) ChatCo, Head of Product[\s\S]*2\) ChatCo2, Director of Product/);
   got = await send(page, 'skip 2', 'skipped');
   assert.equal((await db.getJobByUrl(job2, email))?.status, 'skipped');
   got = await send(page, '1', 'tap anything to copy');
   got = await send(page, 'credits', 'credits');
   assert.match(got.at(-1), new RegExp('^' + (await db.getUser(email)).credits + ' credits'));
+  const everythingSent = (await db.getChatMessages(email, 0)).filter(m => m.direction === 'out').map(m => m.body).join('\n');
+  assert.ok(!everythingSent.includes('\u2014'), 'no em dashes in anything we send');
   console.log('PASS: matches, pick, skip and credits');
 
 

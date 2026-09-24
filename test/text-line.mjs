@@ -154,4 +154,17 @@ assert.equal(sendblue.readReaction({ content: 'send me the kit' }), null, 'ordin
 assert.equal(sendblue.parseInbound({ from_number: MINE, content: 'hi', message_handle: 'H-1' }).handle, 'H-1');
 console.log('PASS: tapbacks are read as instructions, text is not');
 
+// A text that is not a command is read for what it asks, and acting on it must
+// not put words in the person's mouth.
+if (process.env.TYPESAFE_API_KEY) {
+  const mark = (await db.getChatMessages(OWNER, 0)).length;
+  await hook({ from_number: '+15125550444', content: 'how many credits do i have' });
+  await new Promise(r => setTimeout(r, 2500));
+  const after = (await db.getChatMessages(OWNER, 0)).slice(mark);
+  assert.equal(after.filter(m => m.direction === 'in').length, 1, 'one inbound, the one they sent');
+  assert.ok(!after.some(m => m.direction === 'in' && m.body === 'credits'), 'no command they never typed');
+  assert.ok(after.some(m => m.direction === 'out' && /credits/.test(m.body)), 'and it answered the question: ' + JSON.stringify(after.map(m => m.body)));
+  console.log('PASS: plain english is understood without rewriting their thread');
+}
+
 await db.pool.end();

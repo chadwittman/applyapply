@@ -8,7 +8,7 @@
 // written while making them look like one document.
 const MONTHS = ['january', 'february', 'march', 'april', 'may', 'june', 'july', 'august', 'september', 'october', 'november', 'december'];
 const SHORT = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-const DASH = '–'; // en dash, the typographic one for ranges
+const DASH = '-';
 
 const PRESENT = /^(present|current(ly)?|now|today|ongoing|to date)$/i;
 
