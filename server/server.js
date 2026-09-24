@@ -18,6 +18,7 @@ async function pdfParse(buffer) {
 const jwt = require('jsonwebtoken');
 const crypto = require('crypto');
 const rateLimit = require('express-rate-limit');
+const { ipKeyGenerator } = require('express-rate-limit');
 const { zipDirectory } = require('./zip');
 const { getProfileByUserEmail, setProfile, getUser, getOrCreateUser, addUserCredits, deductUserCredits, createMagicLink, getMagicLink, useMagicLink, PROFILE_FIELDS: DB_PROFILE_FIELDS } = require('./db');
 const db = require('./db');
@@ -30,6 +31,10 @@ const { FUNCTION_NAMES, BANDS, targetPreferences } = require('./roles');
 const { classifierFor } = require('./title-class');
 const card = require('./card');
 const sendblue = require('./sendblue');
+const { targetMatcher } = require('./roles');
+// The handle of the last message each person sent, so a reply can be a tapback
+// on it rather than another message in the thread.
+const lastInboundHandle = new Map();
 const { normalizeResumeDates } = require('./resume-dates');
 const { evaluateResumeMatch } = require('./typesafe');
 const scriptJSON = value => JSON.stringify(value).replace(/</g, '\\u003c');
@@ -64,7 +69,7 @@ for (const method of ['get','post','put','patch','delete']) {
     (req, res, next) => { try { Promise.resolve(handler(req,res,next)).catch(next); } catch (e) { next(e); } }));
 }
 const PORT = process.env.PORT || 5000;
-const VERSION = '0.60.0';
+const VERSION = '0.61.0';
 const IS_PRODUCTION = process.env.NODE_ENV === 'production';
 const APP_ORIGIN = process.env.APP_ORIGIN || 'http://localhost:5000';
 const ALLOWED_WEB_ORIGINS = new Set(
@@ -942,6 +947,25 @@ const chat = require('./conversation')({ db, port: PORT, origin: APP_ORIGIN.repl
   signToken: email => jwt.sign({ email }, loadJwtSecret(), { expiresIn: '15m' }),
   // Every reply also goes to any number this account has proved it owns. The
   // thread on /imessage and the thread on a phone are the same conversation.
+  // Roles that fit, read straight from the shared ledger: no search, no
+  // credits, so a first text can answer with real jobs.
+  ledgerMatches: async email => {
+    const profile = await db.getProfileByUserEmail(email).catch(() => null);
+    if (!profile) return [];
+    const matcher = targetMatcher(profile, classifierFor(await titleClasses()));
+    if (!matcher.functions.length && !matcher.titles) return [];
+    const rows = await db.getListings(ACTIVE_SOURCES.map(x => x.name), 0).catch(() => []);
+    return rows.filter(r => matcher.test(r.role)).slice(0, 10)
+      .map(r => ({ url: r.url, company: r.company, role: r.role, location: r.location }));
+  },
+  react: async (email, emoji) => {
+    if (!sendblue.configured()) return;
+    const handle = lastInboundHandle.get(email);
+    if (!handle) return;
+    for (const row of await db.phonesForUser(email).catch(() => [])) {
+      if (!row.stopped) await sendblue.react(row.phone, handle, emoji).catch(e => console.error('[react]', e.message));
+    }
+  },
   deliver: async (email, body) => {
     if (!sendblue.configured()) return;
     for (const row of await db.phonesForUser(email).catch(() => [])) {
@@ -968,8 +992,15 @@ app.post('/sendblue/webhook', textLineLimiter, express.json({ limit: '256kb' }),
   // acknowledges first and works afterwards.
   res.status(200).json({ ok: true });
   try {
-    const { from, content, isOutbound } = sendblue.parseInbound(req.body);
-    if (isOutbound || !from || !content) return;
+    const { from, content, handle, isOutbound, reaction } = sendblue.parseInbound(req.body);
+    if (isOutbound) return;
+    if (!from || (!content && !reaction)) {
+      // The shape Sendblue sends for anything we do not read yet. Logged with
+      // the keys only, so the next unknown kind is diagnosable and no message
+      // text lands in a log.
+      console.log('[sendblue] unread payload', JSON.stringify(Object.keys(req.body || {})).slice(0, 200));
+      return;
+    }
 
     // STOP and START act on the link whatever its state — read through
     // accountForPhone, a stopped number looks like a stranger and could never
@@ -998,8 +1029,9 @@ app.post('/sendblue/webhook', textLineLimiter, express.json({ limit: '256kb' }),
       return void await sendblue.send(from, `Tap to connect this number to your applyapply account:\n${link}\n\nIt expires in 30 minutes. Reply STOP to stop.`).catch(() => {});
     }
 
-    await db.addChatMessage(email, 'in', content, { channel: 'sms' }).catch(() => {});
-    await chat.handle(email, content);
+    if (handle) lastInboundHandle.set(email, handle);
+    await db.addChatMessage(email, 'in', content || (reaction?.emoji || reaction?.kind || ''), { channel: 'sms' }).catch(() => {});
+    await chat.handle(email, content, { reaction });
   } catch (e) {
     console.error('[sendblue webhook]', e.message);
   }
@@ -1012,12 +1044,30 @@ app.get('/text', apiLimiter, (req, res) => {
     title: 'The applyapply text line',
     desc: 'Text a job link and get the application kit back as a message.',
     path: '/text',
-    body: `<h1>Text your job links</h1>
+    body: `<h1>text your job links</h1>
 ${line
-  ? `<p>Text <b>${escapeHtml(line)}</b> a job posting link. The kit comes back as a message: a tailored resume, a cover note, and answers to the form's questions, on a page you can copy from.</p>
-<p>The first time you text, you will get a link back. Open it while signed in and that number is connected to your account. Until then the number is nobody, so a message from it cannot spend your credits.</p>`
-  : '<p>The text line is not switched on yet.</p>'}
-<p>Reply STOP at any time to stop messages, START to turn them back on, and HELP for what the line can do. You can disconnect a number from <a href="/setup#account" style="color:#fff;text-decoration:underline">Profile and settings</a>.</p>`,
+  ? `<p>text <b>${escapeHtml(line)}</b> a job posting link and the application comes back as a message: a resume tailored to that posting, a cover letter, and answers to the form's own questions.</p>
+<p>the first time you text, you get a link back. open it while signed in and that number is connected to your account — or add your number from <a href="/setup#account" style="color:#fff;text-decoration:underline">profile and settings</a> and confirm the code we text you. until a number is connected it is nobody, so a message from it cannot spend your credits.</p>`
+  : '<p>the text line is not switched on yet.</p>'}
+<h2 style="font-size:17px;margin:32px 0 10px">what you can text</h2>
+<table style="border-collapse:collapse;width:100%;font-size:15px">
+<tbody>
+${[
+  ['a job link', 'the whole application comes back: resume, cover letter, the form\'s own questions'],
+  ['matches', 'the roles that fit you right now'],
+  ['1, 2 or 3', 'write the application for that one'],
+  ['👍', 'a thumb on my last message means yes — no typing'],
+  ['a voice note', 'answer a question by talking; the first two minutes a day are free'],
+  ['rewrite', 'redo the resume using the answers you have given me'],
+  ['remember …', 'a correction i apply to everything i write about you'],
+  ['skip 2 · applied 1', 'update a role in your pipeline'],
+  ['search', 'go and look for new roles now'],
+  ['status · credits · help', 'where things stand'],
+].map(([cmd, what]) => `<tr><th scope="row" style="text-align:left;vertical-align:top;padding:10px 14px 10px 0;border-bottom:1px solid #1a1a1a;width:190px;font-weight:700">${escapeHtml(cmd)}</th><td style="vertical-align:top;padding:10px 0;border-bottom:1px solid #1a1a1a">${escapeHtml(what)}</td></tr>`).join('\n')}
+</tbody>
+</table>
+<p style="margin-top:22px">everything arrives as a link you can tap: the application opens on a page where every line copies with one tap, with the resume and cover letter as PDFs. you never have to open a laptop.</p>
+<p>reply STOP at any time to stop messages, START to turn them back on, and HELP for what the line can do. you can disconnect a number from <a href="/setup#account" style="color:#fff;text-decoration:underline">profile and settings</a>.</p>`,
   });
 });
 
@@ -1060,8 +1110,8 @@ app.post('/text/connect', apiLimiter, async (req, res) => {
   const phone = await db.spendPhoneClaim(req.body?.code);
   if (!phone) return res.status(400).json({ error: 'That link has expired. Text the line again for a fresh one.' });
   await db.linkPhone(phone, email);
-  await sendblue.send(phone, 'Connected. Send me a job link and I will write your application kit.').catch(() => {});
   res.json({ ok: true, phone });
+  chat.welcome(email).catch(e => console.error('[welcome]', e.message));
 });
 
 // Verify a number by holding it, not by proving an email. The person types
@@ -1069,7 +1119,7 @@ app.post('/text/connect', apiLimiter, async (req, res) => {
 // limiters: one on how often an account can ask, one on the number itself, so
 // this cannot be used to text somebody repeatedly.
 const codeLimiter = rateLimit({ windowMs: 10 * 60_000, max: 5, standardHeaders: true, legacyHeaders: false,
-  keyGenerator: req => reqUserEmail(req) || req.ip });
+  keyGenerator: req => reqUserEmail(req) || ipKeyGenerator(req.ip) });
 
 app.post('/text/verify', codeLimiter, async (req, res) => {
   const email = reqUserEmail(req);
@@ -1102,6 +1152,7 @@ app.post('/text/verify/confirm', codeLimiter, async (req, res) => {
   if (check.user_email !== email) return res.status(400).json({ error: 'That code was sent for a different account.' });
   await db.linkPhone(phone, email);
   res.json({ ok: true, phone });
+  chat.welcome(email).catch(e => console.error('[welcome]', e.message));
 });
 
 app.get('/text/numbers', async (req, res) => {

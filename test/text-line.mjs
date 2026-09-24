@@ -25,7 +25,8 @@ for (const bad of ['', 'hello', '555-0123', null, '+0123']) assert.equal(sendblu
 
 // Sendblue's field names have moved around; the ones that mean the same thing
 // are all read, and our own outbound messages are not treated as inbound.
-assert.deepEqual(sendblue.parseInbound({ from_number: '(512) 555-0123', content: ' hi ' }), { from: MINE, content: 'hi', media: null, isOutbound: false });
+assert.deepEqual(sendblue.parseInbound({ from_number: '(512) 555-0123', content: ' hi ' }),
+  { from: MINE, content: 'hi', media: null, handle: null, isOutbound: false, reaction: null });
 assert.equal(sendblue.parseInbound({ number: MINE, message: 'hi' }).from, MINE);
 assert.equal(sendblue.parseInbound({ from_number: MINE, content: 'hi', is_outbound: true }).isOutbound, true);
 
@@ -127,5 +128,30 @@ const good = await db.createPhoneCode(CODE_PHONE, OWNER);
 assert.equal((await confirm('(512) 555-0777', good, OWNER)).status, 200, 'and reads the number however it is typed');
 assert.equal(await db.accountForPhone(CODE_PHONE), OWNER);
 console.log('PASS: a number is verified by holding it, with the account proved separately');
+
+// ── Voice and first contact ──────────────────────────────────────────────────
+// Nobody wants to be asked for homework by something they just connected, so
+// the first message carries roles rather than instructions.
+const { getChatMessages } = db;
+await db.linkPhone('+15125550444', OWNER);
+const beforeHi = (await getChatMessages(OWNER, 0)).length;
+await hook({ from_number: '+15125550444', content: 'hello' });
+await new Promise(r => setTimeout(r, 1200));
+const greeting = (await getChatMessages(OWNER, 0)).slice(beforeHi).find(m => m.direction === 'out');
+assert.ok(greeting, 'a hello is answered');
+assert.match(greeting.body, /applyapply/);
+assert.ok(!/^Send me a job link/i.test(greeting.body), 'and does not open by asking for a link');
+// Lower case, and short enough to read on a lock screen.
+const letters = greeting.body.replace(/[^a-z]/gi, '');
+const caps = letters.replace(/[^A-Z]/g, '').length;
+assert.ok(caps / letters.length < 0.05, `the voice is lower case (${caps} capitals in ${letters.length})`);
+console.log('PASS: a greeting brings roles, in applyapply\'s voice');
+
+// A tapback is an instruction. 👍 on an offer is yes, 👎 is not now.
+assert.equal(sendblue.readReaction({ content: '👍' }).kind, 'emoji');
+assert.equal(sendblue.readReaction({ content: 'Liked "your kit is ready"' }).kind, 'like');
+assert.equal(sendblue.readReaction({ content: 'send me the kit' }), null, 'ordinary text is not a reaction');
+assert.equal(sendblue.parseInbound({ from_number: MINE, content: 'hi', message_handle: 'H-1' }).handle, 'H-1');
+console.log('PASS: tapbacks are read as instructions, text is not');
 
 await db.pool.end();

@@ -51,16 +51,19 @@ try {
   await page.waitForSelector('#bar:not([hidden])');
   await page.waitForTimeout(7000); // several polls on an empty conversation
   assert.equal((await bubbles(page)).length, 1, 'The greeting shows once, not on every poll');
-  let got = await send(page, 'check this out ' + job1.replace('https://', ''), 'Reply yes');
+  let got = await send(page, 'check this out ' + job1.replace('https://', ''), 'redo the resume');
   assert.equal(got.length, 1, 'One reply, not a wall of messages: ' + JSON.stringify(got));
   assert.equal(got[0].split('\n\n').length, 5, 'Link, contents, gaps and offer in that one message');
-  assert.match(got[0], /ChatCo, Head of Product \(9\/10 match\)/);
+  assert.match(got[0], /^chatco — done\./, 'the card on the link carries company and role, so the text does not repeat them');
   const kitLink = got[0].match(/https?:\/\/\S+\/k\/[A-Za-z0-9_-]{16}/)?.[0];
-  assert.match(got[0], /Your kit: https?:\S+\/k\/[A-Za-z0-9_-]{16}/);
-  assert.match(got[0], /tailored resume \(64% match\) and cover letter as PDFs/);
+  assert.match(got[0], /\n\nhttps?:\S+\/k\/[A-Za-z0-9_-]{16}\n\n/, 'the link stands on its own line so it unfurls');
+  assert.match(got[0], /resume \(64% match\), cover letter/);
   // The offer names the gaps: never "2 things" without saying which.
-  assert.match(got[0], /can't show 2 things this posting asks for:\n• Built a consumer product\n• Shipped a browser extension/);
-  assert.match(got[0], /Reply yes and I'll ask about each, one at a time, then rewrite the resume with your answers \(8 credits\)/);
+  assert.match(got[0], /can't show 2 things it asks for:\n• Built a consumer product\n• Shipped a browser extension/);
+  assert.match(got[0], /👍 or "yes" and i'll ask, one at a time, then redo the resume \(8 credits\)/);
+  // The voice: lower case, and no sentence the eye has to work through.
+  const caps = got[0].replace(/https?:\/\/\S+/g, '').replace(/[^A-Z]/g, '').length;
+  assert.ok(caps <= 2, 'the reply is lower case, apart from anything the posting itself capitalises: ' + caps);
   console.log('PASS: a job link comes back as one reply with the kit link and the resume offer');
   // The kit link opens on a phone that is not signed in, with files to attach.
   assert.ok(kitLink, 'Kit reply carries a /k/ link');
@@ -101,13 +104,13 @@ try {
   got = await send(page, 'Built applyapply, in the Chrome Web Store.', 'answers|rewrite');
   const saved = await db.getEvidence(email, { answeredOnly: true });
   assert.ok(saved.some(r => /200k MAU/.test(r.answer)) && saved.some(r => /Chrome Web Store/.test(r.answer)), 'Both answers saved');
-  assert.match(got.at(-1), /Got 2 answers\.|couldn't rewrite the resume/, 'The last answer starts the rewrite: ' + JSON.stringify(got));
+  assert.match(got.at(-1), /got 2 answers\.|couldn't rewrite it/, 'The last answer starts the rewrite: ' + JSON.stringify(got));
   console.log('PASS: one question per text, each answered on its own, then the rewrite');
 
   // A voice note (transcribed in the browser on this test line) arrives as text marked as voice.
   await page.evaluate(() => fetch('/imessage/send', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + localStorage.getItem('aa_session') }, body: JSON.stringify({ text: 'status', voice: true, seconds: 20 }) }));
   await page.waitForFunction(() => [...document.querySelectorAll('.b')].some(b => /voice note/.test(b.textContent) && /status/.test(b.textContent)), null, { timeout: 10000 });
-  await page.waitForFunction(() => /No search running|A search is running/.test(document.querySelector('.b:last-of-type')?.textContent || [...document.querySelectorAll('.b')].at(-1).textContent), null, { timeout: 10000 });
+  await page.waitForFunction(() => /not searching|searching now/.test(document.querySelector('.b:last-of-type')?.textContent || [...document.querySelectorAll('.b')].at(-1).textContent), null, { timeout: 10000 });
   console.log('PASS: voice notes are marked and handled like texts');
 
   // Short notes are free; a long one costs a credit per extra minute.
@@ -116,18 +119,18 @@ try {
   await page.waitForTimeout(1500);
   assert.equal((await db.getUser(email)).credits, before, 'Under two minutes is free');
   await page.evaluate(() => fetch('/imessage/send', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + localStorage.getItem('aa_session') }, body: JSON.stringify({ text: 'credits', voice: true, seconds: 260 }) }));
-  await page.waitForFunction(n => [...document.querySelectorAll('.b')].some(b => b.textContent.includes('You have ' + n + ' credits')), before - 3, { timeout: 10000 });
+  await page.waitForFunction(n => [...document.querySelectorAll('.b')].some(b => b.textContent.includes(n + ' credits')), before - 3, { timeout: 10000 });
   const ledger = await db.pool.query("SELECT amount FROM credit_ledger WHERE user_email=$1 AND kind='voice_note'", [email]);
   assert.deepEqual(ledger.rows.map(r => r.amount), [-3], 'Charged per started minute past two');
   console.log('PASS: long voice notes are charged, short ones are free');
 
-  got = await send(page, 'matches', 'Reply 1, 2 or 3');
-  assert.match(got.at(-1), /1\) ChatCo, Head of Product[\s\S]*2\) ChatCo2, Director of Product/);
-  got = await send(page, 'skip 2', 'Skipped');
+  got = await send(page, 'matches', "reply 1, 2 or 3");
+  assert.match(got.at(-1), /1\) ChatCo — Head of Product[\s\S]*2\) ChatCo2 — Director of Product/);
+  got = await send(page, 'skip 2', 'skipped');
   assert.equal((await db.getJobByUrl(job2, email))?.status, 'skipped');
-  got = await send(page, '1', 'Your kit:');
+  got = await send(page, '1', 'tap anything to copy');
   got = await send(page, 'credits', 'credits');
-  assert.match(got.at(-1), new RegExp('You have ' + (await db.getUser(email)).credits + ' credits'));
+  assert.match(got.at(-1), new RegExp('^' + (await db.getUser(email)).credits + ' credits'));
   console.log('PASS: matches, pick, skip and credits');
 
 

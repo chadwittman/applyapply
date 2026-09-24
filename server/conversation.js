@@ -7,18 +7,19 @@
 // as they do on the site and in the extension.
 const http = require('http');
 
+// applyapply talks in lower case and says the least it can. A text is read in
+// two seconds on a lock screen, so anything that is not the answer is noise.
 const HELP = [
-  'Send me a job link and I\'ll write your application kit.',
-  'Or text:',
-  '• matches: your best new roles',
-  '• 1, 2 or 3: write the kit for that match',
-  '• search: look for new roles now',
-  '• skip 2 / applied 1: update a match',
-  '• rewrite: rewrite the resume for your last kit with your answers',
-  '• remember <fact>: a correction every future application is written against',
-  '• corrections: what I have on record (forget 2 removes one)',
-  '• redo: write the last kit again from scratch',
-  '• status · credits · help',
+  'send a job link, i write the application.',
+  '',
+  'matches — roles that fit you',
+  '1 2 3 — write that one',
+  'skip 2 · applied 1 — update it',
+  'rewrite — redo the resume with your answers',
+  'remember <fact> — a correction i apply everywhere',
+  'search · status · credits · corrections',
+  '',
+  '👍 a question and i take it as yes.',
 ].join('\n');
 
 // A job link anywhere in the message, with or without https://.
@@ -33,7 +34,7 @@ function findJobLink(text) {
 // are being asked before they answer.
 const listGaps = gaps => gaps.map(g => '• ' + String(g).replace(/\s+/g, ' ').trim()).join('\n');
 
-module.exports = function conversation({ db, port, signToken, origin, kitLink, resumeCost = 8, polish = null, deliver = null }) {
+module.exports = function conversation({ db, port, signToken, origin, kitLink, resumeCost = 8, polish = null, deliver = null, ledgerMatches = null, react = null }) {
   const typing = new Map(); // email -> since (ms); the test page shows dots
 
   function api(email, method, path, body) {
@@ -76,9 +77,9 @@ module.exports = function conversation({ db, port, signToken, origin, kitLink, r
   async function writeKit(email, url, { force = false } = {}) {
     return withTyping(email, async () => {
       const r = await api(email, 'POST', '/generate', { url, force });
-      if (r.status === 402) return say(email, `You're out of credits. Top up here: ${origin}/buy`);
+      if (r.status === 402) return say(email, `out of credits. top up: ${origin}/buy`);
       if (r.status === 422 && r.data?.error) return say(email, r.data.error);
-      if (r.status !== 200 || !r.data?.tailored) return say(email, 'I couldn\'t write a kit for that link. Check it opens a job posting, then send it again.');
+      if (r.status !== 200 || !r.data?.tailored) return say(email, 'couldn\'t read that one. check the link opens a job posting and send it again.');
       const kit = r.data, t = kit.tailored;
       // One text: the link to everything, and the offer to tune the resume.
       // The kit page holds the answers, the PDFs and the copy buttons.
@@ -87,11 +88,13 @@ module.exports = function conversation({ db, port, signToken, origin, kitLink, r
       const gaps = kit.tailored_resume?.coverage?.gaps || [];
       const score = kit.tailored_resume?.jev_match?.score;
       const answers = (t.qa || []).filter(x => x.a).length;
+      // The card on the link already shows the company, the role and the
+      // match, so the message does not repeat them.
       const parts = [
-        `${kit.company || 'This role'}, ${kit.role || ''}${kit.fit_score ? ` (${kit.fit_score}/10 match)` : ''}`,
-        `Your kit: ${link}`,
-        `Inside: your tailored resume${score ? ` (${Math.round((Number(score) / 5) * 100)}% match)` : ''} and cover letter as PDFs, ${answers ? `${answers} answered question${answers === 1 ? '' : 's'}` : 'your details'}, everything one tap to copy.`,
-        gaps.length ? `Your resume can't show ${gaps.length === 1 ? 'one thing' : `${gaps.length} things`} this posting asks for:\n${listGaps(gaps)}\n\nReply yes and I'll ask ${gaps.length === 1 ? 'about it' : 'about each'}, one at a time, then rewrite the resume with your answers (${resumeCost} credits).` : null,
+        `${(kit.company || 'this role').toLowerCase()} — done.`,
+        link,
+        `resume${score ? ` (${Math.round((Number(score) / 5) * 100)}% match)` : ''}, cover letter, ${answers ? `${answers} answer${answers === 1 ? '' : 's'}` : 'your details'}. tap anything to copy.`,
+        gaps.length ? `can't show ${gaps.length === 1 ? 'one thing' : `${gaps.length} things`} it asks for:\n${listGaps(gaps)}\n\n👍 or "yes" and i'll ask, one at a time, then redo the resume (${resumeCost} credits).` : null,
       ].filter(Boolean);
       await say(email, parts.join('\n\n'), { kind: gaps.length ? 'resume_offer' : 'kit', url: kit.url, kit_id: kit.id, link, gaps });
     });
@@ -103,33 +106,53 @@ module.exports = function conversation({ db, port, signToken, origin, kitLink, r
     const open = meta.open || meta.gaps;
     const [question, ...rest] = open;
     const total = meta.gaps.length, answered = meta.answered || 0;
-    await say(email, `${total - open.length + 1} of ${total}: ${question}\nReply with what you've done there. A voice note works too. Or "skip".`,
+    await say(email, `${total - open.length + 1} of ${total}: ${question}\nyour words, or a voice note. "skip" to pass.`,
       { ...meta, kind: 'gap_question', question, open: rest, answered });
   }
 
   async function rewriteResume(email, meta, note) {
     return withTyping(email, async () => {
       const r = await api(email, 'POST', '/resume-tailor', { appId: meta.kit_id });
-      if (r.status === 402) return say(email, `You're out of credits, so I couldn't rewrite it. Top up here: ${origin}/buy`);
-      if (r.status !== 200) return say(email, 'I couldn\'t rewrite the resume. Your answers are saved; try "rewrite" again in a moment.');
+      if (r.status === 402) return say(email, `out of credits, so i couldn't rewrite it. top up: ${origin}/buy`);
+      if (r.status !== 200) return say(email, 'couldn\'t rewrite it. your answers are saved — try "rewrite" again in a moment.');
       const pct = x => Math.round((Number(x) / 5) * 100);
       const score = r.data.jev_match?.score, was = Number(r.data.previous_match_score);
       const used = Number(r.data.evidence_used) || 0;
       const gaps = r.data.coverage?.gaps || [];
       const move = score && Number.isFinite(was)
-        ? pct(score) > pct(was) ? `Match ${pct(score)}%, up from ${pct(was)}%.` : `Match ${pct(score)}%, about the same as before.`
-        : score ? `Match ${pct(score)}%.` : '';
-      await say(email, [note, `Your resume is rewritten${used ? ` using ${used} of your answers` : ''}. ${move}`.trim(), meta.link || `${origin}/${meta.url}`,
-        gaps.length ? `Your answers are saved and in the resume. ${gaps.length === 1 ? 'One more thing' : gaps.length + ' more things'} the posting asks for that it still can't show:\n${listGaps(gaps)}\n\nReply yes to answer ${gaps.length === 1 ? 'it' : 'them'} too.` : null].filter(Boolean).join('\n\n'),
+        ? pct(score) > pct(was) ? `match ${pct(score)}%, up from ${pct(was)}%.` : `match ${pct(score)}%, about the same.`
+        : score ? `match ${pct(score)}%.` : '';
+      await say(email, [note, `resume redone${used ? ` with ${used} of your answers` : ''}. ${move}`.trim(), meta.link || `${origin}/${meta.url}`,
+        gaps.length ? `still can't show ${gaps.length === 1 ? 'one thing' : gaps.length + ' things'} the posting asks for:\n${listGaps(gaps)}\n\n👍 or "yes" and i'll ask.` : null].filter(Boolean).join('\n\n'),
       { kind: gaps.length ? 'resume_offer' : 'kit', kit_id: meta.kit_id, url: meta.url, link: meta.link, gaps });
     });
   }
 
+  // Their pipeline first, then the shared ledger. Reading the ledger costs
+  // nothing and runs no search, so a new person gets real roles in their first
+  // reply instead of being asked to go and find one.
+  async function bestThree(email) {
+    const mine = (await db.getJobs('new', 50, email).catch(() => []))
+      .sort((a, b) => (a.tier ?? 9) - (b.tier ?? 9) || (b.fit_score ?? 0) - (a.fit_score ?? 0));
+    if (mine.length) return mine.slice(0, 3);
+    return ledgerMatches ? (await ledgerMatches(email).catch(() => [])).slice(0, 3) : [];
+  }
+
+  // First contact. Nobody wants to be asked for homework by a product they
+  // just connected, so this leads with what it found.
+  async function welcome(email) {
+    const jobs = await bestThree(email);
+    if (!jobs.length) {
+      return say(email, 'i\'m applyapply. send a job link and i\'ll write the application — resume, cover letter, the form\'s own questions.\n\nor text "search" and i\'ll go find roles that fit you.');
+    }
+    return say(email, `i\'m applyapply. i write your job applications.\n\n${jobs.length} that fit you right now:\n${jobs.map((j, i) => `${i + 1}) ${j.company} — ${j.role}`).join('\n')}\n\nreply 1, 2 or 3 and i\'ll write it. or send any job link.`,
+      { kind: 'matches', jobs: jobs.map(j => ({ url: j.url, company: j.company, role: j.role })) });
+  }
+
   async function matches(email) {
-    const jobs = (await db.getJobs('new', 50, email))
-      .sort((a, b) => (a.tier ?? 9) - (b.tier ?? 9) || (b.fit_score ?? 0) - (a.fit_score ?? 0)).slice(0, 3);
-    if (!jobs.length) return say(email, 'No new matches right now. Text "search" to look for new roles.');
-    await say(email, `Your best new roles:\n${jobs.map((j, i) => `${i + 1}) ${j.company}, ${j.role}${j.location ? ` (${j.location})` : ''}`).join('\n')}\nReply 1, 2 or 3 to write the kit, or "skip 2".`,
+    const jobs = await bestThree(email);
+    if (!jobs.length) return say(email, 'nothing new that fits right now. text "search" and i\'ll go look.');
+    await say(email, `${jobs.length} that fit you:\n${jobs.map((j, i) => `${i + 1}) ${j.company} — ${j.role}`).join('\n')}\n\nreply 1, 2 or 3 and i'll write it.`,
       { kind: 'matches', jobs: jobs.map(j => ({ url: j.url, company: j.company, role: j.role })) });
   }
 
@@ -145,7 +168,8 @@ module.exports = function conversation({ db, port, signToken, origin, kitLink, r
   }
 
   // voice: the message was a voice note, already transcribed.
-  async function handleOne(email, text, { voice = false } = {}) {
+  async function handleOne(email, text, options = {}) {
+    const { voice = false } = options;
     const message = String(text || '').trim();
     await db.addChatMessage(email, 'in', message, voice ? { voice: true } : null);
     const lower = message.toLowerCase();
@@ -153,6 +177,26 @@ module.exports = function conversation({ db, port, signToken, origin, kitLink, r
     // What we last asked decides how a reply is read: "yes" to the resume
     // offer starts the questions; anything else after a question is its answer.
     const prompt = await db.lastChatPrompt(email, ['resume_offer', 'gap_question']);
+    // A thumb on the last message is an answer to it: people reply to a text
+    // by reacting to it far more often than by typing the word.
+    const tap = options.reaction;
+    if (tap) {
+      const yes = ['like', 'love', 'emphasize', 'laugh'].includes(tap.kind) || /^(👍|❤️|🔥|✅|🙌|💯)/u.test(tap.emoji || '');
+      const no = tap.kind === 'dislike' || /^(👎|🙅|❌)/u.test(tap.emoji || '');
+      if (prompt?.meta?.kind === 'resume_offer' && !prompt.meta.done && (yes || no)) {
+        if (!await db.claimChatPrompt(prompt.id)) return;
+        if (no) return say(email, 'all good. text "rewrite" whenever you want the resume redone.');
+        return askGap(email, { ...prompt.meta, open: prompt.meta.gaps, answered: 0 });
+      }
+      if (prompt?.meta?.kind === 'gap_question' && !prompt.meta.done && no) {
+        if (!await db.claimChatPrompt(prompt.id)) return;
+        const meta = prompt.meta;
+        if (meta.open.length) return askGap(email, { ...meta, answered: meta.answered || 0 });
+        return say(email, 'no problem, the kit is ready. reply yes anytime to tune the resume.');
+      }
+      // Anything else is applause, not an instruction.
+      if (!tap.text || /^\p{Extended_Pictographic}/u.test(tap.text)) return;
+    }
     const link = findJobLink(message);
     const command = /^(help|\?|matches|jobs|new|search|status|credits|rewrite|stop|skip \d|applied \d|remember\b|correction\b|corrections\b|forget \d|\d$)/.test(lower);
     if (prompt?.meta?.kind === 'resume_offer' && !prompt.meta.done && /^(y|yes|yeah|yep|sure|ok|okay|go|let'?s go)\b/.test(lower)) {
@@ -161,7 +205,7 @@ module.exports = function conversation({ db, port, signToken, origin, kitLink, r
     }
     if (prompt?.meta?.kind === 'resume_offer' && !prompt.meta.done && /^(n|no|nope|nah|not now|later)\b/.test(lower)) {
       if (!await db.claimChatPrompt(prompt.id)) return;
-      return say(email, 'No problem. Your kit is ready as it is. Text "rewrite" anytime to redo the resume.');
+      return say(email, 'all good. text "rewrite" whenever you want the resume redone.');
     }
     if (prompt?.meta?.kind === 'gap_question' && !prompt.meta.done && !link && !command) {
       const meta = prompt.meta;
@@ -181,13 +225,13 @@ module.exports = function conversation({ db, port, signToken, origin, kitLink, r
         if (saved.status === 200) answered++;
       }
       if (!stop && meta.open.length) return askGap(email, { ...meta, answered });
-      if (!answered) return say(email, 'No problem, your kit is ready as it is. Reply yes anytime to tune the resume.');
-      return rewriteResume(email, meta, `Got ${answered} answer${answered === 1 ? '' : 's'}.`);
+      if (!answered) return say(email, 'no problem, the kit is ready. reply yes anytime to tune the resume.');
+      return rewriteResume(email, meta, `got ${answered} answer${answered === 1 ? '' : 's'}.`);
     }
     if (link) return writeKit(email, link, { force: /^redo\b/.test(lower) });
     if (/^redo\b/.test(lower)) {
       const last = await db.lastChatPrompt(email, ['kit', 'resume_offer', 'gap_question']);
-      if (!last?.meta?.url) return say(email, 'Send me the job link and I\'ll write it fresh.');
+      if (!last?.meta?.url) return say(email, 'send the job link and i\'ll write it fresh.');
       return writeKit(email, last.meta.url, { force: true });
     }
     // Corrections. Said once, applied to everything afterwards: this is how
@@ -195,52 +239,57 @@ module.exports = function conversation({ db, port, signToken, origin, kitLink, r
     if (/^corrections?$/.test(lower)) {
       const r = await api(email, 'GET', '/facts');
       const facts = r.data?.facts || [];
-      if (!facts.length) return say(email, 'Nothing on record yet. Text "remember: I have never sold a company" and I\'ll apply it to everything.');
-      return say(email, 'What I have on record:\n' + facts.map((f, i) => `${i + 1}. ${f.text}`).join('\n') + '\n\nText "forget 1" to drop one.');
+      if (!facts.length) return say(email, 'nothing on record. text "remember: i have never sold a company" and i apply it everywhere.');
+      return say(email, 'on record:\n' + facts.map((f, i) => `${i + 1}. ${f.text}`).join('\n') + '\n\n"forget 1" drops one.');
     }
     // "corrections" alone is the list, handled above; "correction: ..." records one.
     const remember = message.match(/^(?:remember|correction)\b\s*[:,-]?\s+([\s\S]+)/i);
     if (remember) {
       const r = await api(email, 'POST', '/facts', { text: remember[1].trim() });
-      if (r.status !== 200) return say(email, r.data?.error || 'I couldn\'t save that one.');
-      return say(email, 'Got it. Every kit, resume and answer from here on is written against that.');
+      if (r.status !== 200) return say(email, r.data?.error || 'couldn\'t save that one.');
+      return say(email, 'got it. everything from here on is written against that.');
     }
     const forget = lower.match(/^forget\s+(\d+)$/);
     if (forget) {
       const r = await api(email, 'GET', '/facts');
       const fact = (r.data?.facts || [])[Number(forget[1]) - 1];
-      if (!fact) return say(email, 'Text "corrections" to see the list, then pick a number.');
+      if (!fact) return say(email, 'text "corrections" for the list, then pick a number.');
       await api(email, 'DELETE', '/facts/' + fact.id, null);
-      return say(email, `Dropped: ${fact.text}`);
+      return say(email, `dropped: ${fact.text}`);
+    }
+    // A hello is answered with a wave and the work, not with a menu.
+    if (/^(hi|hey|hello|yo|sup|hiya|howdy|good morning|good evening)\b[\s!.?]*$/.test(lower)) {
+      if (react) await react(email, '👋').catch(() => {});
+      return welcome(email);
     }
     if (/^(help|\?)$/.test(lower)) return say(email, HELP);
     if (/^(matches|jobs|new)\b/.test(lower)) return matches(email);
     const pick = lower.match(/^(\d)$/);
     if (pick) {
       const job = (await lastList(email))[Number(pick[1]) - 1];
-      return job ? writeKit(email, job.url) : say(email, 'Text "matches" first, then pick a number.');
+      return job ? writeKit(email, job.url) : say(email, 'text "matches" first, then pick a number.');
     }
     const update = lower.match(/^(skip|applied)\s+(\d)$/);
     if (update) {
       const job = (await lastList(email))[Number(update[2]) - 1];
       if (!job) return say(email, 'Text "matches" first, then pick a number.');
       const r = await api(email, 'POST', '/sourced/status', { url: job.url, status: update[1] === 'skip' ? 'skipped' : 'applied' });
-      return say(email, r.status === 200 ? `${update[1] === 'skip' ? 'Skipped' : 'Marked applied'}: ${job.company}, ${job.role}.` : 'I couldn\'t update that one.');
+      return say(email, r.status === 200 ? `${update[1] === 'skip' ? 'skipped' : 'applied'} — ${job.company}, ${job.role}.` : 'couldn\'t update that one.');
     }
     if (/^search\b/.test(lower)) {
       const r = await api(email, 'POST', '/source/run', {});
-      if (r.status === 402) return say(email, `You need more credits to search. Top up here: ${origin}/buy`);
-      if (r.status !== 200) return say(email, r.data?.error || 'I couldn\'t start a search.');
-      return say(email, r.data.status === 'already_running' ? 'A search is already running. I\'ll text you when it\'s done.' : `Searching ${r.data.sources.length} sources now. I'll text you when it's done.`);
+      if (r.status === 402) return say(email, `out of credits. top up: ${origin}/buy`);
+      if (r.status !== 200) return say(email, r.data?.error || 'couldn\'t start a search.');
+      return say(email, r.data.status === 'already_running' ? 'already searching. i\'ll text you when it\'s done.' : `searching ${r.data.sources.length} sources. i'll text you when it's done.`);
     }
     if (/^status\b/.test(lower)) {
       const r = await api(email, 'GET', '/source/status');
       const c = r.data?.counts || {};
-      return say(email, `${r.data?.active ? 'A search is running now.' : 'No search running.'}\nPipeline: ${c.new || 0} new, ${c.applying || 0} applying, ${c.applied || 0} applied.`);
+      return say(email, `${r.data?.active ? 'searching now.' : 'not searching.'}\n${c.new || 0} new · ${c.applying || 0} applying · ${c.applied || 0} applied`);
     }
     if (/^credits\b/.test(lower)) {
       const r = await api(email, 'GET', '/auth/me');
-      return say(email, `You have ${r.data?.credits ?? 0} credits. A kit costs 10. Top up: ${origin}/buy`);
+      return say(email, `${r.data?.credits ?? 0} credits. a kit costs 10. top up: ${origin}/buy`);
     }
     if (/^rewrite\b/.test(lower)) {
       const last = await db.lastChatPrompt(email, ['kit', 'resume_offer', 'gap_question']);
@@ -270,11 +319,16 @@ module.exports = function conversation({ db, port, signToken, origin, kitLink, r
 
   return {
     handle,
+    welcome,
     voiceCharge,
     isTyping: email => typing.has(email),
     notifySearchDone: async (email, added) => {
       if (!await db.hasChatHistory(email)) return;
-      await say(email, added ? `Your search found ${added} new role${added === 1 ? '' : 's'}. Text "matches" to see the best ones.` : 'Your search finished. Nothing new this time.');
+      if (!added) return say(email, 'search done. nothing new this time.');
+      const jobs = await bestThree(email);
+      if (!jobs.length) return say(email, `search done. ${added} new role${added === 1 ? '' : 's'}.`);
+      await say(email, `${added} new role${added === 1 ? '' : 's'}. best of them:\n${jobs.map((j, i) => `${i + 1}) ${j.company} — ${j.role}`).join('\n')}\n\nreply 1, 2 or 3.`,
+        { kind: 'matches', jobs: jobs.map(j => ({ url: j.url, company: j.company, role: j.role })) });
     },
     findJobLink,
   };
