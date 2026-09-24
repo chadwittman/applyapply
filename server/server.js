@@ -29,6 +29,7 @@ const fieldMap = require('./field-map');
 const { FUNCTION_NAMES, BANDS, targetPreferences } = require('./roles');
 const { classifierFor } = require('./title-class');
 const card = require('./card');
+const { normalizeResumeDates } = require('./resume-dates');
 const { evaluateResumeMatch } = require('./typesafe');
 const scriptJSON = value => JSON.stringify(value).replace(/</g, '\\u003c');
 const usage = require('./usage');
@@ -62,7 +63,7 @@ for (const method of ['get','post','put','patch','delete']) {
     (req, res, next) => { try { Promise.resolve(handler(req,res,next)).catch(next); } catch (e) { next(e); } }));
 }
 const PORT = process.env.PORT || 5000;
-const VERSION = '0.57.1';
+const VERSION = '0.58.0';
 const IS_PRODUCTION = process.env.NODE_ENV === 'production';
 const APP_ORIGIN = process.env.APP_ORIGIN || 'http://localhost:5000';
 const ALLOWED_WEB_ORIGINS = new Set(
@@ -797,7 +798,7 @@ app.get('/k/:token/card.png', apiLimiter, async (req, res) => {
 
 app.get('/k/:token', apiLimiter, async (req, res) => {
   const found = await sharedKit(req, res); if (!found) return;
-  const { profile } = found, kit = await withAnsweredGaps(found.kit, found.owner), t = kit.tailored || {};
+  const { profile } = found, kit = withTidyDates(await withAnsweredGaps(found.kit, found.owner)), t = kit.tailored || {};
   const base = '/k/' + encodeURIComponent(req.params.token);
   let n = 0;
   // Every row and block copies on tap; the Copy label only says so.
@@ -3158,7 +3159,7 @@ app.get('/application', async (req, res) => {
   if (!userEmail) return res.status(401).json({ error: 'Sign in required' });
   const app = await findApplicationByUrl(url, userEmail);
   if (app) upgradeInstantResume(app, userEmail);
-  if (app) return res.json(await withAnsweredGaps(app, userEmail));
+  if (app) return res.json(withTidyDates(await withAnsweredGaps(app, userEmail)));
   res.status(404).json({ error: 'No application found' });
 });
 
@@ -3768,6 +3769,9 @@ function tidySentence(text) {
 function tidyResume(r) {
   if (!r || typeof r !== 'object') return r;
   if (r.summary) r.summary = tidySentence(r.summary);
+  // The source resume's own date formats come through verbatim, so a document
+  // written over ten years arrives with several of them.
+  normalizeResumeDates(r);
   for (const e of r.experience || []) {
     if (Array.isArray(e.bullets)) {
       e.bullets = e.bullets.map(tidySentence).filter(b => b && b !== '.');
@@ -3795,6 +3799,13 @@ function orderExperience(experience) {
 // A gap the candidate has answered is no longer a gap. The answer is saved as
 // profile evidence, so mark it on every response: older extensions then stop
 // showing it as an empty box, and newer ones show the answer in place.
+// Kits written before dates were normalised are not regenerated for it; the
+// formatting is applied on the way out instead.
+function withTidyDates(kit) {
+  if (kit?.tailored_resume) normalizeResumeDates(kit.tailored_resume);
+  return kit;
+}
+
 async function withAnsweredGaps(kit, userEmail) {
   const cov = kit?.tailored_resume?.coverage;
   if (!userEmail || !cov || (!cov.gaps?.length && !cov.answered?.length)) return kit;

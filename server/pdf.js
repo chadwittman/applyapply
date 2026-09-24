@@ -2,6 +2,7 @@
 // a phone real files to attach. Layout follows the extension's resume PDF.
 const path = require('path');
 const { jsPDF } = require(path.join(__dirname, '../extension/vendor/jspdf.umd.min.js'));
+const { normalizeResumeDates } = require('./resume-dates');
 
 const clean = s => String(s || '').replace(/[–—]/g, '-').replace(/[‘’]/g, "'").replace(/[“”]/g, '"');
 const slug = s => String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
@@ -26,6 +27,9 @@ function header({ doc, M, W, state }, name, profile) {
 }
 
 function resumePdf(resume, profile = {}) {
+  // The PDF is the copy an employer reads, so it gets one date format even
+  // when the kit was written before that was true.
+  normalizeResumeDates(resume);
   const p = page(), { doc, M, W, state, room } = p;
   const name = resume.name || `${profile.first_name || ''} ${profile.last_name || ''}`.trim() || 'Resume';
   header(p, name, profile);
