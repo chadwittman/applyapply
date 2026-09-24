@@ -183,6 +183,22 @@ async function initSchema() {
     )
   `);
 
+  // A short link per person per posting, so that tapping it is an event we
+  // see. The employer's own URL is what they land on; we learn that they
+  // looked, which is the difference between guessing what to show next and
+  // knowing.
+  await q(`
+    CREATE TABLE IF NOT EXISTS job_links (
+      token TEXT PRIMARY KEY,
+      user_email TEXT NOT NULL,
+      url TEXT NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      first_opened_at TIMESTAMPTZ,
+      opens INTEGER NOT NULL DEFAULT 0
+    )
+  `);
+  await q(`CREATE UNIQUE INDEX IF NOT EXISTS idx_job_links_user_url ON job_links (user_email, url)`);
+
   // A one-time code texted to an unrecognised number, spent in the browser.
   await q(`
     CREATE TABLE IF NOT EXISTS phone_claims (
@@ -913,6 +929,34 @@ async function spendPhoneClaim(code) {
   return row?.phone || null;
 }
 
+
+// ── Tracked job links ─────────────────────────────────────────────────────────
+
+async function jobLinkToken(userEmail, url) {
+  const owner = requireOwner(userEmail);
+  const clean = canonicalUrl(url);
+  const existing = await q1(`SELECT token FROM job_links WHERE user_email = $1 AND url = $2`, [owner, clean]);
+  if (existing) return existing.token;
+  // Short enough to sit in a text without wrapping the line.
+  const token = require('crypto').randomBytes(6).toString('base64url');
+  await q(`INSERT INTO job_links (token, user_email, url) VALUES ($1,$2,$3)
+           ON CONFLICT (user_email, url) DO NOTHING`, [token, owner, clean]);
+  const row = await q1(`SELECT token FROM job_links WHERE user_email = $1 AND url = $2`, [owner, clean]);
+  return row?.token || token;
+}
+
+async function openJobLink(token) {
+  return q1(`UPDATE job_links SET opens = opens + 1, first_opened_at = COALESCE(first_opened_at, NOW())
+             WHERE token = $1 RETURNING user_email, url, first_opened_at, opens`, [String(token || '')]);
+}
+
+// Which postings this person has actually looked at, and when.
+async function openedJobs(userEmail) {
+  const rows = await q(`SELECT url, first_opened_at, opens FROM job_links
+     WHERE user_email = $1 AND first_opened_at IS NOT NULL ORDER BY first_opened_at DESC`, [requireOwner(userEmail)]);
+  return new Map(rows.map(r => [r.url, r]));
+}
+
 // ── Resume file ───────────────────────────────────────────────────────────────
 
 async function saveResumeFile(userEmail, filename, mime, buffer) {
@@ -1335,7 +1379,7 @@ async function deleteAccount(userEmail) {
   try {
     await client.query('BEGIN');
     await client.query('DELETE FROM operation_events WHERE operation_id IN (SELECT id FROM operations WHERE user_email=$1)', [owner]);
-    for (const table of ['user_activity','decisions','evidence','facts','phone_links','resume_files','schedules','runs','jobs','kits','profiles','purchases','api_keys','resume_structures','chat_messages','kit_shares','agent_connects','oauth_codes']) {
+    for (const table of ['user_activity','decisions','evidence','facts','phone_links','resume_files','schedules','runs','jobs','kits','profiles','purchases','api_keys','resume_structures','chat_messages','job_links','kit_shares','agent_connects','oauth_codes']) {
       await client.query(`DELETE FROM ${table} WHERE user_email=$1`, [owner]);
     }
     // Feedback stays so the product can be fixed, but stops being theirs.
@@ -1424,6 +1468,7 @@ module.exports = {
   saveResumeFile, getResumeFile, getResumeFileMeta,
   getEvidence, addEvidenceQuestions, addAnsweredEvidence, setEvidenceAnswer, deleteEvidence,
   getFacts, addFact, deleteFact,
+  jobLinkToken, openJobLink, openedJobs,
   accountForPhone, phoneLink, phonesForUser, createPhoneCode, checkPhoneCode, linkPhone, unlinkPhone, setPhoneStopped, createPhoneClaim, spendPhoneClaim,
   getSetting, setSetting,
   getSchedule, setSchedule, getDueSchedules, markScheduleRun, getAllEnabledSchedules,

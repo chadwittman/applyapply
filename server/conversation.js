@@ -129,6 +129,33 @@ module.exports = function conversation({ db, port, signToken, origin, kitLink, r
   // runs once the last one is answered (or the person says done).
   // Which job this is about. A question arriving on a phone hours later is
   // unanswerable if it does not say what it is for.
+  // "3 days ago" reads better than a date in a text.
+  function whenish(when) {
+    const days = Math.floor((Date.now() - new Date(when).getTime()) / 86400000);
+    if (days <= 0) return 'today';
+    if (days === 1) return 'yesterday';
+    if (days < 7) return `${days} days ago`;
+    if (days < 14) return 'last week';
+    return `${Math.floor(days / 7)} weeks ago`;
+  }
+
+  // One message per role: its own posting link, and a note if they have
+  // already looked at it. Tapping the link is recorded, which is how the queue
+  // knows what they have actually considered.
+  async function listRoles(email, jobs) {
+    for (let i = 0; i < jobs.length; i++) {
+      const j = jobs[i];
+      const token = await db.jobLinkToken(email, j.url).catch(() => null);
+      const link = token ? `${origin}/j/${token}` : j.url;
+      const seen = j.wasOpened?.first_opened_at ? `\nyou opened this ${whenish(j.wasOpened.first_opened_at)}` : '';
+      await say(email, `${i + 1}) ${j.company}, ${j.role}${j.location ? `\n${j.location}` : ''}\n${link}${seen}`,
+        { kind: 'match_option', n: i + 1, url: j.url, company: j.company, role: j.role });
+      await db.saveActivity(email, j.url, 'texted', { at: new Date().toISOString() }).catch(() => {});
+    }
+    await db.addChatMessage(email, 'out', '', { kind: 'matches', hidden: true,
+      jobs: jobs.map(j => ({ url: j.url, company: j.company, role: j.role })) });
+  }
+
   const jobLabel = meta => [meta?.company, meta?.role].filter(Boolean).join(', ').toLowerCase();
 
   async function askGap(email, meta) {
@@ -162,12 +189,34 @@ module.exports = function conversation({ db, port, signToken, origin, kitLink, r
   // Their pipeline first, then the shared ledger. Reading the ledger costs
   // nothing and runs no search, so a new person gets real roles in their first
   // reply instead of being asked to go and find one.
-  async function bestThree(email) {
-    const mine = (await db.getJobs('new', 50, email).catch(() => []))
-      .sort((a, b) => (a.tier ?? 9) - (b.tier ?? 9) || (b.fit_score ?? 0) - (a.fit_score ?? 0));
-    if (mine.length) return mine.slice(0, 3);
-    return ledgerMatches ? (await ledgerMatches(email).catch(() => [])).slice(0, 3) : [];
+  // What to show next. "Nothing new" is never the answer while there are roles
+  // they have not dealt with: a search finding nothing today says nothing about
+  // the twelve from last week they never opened.
+  //
+  // Order: never sent, then sent but not opened, then opened but not applied
+  // for. Anything they applied to, skipped, or already have an application for
+  // drops out entirely.
+  async function queue(email, limit = 3) {
+    const [mine, opened, kits] = await Promise.all([
+      db.getJobs('new', 100, email).catch(() => []),
+      db.openedJobs(email).catch(() => new Map()),
+      db.getKits(email).catch(() => []),
+    ]);
+    const written = new Set(kits.map(k => k.url));
+    let rows = mine.filter(j => !written.has(j.url));
+    if (!rows.length && ledgerMatches) {
+      const fromLedger = await ledgerMatches(email).catch(() => []);
+      rows = fromLedger.filter(j => !written.has(j.url));
+    }
+    const sentAlready = new Set((await db.getActivity(email, 'texted').catch(() => [])).map(a => a.url));
+    const rank = j => (sentAlready.has(j.url) ? 1 : 0) + (opened.has(j.url) ? 1 : 0);
+    return rows
+      .map(j => ({ ...j, wasOpened: opened.get(j.url) || null, wasSent: sentAlready.has(j.url) }))
+      .sort((a, b) => rank(a) - rank(b) || (a.tier ?? 9) - (b.tier ?? 9) || (b.fit_score ?? 0) - (a.fit_score ?? 0))
+      .slice(0, limit);
   }
+
+  const bestThree = email => queue(email, 3);
 
   // First contact. Nobody wants to be asked for homework by a product they
   // just connected, so this leads with what it found.
@@ -182,9 +231,9 @@ module.exports = function conversation({ db, port, signToken, origin, kitLink, r
 
   async function matches(email) {
     const jobs = await bestThree(email);
-    if (!jobs.length) return say(email, 'nothing new that fits right now. text "search" and i\'ll go look.');
-    await say(email, `${jobs.length} that fit you:\n${jobs.map((j, i) => `${i + 1}) ${j.company}, ${j.role}`).join('\n')}\n\nreply 1, 2 or 3 and i'll write it.`,
-      { kind: 'matches', jobs: jobs.map(j => ({ url: j.url, company: j.company, role: j.role })) });
+    if (!jobs.length) return say(email, 'nothing waiting that fits right now. text "search" and i\'ll go look.');
+    await listRoles(email, jobs);
+    await say(email, `reply to whichever one you want, or 1, 2 or 3.`);
   }
 
   // Two messages arriving together used to read the same state and both act on
@@ -436,12 +485,7 @@ module.exports = function conversation({ db, port, signToken, origin, kitLink, r
           if (!jobs.length) return { roles: [] };
           // Each role is its own message with its own posting link, so it can
           // be read, and replied to, on its own.
-          for (let i = 0; i < jobs.length; i++) {
-            const j = jobs[i];
-            await say(email, `${i + 1}) ${j.company}, ${j.role}${j.location ? `\n${j.location}` : ''}\n${j.url}`,
-              { kind: 'match_option', n: i + 1, url: j.url, company: j.company, role: j.role });
-          }
-          await db.addChatMessage(email, 'out', '', { kind: 'matches', jobs: jobs.map(j => ({ url: j.url, company: j.company, role: j.role })), hidden: true });
+          await listRoles(email, jobs);
           produced.sentRoles = jobs.length;
           return { roles: jobs.map((j, i) => ({ n: i + 1, company: j.company, role: j.role, location: j.location || '' })),
             already_sent_to_them: 'Each role was already sent as its own message with its link. Do not list them again: say in one line that they can reply to whichever one they want, or reply with its number.' };
@@ -558,11 +602,17 @@ module.exports = function conversation({ db, port, signToken, origin, kitLink, r
     isTyping: email => typing.has(email),
     notifySearchDone: async (email, added) => {
       if (!await db.hasChatHistory(email)) return;
-      if (!added) return say(email, 'search done. nothing new this time.');
       const jobs = await bestThree(email);
+      if (!added && !jobs.length) return say(email, 'search done, nothing new. nothing waiting either: you are through everything i have found so far.');
+      if (!added) {
+        await say(email, 'search done, nothing new. still waiting from before:');
+        await listRoles(email, jobs);
+        return say(email, 'reply to whichever one you want.');
+      }
       if (!jobs.length) return say(email, `search done. ${added} new role${added === 1 ? '' : 's'}.`);
-      await say(email, `${added} new role${added === 1 ? '' : 's'}. best of them:\n${jobs.map((j, i) => `${i + 1}) ${j.company}, ${j.role}`).join('\n')}\n\nreply 1, 2 or 3.`,
-        { kind: 'matches', jobs: jobs.map(j => ({ url: j.url, company: j.company, role: j.role })) });
+      await say(email, `${added} new role${added === 1 ? '' : 's'}. best of them:`);
+      await listRoles(email, jobs);
+      await say(email, 'reply to whichever one you want and i\'ll write it.');
     },
     findJobLink,
   };

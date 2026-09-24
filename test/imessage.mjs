@@ -125,11 +125,27 @@ try {
   assert.deepEqual(ledger.rows.map(r => r.amount), [-3], 'Charged per started minute past two');
   console.log('PASS: long voice notes are charged, short ones are free');
 
-  got = await send(page, 'matches', "reply 1, 2 or 3");
-  assert.match(got.at(-1), /1\) ChatCo, Head of Product[\s\S]*2\) ChatCo2, Director of Product/);
-  got = await send(page, 'skip 2', 'skipped');
+  // Each role is its own message with its own tracked link, so a reply can
+  // land on one of them rather than describing which you meant.
+  got = await send(page, 'matches', "or 1, 2 or 3");
+  const roleMessages = got.filter(b => /^\d\) /.test(b));
+  // A role you already have an application for is finished business: job1 was
+  // written earlier in this test, so the queue does not offer it again.
+  assert.equal(roleMessages.length, 1, 'only what is still to do: ' + JSON.stringify(got));
+  assert.match(roleMessages[0], /^1\) ChatCo2, Director of Product/);
+  assert.ok(!got.join('\n').includes('Head of Product'), 'the one already written is not re-offered');
+  assert.match(roleMessages[0], /\/j\/[A-Za-z0-9_-]{6,}/, 'it carries a link we can see them open');
+  // Tapping it is an event, and the employer's own page is where they land.
+  const tracked = roleMessages[0].match(/https?:\/\/\S+\/j\/([A-Za-z0-9_-]+)/)[1];
+  const hop = await page.request.get(origin + '/j/' + tracked, { maxRedirects: 0 });
+  assert.equal(hop.status(), 302);
+  assert.equal(hop.headers().location, job2);
+  assert.ok((await db.getActivity(email, 'opened')).some(a => a.url === job2), 'opening it is recorded');
+  // And having opened it, the next listing says so rather than repeating itself.
+  got = await send(page, 'matches', 'you opened this');
+  assert.match(got.find(b => /^1\) /.test(b)) || '', /you opened this today/);
+  got = await send(page, 'skip 1', 'skipped');
   assert.equal((await db.getJobByUrl(job2, email))?.status, 'skipped');
-  got = await send(page, '1', 'ready to paste');
   got = await send(page, 'credits', 'credits');
   assert.match(got.at(-1), new RegExp('^' + (await db.getUser(email)).credits + ' credits'));
   const everythingSent = (await db.getChatMessages(email, 0)).filter(m => m.direction === 'out').map(m => m.body).join('\n');

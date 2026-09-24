@@ -69,7 +69,7 @@ for (const method of ['get','post','put','patch','delete']) {
     (req, res, next) => { try { Promise.resolve(handler(req,res,next)).catch(next); } catch (e) { next(e); } }));
 }
 const PORT = process.env.PORT || 5000;
-const VERSION = '0.66.0';
+const VERSION = '0.67.0';
 const IS_PRODUCTION = process.env.NODE_ENV === 'production';
 const APP_ORIGIN = process.env.APP_ORIGIN || 'http://localhost:5000';
 const ALLOWED_WEB_ORIGINS = new Set(
@@ -1032,6 +1032,16 @@ function chatUser(req, res) {
   if (!chatTesters().has(email.toLowerCase())) { res.status(403).json({ error: 'The text line is in private testing.' }); return null; }
   return email;
 }
+// A job link we texted. Records that they looked, then sends them to the
+// employer's own page. No interstitial: the tap should feel like the posting.
+app.get('/j/:token', apiLimiter, async (req, res) => {
+  const row = await db.openJobLink(req.params.token).catch(() => null);
+  if (!row) return res.redirect(302, APP_ORIGIN.replace(/\/$/, '') + '/pipeline');
+  db.saveActivity(row.user_email, row.url, 'opened', { opened_at: new Date().toISOString(), from: 'text' }).catch(() => {});
+  res.setHeader('Cache-Control', 'no-store');
+  res.redirect(302, row.url);
+});
+
 // ── The real text line ───────────────────────────────────────────────────────
 // Sendblue posts every inbound message here. A number is not a credential, so
 // an unrecognised one is answered with a link and nothing else: no kits, no
