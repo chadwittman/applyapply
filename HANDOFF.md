@@ -149,7 +149,7 @@ House rules, learned the hard way:
 - **No em dashes anywhere in our own copy.** The text line and the site are lower
   case and brief. `server/voice.md` is the source of truth for tone and for every
   claim the product makes about itself; a test binds its prices to the code.
-- **Dash handling is written as `—`/`–` escapes** in `cleanEmDashes`,
+- **Dash handling uses unicode escapes (U+2014, U+2013)** in `cleanEmDashes`,
   because a bulk find-and-replace over the file once rewrote that regex into a
   hyphen and put a period inside every date range in production.
 - **Quality over speed for anything written.** Do not swap a model-written piece
