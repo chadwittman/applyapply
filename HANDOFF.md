@@ -1,63 +1,173 @@
-# ApplyApply model handoff
+# applyapply: model handoff
 
-Updated: 2026-09-21
+Updated: 2026-09-25
 
-ApplyApply is an Express/Postgres job-search product with a Chrome MV3 extension, scheduled sourcing workers, Claude generation, TypeSafe/Jev review, and Stripe credits.
+applyapply writes job applications. It finds postings that fit a person, writes a
+resume tailored to each posting plus a cover letter and answers to the form's own
+questions, and makes sending it fast. It never submits an application.
 
-## Current production
+Express + Postgres on Railway, a Chrome MV3 extension, a text line over Sendblue,
+an MCP server for agents, Claude for writing, Jev (TypeSafe) for judgment, Stripe
+for credits.
 
-- Site: https://applyapply.xyz
-- Health: https://applyapply.xyz/health
-- Version: 0.32.0
-- Latest commit: 917440f (deployed successfully on Railway)
-- Extension: 1.19.3, submitted to the Chrome Web Store 2026-09-21 and tagged `store-1.19.3`. `npm test` re-runs the extension suites against every `store-*` tag; keep server routes backward compatible. at https://applyapply.xyz/extension.zip
-- Railway project/service IDs are intentionally omitted here; use the local Railway context or production notes if infrastructure work is needed.
+## Where it runs
 
-## Recent shipped behavior
+| | |
+|---|---|
+| Site | https://applyapply.xyz |
+| Health | https://applyapply.xyz/health (reports `version`) |
+| Server version | 0.72.0 |
+| Extension | **1.21.0 in the working tree, 1.19.3 in the Chrome Web Store** |
+| Deploy | push to `main`, Railway builds and restarts. No other step. |
+| Repo | github.com/chadwittman/applyapply, local at `~/job-search` |
 
-- Listings ledger (`listings`, `ingest_state`): a shared ingest runs every 6 hours and at startup (`JAA_INGEST=1 node source.js`); a first pull or weekly refresh takes everything listed, and later pulls take the last 24 hours. User runs read the ledger and only ingest a source themselves if it is over 8 hours stale (advisory lock per source).
-- Sources: a16z and Sequoia (browser), plus Himalayas, We Work Remotely and Hacker News "Who is hiring" (plain HTTP, `server/feeds.js`). The six Google-search sources are retired: Google CAPTCHAs every automated search, stealth sessions included. Remotive was tried and dropped.
-- A run fails only if every source fails; failed sources are refunded in the commit transaction (`partial_refund` in credit_ledger). An unreadable job page is checked from its listing instead of failing the run.
-- Role matching is word-based (`server/roles.js`) and rejects titles naming another function.
-- Agent access: personal API keys (`aa_live_…`, hashed) in Profile & settings, MCP server at `/mcp` (`server/mcp.js`), docs at `/agents`, `/llms.txt`.
-- New accounts get 30 starter credits (`STARTER_CREDITS`), once per address via credit_ledger. Account deletion was broken (magic_links column) and is fixed.
-- /terms and /support are live; the privacy policy lists TypeSafe and Chrome speech recognition.
+Railway project `remarkable-education`, service `applyapply`, production
+environment. Secrets live in Railway variables and in a gitignored local `.env`;
+never commit either. Names only: `ANTHROPIC_API_KEY`, `TYPESAFE_API_KEY`,
+`SENDBLUE_API_KEY`, `SENDBLUE_API_SECRET`, `SENDBLUE_API_BASE`,
+`SENDBLUE_FROM_NUMBER`, `STRIPE_SECRET_KEY`, `RESEND_API_KEY`,
+`HYPERBROWSER_API_KEY`, `APPLYAPPLY_JWT_SECRET`, `APPLYAPPLY_ADMIN_SECRET`,
+`IMESSAGE_TESTERS`.
 
-- Sequoia sourcing fixed (it had been returning 0 jobs): the search API takes the page's own CSRF token and pages through results, and the window is applied by posting day because Sequoia stamps are date-only.
-- a16z reads exact `<time datetime>` stamps from the page and stops paging once past the 24-hour window.
-- The shared source cache key includes the search window, and the nightly prefetch warms each window in use.
-- The run view labels each source's window: exact 24h, by posting day, some undated, or best-effort 24h (Google).
+### The extension does not deploy with the server
 
-- Extension is toolbar-first: job pages open the sidebar; unrelated pages open the pipeline. Opening never generates or charges.
-- Sourcing has focused steps for one-time searches and automatic hunting, with Only / Select all / None source controls.
-- Scheduled sourcing supports Last 24 hours or All currently listed.
-- Run emails distinguish one-time searches from scheduled searches and explain pulled/window/new/filtered results.
-- Sequoia's current CSRF bootstrap/API path is supported with a DOM fallback.
-- Profile settings include account export and typed-confirmation account deletion.
-- Privacy policy states no advertising use or general-model training and matches extension behavior.
+This confuses everybody once. Pushing to `main` ships the server. The extension is
+a separate artifact that users install from the Chrome Web Store, which still
+serves **1.19.3**, tagged `store-1.19.3`. Loading `~/job-search/extension`
+unpacked is the only way to run anything newer, which is why recent extension
+work exists on one machine only. `test/run.sh` replays the extension suites
+against every `store-*` tag, so server changes must stay compatible with what is
+actually installed out there.
 
-## Verify locally
+**Unshipped extension work (1.19.3 → 1.21.0), six fixes:**
 
-```sh
-npm install
-npm --prefix server install
-npm run check
-npm test
+1. Fills a form inside a cross-origin iframe (Comparably fronting Greenhouse: the
+   top frame has zero inputs and all 30 fields are in the embed).
+2. Fills "Full Name", Ashby's standard field, which matched no rule before.
+3. Places unrecognised fields by meaning through `/fill/map` (Jev), instead of a
+   regex per label.
+4. Says when a form is in an iframe it cannot reach, and links that form's own page.
+5. The mic is the emoji, not an emoji on a filled circle.
+6. A job opened from applyapply's own pages opens the sidebar by itself.
+
+## Model choices
+
+| Job | Model | Why |
+|---|---|---|
+| Kits, resumes, cover letters | `claude-sonnet-5`, low effort | Measured 21s vs Sonnet 4.6's 34s with equal or better writing |
+| Text line agent | `claude-haiku-4-5-20251001` | Decides and writes a sentence; does not write the resume |
+| Titles, form fields, answer reuse, bullet relevance, interest | Jev (TypeSafe) | ~180ms, ~$0.00003 a call |
+
+Pattern used throughout: **deterministic rules first, a model for the tail, the
+result cached.** Word rules place 79% of job titles; Jev reads the rest and the
+decision is kept per distinct title forever. Same shape for form fields and for
+answer reuse. Before rejecting a model call on cost, check whether the unit of
+work is cacheable, which is the mistake made once here already.
+
+## Map
+
+```
+server/server.js      every route, all pages (large; the site is server-rendered)
+server/conversation.js the text line: state machine, tools, voice
+server/agent.js       the tool-calling loop for the text line
+server/intent.js      reads what a text means when no command matches
+server/voice.md       what applyapply is, never does, charges, and how it writes
+server/sendblue.js    send, react, parse inbound, phone normalisation
+server/roles.js       title -> {functions[], seniority} word rules
+server/title-class.js Jev title classification with a permanent cache
+server/field-map.js   form field -> profile value, by meaning
+server/interest.js    how interesting a job looks to one person
+server/fast-kit.js    answer reuse, resume structure, bullet judgment
+server/resume-dates.js one date format across a resume
+server/card.js        the unfurl image for a kit link
+server/db.js          schema and every query
+source.js             sourcing and the shared listings ingest
+extension/            MV3: content.js (sidebar + filling), background.js
+test/run.sh           the whole suite: throwaway Postgres, real server, real Chrome
 ```
 
-Tests require local Postgres and Chrome. `test/run.sh` creates a throwaway database. Do not run against production.
+## Text line status
 
-## Important open caveat
+**Working and verified in production:** inbound webhook (`POST
+/sendblue/webhook`), outbound replies, phone verification both ways (a texted
+link, or a six-digit code from the profile page), STOP/START/HELP, kit writing
+from a texted job link, gap questions one at a time, voice notes with credit
+charging past two minutes, corrections, the agent answering in plain English.
 
-Google-indexed sources rely on Google's `after:` date filter and are labeled best-effort in the UI. Board sources report their own precision per run.
+**Built but never seen working against the real service:**
 
-## Sensitive files excluded from the handoff archive
+- **Sending tapback reactions.** `POST /api/send-reaction` is documented; its
+  `from_number` field is ambiguous and is being sent as the conversation's
+  number. A 👋 on "hey" is the thing to watch.
+- **Receiving tapbacks.** Undocumented entirely. Inbound reads a named field,
+  the plain-text SMS form (`Liked "…"`), and a bare emoji. Unknown payloads log
+  their **keys only** (`[sendblue] unread payload`), so the real shape can be
+  learned from the Railway log without a message body landing in it.
+- **Inline reply resolution.** Every role is texted as its own message and the
+  outbound handle is stored against that role, so replying to one message should
+  resolve to that job. The inbound field carrying the reply target is guessed
+  from five plausible names. The numbered and by-name paths work regardless.
 
-`.env`, `.git`, `node_modules`, `applications/`, `data/`, local databases, generated logs, and screenshots are excluded. Production credentials remain in Railway variables and must never be committed or copied into a model prompt.
+**Identity, which is the part worth not breaking:** a number in a From field
+proves nothing. An unrecognised number gets exactly one reply, a link good for
+thirty minutes, spent in a browser where the person is already signed in. It is
+never told whether an account exists. Codes are hashed at rest, single use, five
+wrong guesses burn them. A number belongs to one account.
 
-## Next useful work
+## Sourcing and coverage
 
-1. Company-level ATS feeds: Greenhouse, Lever and Ashby have public per-company job APIs; the ledger's a16z/Sequoia apply URLs give a list of company boards to poll directly.
-2. Replace pdf-parse 1.1.1 (random "bad XRef entry" on ~1 in 20 parses; currently retried three times).
-3. Continue the Google Flights-style simplification pass through profile setup and application review.
-2. Finish Chrome Web Store submission (needs 1280x800 screenshots; listing copy and promo tiles are ready) and replace the unpacked-extension install flow.
+12,512 postings, 11,395 distinct jobs, five sources: Himalayas 6,687, a16z 3,012,
+Sequoia 2,450, Hacker News 259, We Work Remotely 104. Browse them at `/listings`.
+
+Roughly 9% of rows were redundant because boards list one job once per location;
+they collapse by company plus role. 35% carry no function, mostly genuinely not
+product or growth work (Himalayas is a general remote board).
+
+**The coverage plan, not yet built.** Greenhouse, Lever, Ashby and Workday are
+read one posting at a time, on demand. Their board APIs are free, unauthenticated
+and enumerable by company token:
+`boards-api.greenhouse.io/v1/boards/{token}/jobs` returns a whole company in one
+call. Harvest tokens from every job link anyone sends us, crawl them wholesale,
+dedupe across sources. That is the unlock, and it is also the prerequisite for
+selling normalised job data to agents over MCP, which was discussed and not
+started.
+
+## How to work here
+
+```bash
+bash test/run.sh                      # everything: ~31 suites, needs local Postgres + Chrome
+AA_TEST_SUITES="test/foo.mjs" bash test/run.sh   # one suite
+node --check server/server.js         # syntax only
+```
+
+`test/run.sh` exits non-zero on failure. **Check the exit status, not the tail of
+the output**; a passing final line above a failed suite has caused a red commit
+here before.
+
+House rules, learned the hard way:
+
+- **No em dashes anywhere in our own copy.** The text line and the site are lower
+  case and brief. `server/voice.md` is the source of truth for tone and for every
+  claim the product makes about itself; a test binds its prices to the code.
+- **Dash handling is written as `—`/`–` escapes** in `cleanEmDashes`,
+  because a bulk find-and-replace over the file once rewrote that regex into a
+  hyphen and put a period inside every date range in production.
+- **Quality over speed for anything written.** Do not swap a model-written piece
+  for a faster stand-in unless it shortens the wait the person actually sees.
+- **Anything guaranteed by construction becomes a prompt line when an agent takes
+  over.** When the text line became agent-written, the kit link stopped arriving
+  because the model had to remember to include it. Links are now appended in code
+  after the model replies. Look for that class of regression.
+- Bump `VERSION` in `server/server.js` and the extension manifest each session.
+
+## Open, in rough priority order
+
+1. **Submit extension 1.21.0 to the Chrome Web Store.** Six real fixes reach
+   nobody until this happens.
+2. **Verify the three unverified Sendblue behaviours** above from a real phone.
+3. **Crawl ATS board tokens** for coverage.
+4. Backups are unverified; resume PDFs live in Postgres (~90 users on a 500MB
+   volume); there is no error tracking; a live Stripe purchase has never been
+   tested end to end.
+5. `/about` still has unknowns: HQ city, social links, whether to publish the
+   founder backstory.
