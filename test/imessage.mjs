@@ -137,11 +137,13 @@ try {
   assert.match(roleMessages[0], /^1\) chatco2, director of product/);
   assert.ok(!got.join('\n').includes('Head of Product'), 'the one already written is not re-offered');
   assert.match(roleMessages[0], /\/j\/[A-Za-z0-9_-]{6,}/, 'it carries a link we can see them open');
-  // Tapping it is an event, and the employer's own page is where they land.
+  // Unfurling is read-only. Only the explicit posting button records interest.
   const tracked = roleMessages[0].match(/https?:\/\/\S+\/j\/([A-Za-z0-9_-]+)/)[1];
   const hop = await page.request.get(origin + '/j/' + tracked, { maxRedirects: 0 });
-  assert.equal(hop.status(), 302);
-  assert.equal(hop.headers().location, job2);
+  assert.equal(hop.status(), 200);
+  const opened = await page.request.post(origin + '/j/' + tracked + '/open', { maxRedirects: 0 });
+  assert.equal(opened.status(), 303);
+  assert.equal(opened.headers().location, job2);
   assert.ok((await db.getActivity(email, 'opened')).some(a => a.url === job2), 'opening it is recorded');
   // And having opened it, the next listing says so rather than repeating itself.
   got = await send(page, 'matches', 'you opened this');

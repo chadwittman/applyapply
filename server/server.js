@@ -70,7 +70,7 @@ for (const method of ['get','post','put','patch','delete']) {
     (req, res, next) => { try { Promise.resolve(handler(req,res,next)).catch(next); } catch (e) { next(e); } }));
 }
 const PORT = process.env.PORT || 5000;
-const VERSION = '0.74.0';
+const VERSION = '0.75.0';
 const IS_PRODUCTION = process.env.NODE_ENV === 'production';
 const APP_ORIGIN = process.env.APP_ORIGIN || 'http://localhost:5000';
 const ALLOWED_WEB_ORIGINS = new Set(
@@ -871,15 +871,18 @@ ${(() => {
   // Messages: the job, what is ready, and a card drawn for this kit.
   const ready = card.piecesFor(kit);
   const score = kit.tailored_resume?.jev_match?.score;
-  const desc = [ready.join(' · ') || 'Your application kit',
-    Number.isFinite(Number(score)) ? `${Math.round((Number(score) / 5) * 100)}% match` : null,
-    'Tap any line to copy it.'].filter(Boolean).join(' · ');
+  const desc = [ready.join(' · ').toLowerCase() || 'your application kit',
+    score != null && score !== '' && Number.isFinite(Number(score)) ? `${Math.round((Number(score) / 5) * 100)}% resume coverage` : null,
+    'tap any line to copy it.'].filter(Boolean).join(' · ');
   const img = APP_ORIGIN.replace(/\/$/, '') + base + '/card.png';
   return `<meta property="og:type" content="website">
 <meta property="og:site_name" content="applyapply">
-<meta property="og:title" content="${escapeHtml(kit.role ? kit.role + ' at ' + (kit.company || '') : 'Your application kit')}">
+<meta property="og:title" content="${escapeHtml(cleanEmDashes(kit.role ? kit.role + ' at ' + (kit.company || '') : 'your application kit').toLowerCase())}">
 <meta property="og:description" content="${escapeHtml(desc)}">
+<meta property="og:url" content="${escapeHtml(APP_ORIGIN.replace(/\/$/, '') + base)}">
 <meta property="og:image" content="${escapeHtml(img)}">
+<meta property="og:image:type" content="image/png">
+<meta property="og:image:alt" content="${escapeHtml([kit.role, kit.company, desc].filter(Boolean).join(' · '))}">
 <meta property="og:image:width" content="1200">
 <meta property="og:image:height" content="630">
 <meta name="twitter:card" content="summary_large_image">
@@ -1110,12 +1113,12 @@ const chat = require('./conversation')({ db, port: PORT, origin: APP_ORIGIN.repl
       if (!row.stopped) await sendblue.react(row.phone, handle, emoji).catch(e => console.error('[react]', e.message));
     }
   },
-  deliver: async (email, body) => {
+  deliver: async (email, body, meta) => {
     if (!sendblue.configured()) return null;
     let handle = null;
     for (const row of await db.phonesForUser(email).catch(() => [])) {
       if (row.stopped) continue;
-      handle = sendblue.handleOf(await sendblue.send(row.phone, body)) || handle;
+      handle = sendblue.handleOf(await sendblue.send(row.phone, body, { mediaUrl: card.messageMedia(body, meta, APP_ORIGIN) })) || handle;
     }
     return handle;
   } });
@@ -1324,14 +1327,35 @@ render();
 </body></html>`);
 });
 
-// A job link we texted. Records that they looked, then sends them to the
-// employer's own page. No interstitial: the tap should feel like the posting.
+// Unfurlers GET these without a session. Neither page nor image records interest.
+app.get('/j/:token/card.png', apiLimiter, async (req, res) => {
+  const job = await db.jobLinkPreview(req.params.token);
+  const png = job ? card.jobCard(job) : null;
+  res.setHeader('X-Robots-Tag', 'noindex, nofollow');
+  res.setHeader('Cache-Control', 'public, max-age=900');
+  if (!png) return res.sendFile(path.join(__dirname, '..', 'brand', 'og.png'));
+  res.type('png').send(png);
+});
+
 app.get('/j/:token', apiLimiter, async (req, res) => {
-  const row = await db.openJobLink(req.params.token).catch(() => null);
-  if (!row) return res.redirect(302, APP_ORIGIN.replace(/\/$/, '') + '/pipeline');
-  db.saveActivity(row.user_email, row.url, 'opened', { opened_at: new Date().toISOString(), from: 'text' }).catch(() => {});
+  const job = await db.jobLinkPreview(req.params.token);
+  res.setHeader('X-Robots-Tag', 'noindex, nofollow');
   res.setHeader('Cache-Control', 'no-store');
-  res.redirect(302, row.url);
+  res.setHeader('Referrer-Policy', 'same-origin');
+  if (!job) return res.status(404).type('html').send('<!doctype html><html lang="en"><meta name="viewport" content="width=device-width,initial-scale=1"><title>link unavailable · applyapply</title><p>this job link is no longer available. text “matches” for more roles.</p><a href="/">applyapply</a></html>');
+  res.type('html').send(require('./job-preview').page(job, req.params.token, APP_ORIGIN));
+});
+
+// A button, not a crawlable redirect. Preview fetches never become fake opens.
+app.post('/j/:token/open', apiLimiter, async (req, res) => {
+  const job = await db.jobLinkPreview(req.params.token);
+  if (!job || !/^https?:\/\//i.test(job.url)) return res.status(404).send('posting unavailable');
+  const row = await db.openJobLink(req.params.token);
+  if (!row) return res.status(404).send('posting unavailable');
+  await db.saveActivity(row.user_email, row.url, 'opened', { opened_at: new Date().toISOString(), from: 'text' }).catch(() => {});
+  res.setHeader('Cache-Control', 'no-store');
+  res.setHeader('Referrer-Policy', 'no-referrer');
+  res.redirect(303, row.url);
 });
 
 // ── The real text line ───────────────────────────────────────────────────────

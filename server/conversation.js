@@ -205,11 +205,11 @@ module.exports = function conversation({ db, port, signToken, origin, kitLink, r
   async function listRoles(email, jobs) {
     for (let i = 0; i < jobs.length; i++) {
       const j = jobs[i];
-      const token = await db.jobLinkToken(email, j.url).catch(() => null);
+      const token = await db.jobLinkToken(email, j.url, j).catch(() => null);
       const link = token ? `${origin}/j/${token}` : j.url;
       const seen = j.wasOpened?.first_opened_at ? `\nyou opened this ${whenish(j.wasOpened.first_opened_at)}` : '';
       await say(email, `${i + 1}) ${j.company.toLowerCase()}, ${j.role.toLowerCase()}${j.location ? `\n${j.location.toLowerCase()}` : ''}${j.reason ? `\n${j.reason}` : ''}\n${link}${seen}`,
-        { kind: 'match_option', n: i + 1, url: j.url, company: j.company, role: j.role });
+        { kind: 'match_option', n: i + 1, url: j.url, link, company: j.company, role: j.role });
       await db.saveActivity(email, j.url, 'texted', { at: new Date().toISOString() }).catch(() => {});
     }
     await db.addChatMessage(email, 'out', '', { kind: 'matches', hidden: true,

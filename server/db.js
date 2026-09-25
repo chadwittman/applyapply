@@ -211,10 +211,8 @@ async function initSchema() {
     )
   `);
 
-  // A short link per person per posting, so that tapping it is an event we
-  // see. The employer's own URL is what they land on; we learn that they
-  // looked, which is the difference between guessing what to show next and
-  // knowing.
+  // A short link per person per posting. GET is a previewable own-site page;
+  // only its explicit posting button records interest.
   await q(`
     CREATE TABLE IF NOT EXISTS job_links (
       token TEXT PRIMARY KEY,
@@ -226,6 +224,7 @@ async function initSchema() {
     )
   `);
   await q(`CREATE UNIQUE INDEX IF NOT EXISTS idx_job_links_user_url ON job_links (user_email, url)`);
+  await q(`ALTER TABLE job_links ADD COLUMN IF NOT EXISTS preview JSONB NOT NULL DEFAULT '{}'::jsonb`);
 
   // A one-time code texted to an unrecognised number, spent in the browser.
   await q(`
@@ -1002,17 +1001,28 @@ async function saveInterest(userEmail, scores) {
 
 // ── Tracked job links ─────────────────────────────────────────────────────────
 
-async function jobLinkToken(userEmail, url) {
+async function jobLinkToken(userEmail, url, job = {}) {
   const owner = requireOwner(userEmail);
   const clean = canonicalUrl(url);
-  const existing = await q1(`SELECT token FROM job_links WHERE user_email = $1 AND url = $2`, [owner, clean]);
-  if (existing) return existing.token;
+  // Public posting facts only. Never put a person's fit rationale or profile here.
+  const preview = Object.fromEntries(['company', 'role', 'location'].filter(k => typeof job[k] === 'string' && job[k].trim())
+    .map(k => [k, job[k].trim().slice(0, 300)]));
   // Short enough to sit in a text without wrapping the line.
   const token = require('crypto').randomBytes(6).toString('base64url');
-  await q(`INSERT INTO job_links (token, user_email, url) VALUES ($1,$2,$3)
-           ON CONFLICT (user_email, url) DO NOTHING`, [token, owner, clean]);
+  await q(`INSERT INTO job_links (token, user_email, url, preview) VALUES ($1,$2,$3,$4)
+           ON CONFLICT (user_email, url) DO UPDATE SET preview = job_links.preview || EXCLUDED.preview`, [token, owner, clean, preview]);
   const row = await q1(`SELECT token FROM job_links WHERE user_email = $1 AND url = $2`, [owner, clean]);
   return row?.token || token;
+}
+
+async function jobLinkPreview(token) {
+  const row = await q1(`SELECT url, user_email, preview FROM job_links WHERE token = $1`, [String(token || '')]);
+  if (!row) return null;
+  // Old texted links predate snapshots. Resolve them without recording an open.
+  const job = await q1(`SELECT company, role, location FROM jobs WHERE user_email = $1 AND canonical_url = $2 LIMIT 1`, [row.user_email, row.url]);
+  const listing = await q1(`SELECT company, role, location FROM listings WHERE url = $1`, [row.url]);
+  return { url: row.url, ...Object.fromEntries(['company', 'role', 'location'].map(k =>
+    [k, row.preview?.[k] || job?.[k] || listing?.[k] || ''])) };
 }
 
 async function openJobLink(token) {
@@ -1558,7 +1568,7 @@ module.exports = {
   saveResumeFile, getResumeFile, getResumeFileMeta,
   getEvidence, addEvidenceQuestions, addAnsweredEvidence, setEvidenceAnswer, deleteEvidence,
   getFacts, addFact, deleteFact,
-  jobLinkToken, openJobLink, openedJobs, getInterest, saveInterest, saveResumeEdits, getResumeEdits,
+  jobLinkToken, jobLinkPreview, openJobLink, openedJobs, getInterest, saveInterest, saveResumeEdits, getResumeEdits,
   accountForPhone, phoneLink, phonesForUser, createPhoneCode, checkPhoneCode, linkPhone, unlinkPhone, setPhoneStopped, createPhoneClaim, spendPhoneClaim,
   getSetting, setSetting,
   getSchedule, setSchedule, getDueSchedules, markScheduleRun, getAllEnabledSchedules,

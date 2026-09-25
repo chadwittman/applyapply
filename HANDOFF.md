@@ -16,8 +16,8 @@ for credits.
 |---|---|
 | Site | https://applyapply.xyz |
 | Health | https://applyapply.xyz/health (reports `version`) |
-| Server version | 0.74.0 |
-| Extension | **1.21.2 in the working tree, 1.19.3 in the Chrome Web Store** |
+| Server version | 0.75.0 |
+| Extension | **1.21.3 in the working tree, 1.19.3 in the Chrome Web Store** |
 | Deploy | push to `main`, Railway builds and restarts. No other step. |
 | Repo | github.com/chadwittman/applyapply, local at `~/job-search` |
 
@@ -94,6 +94,23 @@ test/run.sh           the whole suite: throwaway Postgres, real server, real Chr
 ```
 
 ## Text line status
+
+### September 25 link previews
+
+- `/j/:token` is now a read-only applyapply landing page with its own PNG/OG
+  preview. Public company, title and location are snapshotted when texted.
+  Old tokens fall back to the owner's pipeline or public listings.
+- GET/HEAD and image fetches never mark a job opened or spend credits. The
+  explicit posting button POSTs `/j/:token/open`, records interest and redirects.
+- Role and ready-kit messages send their card as Sendblue `media_url`, with the
+  usable text link preserved. Only same-origin HTTPS share links are attached.
+  No retry-on-media-error: an ambiguous send must not duplicate the message.
+- Kit previews distinguish resume coverage from hiring probability. Missing
+  scores no longer become zero. No private rationale is exposed on job previews.
+- `test/card.mjs` covers page/image responses, legacy links, isolated owners,
+  read-only crawlers, mobile browser navigation and the mocked Sendblue payload.
+  Real-phone attachment rendering and Apple's automatic preview behavior still
+  need observation. An attachment is not an interactive tappable link card.
 
 ### September 25 conversation release
 
@@ -202,7 +219,7 @@ House rules, learned the hard way:
 
 ## Open, in rough priority order
 
-1. **Submit extension 1.21.2 to the Chrome Web Store.** It is downloadable from
+1. **Submit extension 1.21.3 to the Chrome Web Store.** It is downloadable from
    `/extension` today, but only the store updates existing installs silently.
 2. **Verify the three unverified Sendblue behaviours** above from a real phone.
 3. **Crawl ATS board tokens** for coverage.
