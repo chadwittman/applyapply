@@ -236,6 +236,12 @@ async function initSchema() {
       used_at TIMESTAMPTZ
     )
   `);
+  await q(`ALTER TABLE phone_claims ADD COLUMN IF NOT EXISTS pending_url TEXT`);
+  await q(`CREATE TABLE IF NOT EXISTS text_preferences (
+    user_email TEXT PRIMARY KEY, enabled BOOLEAN NOT NULL DEFAULT false,
+    frequency TEXT NOT NULL DEFAULT 'daily', hour INTEGER NOT NULL DEFAULT 9,
+    timezone TEXT NOT NULL DEFAULT 'UTC', last_sent TEXT
+  )`);
 
   // Small key/value store for settings that must outlive a deploy. The sourcing
   // schedule lived in logs/schedule.json on the ephemeral disk, so every deploy
@@ -361,6 +367,8 @@ async function initSchema() {
     )
   `);
   await q(`CREATE INDEX IF NOT EXISTS idx_chat_messages_user ON chat_messages (user_email, id)`);
+  await q(`CREATE UNIQUE INDEX IF NOT EXISTS idx_chat_inbound_handle ON chat_messages
+    (user_email, (meta->>'inbound_handle')) WHERE direction='in' AND meta->>'inbound_handle' IS NOT NULL`);
 
   // Assistants that install applyapply through their own connector UI: each
   // registers itself, then the person approves it in an OAuth sign-in. The
@@ -943,18 +951,19 @@ async function checkPhoneCode(phone, code) {
   return { ok: true, user_email: row.user_email };
 }
 
-async function createPhoneClaim(phone) {
+async function createPhoneClaim(phone, pendingUrl = null) {
   const code = require('crypto').randomBytes(12).toString('base64url');
-  await q(`INSERT INTO phone_claims (code, phone) VALUES ($1,$2)`, [code, phone]);
+  await q(`DELETE FROM phone_claims WHERE created_at < NOW() - INTERVAL '30 minutes'`);
+  await q(`INSERT INTO phone_claims (code, phone, pending_url) VALUES ($1,$2,$3)`, [code, phone, pendingUrl]);
   return code;
 }
 
 // Spent once, and only while fresh: a code in an old text cannot be replayed.
-async function spendPhoneClaim(code) {
+async function spendPhoneClaim(code, withContext = false) {
   const row = await q1(`UPDATE phone_claims SET used_at = NOW()
      WHERE code = $1 AND used_at IS NULL AND created_at > NOW() - INTERVAL '30 minutes'
-     RETURNING phone`, [String(code || '')]);
-  return row?.phone || null;
+     RETURNING phone, pending_url`, [String(code || '')]);
+  return withContext ? row : row?.phone || null;
 }
 
 
@@ -1109,11 +1118,30 @@ async function kitForShare(token) {
 // ── Chat messages ─────────────────────────────────────────────────────────────
 
 async function addChatMessage(userEmail, direction, body, meta = null) {
-  return q1(`INSERT INTO chat_messages (user_email, direction, body, meta) VALUES ($1,$2,$3,$4) RETURNING id`,
+  return q1(`INSERT INTO chat_messages (user_email, direction, body, meta) VALUES ($1,$2,$3,$4) ON CONFLICT DO NOTHING RETURNING id`,
     [requireOwner(userEmail), direction, String(body).slice(0, 8000), meta ? JSON.stringify(meta) : null]);
 }
 async function getChatMessages(userEmail, afterId = 0) {
-  return q(`SELECT id, direction, body, created_at, COALESCE((meta->>'voice')::boolean, false) AS voice FROM chat_messages WHERE user_email=$1 AND id>$2 ORDER BY id LIMIT 500`, [requireOwner(userEmail), Number(afterId) || 0]);
+  return q(`SELECT id, direction, body, created_at, COALESCE((meta->>'voice')::boolean, false) AS voice FROM chat_messages WHERE user_email=$1 AND id>$2 AND COALESCE(meta->>'hidden','') <> 'true' ORDER BY id LIMIT 500`, [requireOwner(userEmail), Number(afterId) || 0]);
+}
+async function recentChatMessages(userEmail, limit = 16) {
+  return q(`SELECT id, direction, body, meta, created_at FROM chat_messages
+    WHERE user_email=$1 AND COALESCE(meta->>'hidden','') <> 'true'
+    ORDER BY id DESC LIMIT $2`, [requireOwner(userEmail), Math.min(50, limit)]);
+}
+async function setTextUpdates(userEmail, settings) {
+  await q(`INSERT INTO text_preferences (user_email, enabled, frequency, hour, timezone)
+    VALUES ($1,$2,$3,$4,$5) ON CONFLICT (user_email) DO UPDATE SET enabled=EXCLUDED.enabled,
+    frequency=EXCLUDED.frequency, hour=EXCLUDED.hour, timezone=EXCLUDED.timezone`,
+  [requireOwner(userEmail), settings.enabled, settings.frequency || 'daily', settings.hour ?? 9, settings.timezone || 'UTC']);
+}
+async function textSubscribers() {
+  return q(`SELECT t.* FROM text_preferences t WHERE enabled=true
+    AND EXISTS (SELECT 1 FROM phone_links p WHERE p.user_email=t.user_email AND p.stopped=false)`);
+}
+async function claimTextDigest(userEmail, date) {
+  return !!await q1(`UPDATE text_preferences SET last_sent=$2 WHERE user_email=$1 AND enabled=true
+    AND last_sent IS DISTINCT FROM $2 RETURNING user_email`, [requireOwner(userEmail), date]);
 }
 async function lastChatMeta(userEmail, kind) {
   return q1(`SELECT id, meta FROM chat_messages WHERE user_email=$1 AND direction='out' AND meta->>'kind'=$2 ORDER BY id DESC LIMIT 1`, [requireOwner(userEmail), kind]);
@@ -1431,6 +1459,7 @@ async function getAccountExport(userEmail) {
     api_keys: await q('SELECT name,prefix,created_at,last_used_at,revoked_at FROM api_keys WHERE user_email=$1 ORDER BY created_at DESC', [owner]),
     resume_structure: (await q1('SELECT data,created_at FROM resume_structures WHERE user_email=$1', [owner])) || null,
     text_messages: await q('SELECT direction,body,created_at FROM chat_messages WHERE user_email=$1 ORDER BY id', [owner]),
+    text_preferences: await q1('SELECT enabled,frequency,hour,timezone FROM text_preferences WHERE user_email=$1', [owner]),
   };
 }
 
@@ -1440,7 +1469,7 @@ async function deleteAccount(userEmail) {
   try {
     await client.query('BEGIN');
     await client.query('DELETE FROM operation_events WHERE operation_id IN (SELECT id FROM operations WHERE user_email=$1)', [owner]);
-    for (const table of ['user_activity','decisions','evidence','facts','phone_links','resume_files','schedules','runs','jobs','kits','profiles','purchases','api_keys','resume_structures','chat_messages','job_links','job_interest','resume_edits','kit_shares','agent_connects','oauth_codes']) {
+    for (const table of ['user_activity','decisions','evidence','facts','phone_links','text_preferences','resume_files','schedules','runs','jobs','kits','profiles','purchases','api_keys','resume_structures','chat_messages','job_links','job_interest','resume_edits','kit_shares','agent_connects','oauth_codes']) {
       await client.query(`DELETE FROM ${table} WHERE user_email=$1`, [owner]);
     }
     // Feedback stays so the product can be fixed, but stops being theirs.
@@ -1538,7 +1567,7 @@ module.exports = {
   upsertListings, getListings, countListings, getTitleClasses, saveTitleClasses, unclassifiedTitles, getIngestState, recordIngest, withIngestLock,
   createApiKey, listApiKeys, revokeApiKey, emailForApiKey, registerOauthClient, getOauthClient, createOauthCode, peekOauthCode, spendOauthCode, createAgentConnect, getAgentConnect, approveAgentConnect, claimAgentConnect, getResumeStructure, saveResumeStructure, pruneStorage, storageStats,
   kitShareToken, kitForShare, addFeedback, feedbackSeenToday,
-  resetTestKits, addChatMessage, getChatMessages, chatMessageByHandle, lastChatMeta, lastChatPrompt, claimChatPrompt, updateChatMeta, hasChatHistory, clearChat,
+  resetTestKits, addChatMessage, getChatMessages, recentChatMessages, setTextUpdates, textSubscribers, claimTextDigest, chatMessageByHandle, lastChatMeta, lastChatPrompt, claimChatPrompt, updateChatMeta, hasChatHistory, clearChat,
   getUser, getOrCreateUser, addUserCredits, deductUserCredits, chargeCredits, countVoiceNotesToday,
   createMagicLink, getMagicLink, useMagicLink,
 };

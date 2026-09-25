@@ -12,6 +12,10 @@ export APPLYAPPLY_ADMIN_SECRET="e2e-admin"
 export ANTHROPIC_API_KEY="sk-ant-fake-local"
 export HYPERBROWSER_API_KEY=""
 export RESEND_API_KEY=""
+export SENDBLUE_API_KEY=""
+export SENDBLUE_API_SECRET=""
+export SENDBLUE_FROM_NUMBER=""
+export TYPESAFE_API_KEY=""
 export OPENROUTER_API_KEY=""
 export STRIPE_SECRET_KEY="sk_test_fake"
 export PORT="${AA_TEST_PORT:-$(node -e 'const s=require("net").createServer();s.listen(0,"127.0.0.1",()=>{console.log(s.address().port);s.close()})')}"
@@ -45,6 +49,11 @@ for t in ${AA_TEST_SUITES:-test/isolation.mjs test/kits-and-profiles.mjs test/ev
   echo "═══ $t ═══"
   node "$t" || fail=1
 done
+
+# Production text journeys: persistent consent, interruptions and delivery.
+if [[ -z "${AA_TEST_SUITES:-}" ]]; then
+  node test/text-journeys.mjs || fail=1
+fi
 
 # Every extension build still in Chrome Web Store review or in users' hands
 # must keep working against this server. Tag each submission store-<version>.

@@ -51,16 +51,16 @@ try {
   await page.waitForSelector('#bar:not([hidden])');
   await page.waitForTimeout(7000); // several polls on an empty conversation
   assert.equal((await bubbles(page)).length, 1, 'The greeting shows once, not on every poll');
-  let got = await send(page, 'check this out ' + job1.replace('https://', ''), 'redo the resume');
+  let got = await send(page, 'check this out ' + job1.replace('https://', ''), 'saving answers is free');
   assert.equal(got.length, 1, 'One reply, not a wall of messages: ' + JSON.stringify(got));
-  assert.equal(got[0].split('\n\n').length, 5, 'Link, contents, gaps and offer in that one message');
-  assert.match(got[0], /^chatco: done\./, 'the card on the link carries company and role, so the text does not repeat them');
+  assert.match(got[0], /^your chatco application is ready\./);
   const kitLink = got[0].match(/https?:\/\/\S+\/k\/[A-Za-z0-9_-]{16}/)?.[0];
-  assert.match(got[0], /\n\nhttps?:\S+\/k\/[A-Za-z0-9_-]{16}\n\n/, 'the link stands on its own line so it unfurls');
-  assert.match(got[0], /resume \(64% match\), cover letter/);
+  assert.match(got[0], /\nhttps?:\S+\/k\/[A-Za-z0-9_-]{16}\n\n/, 'the link stands on its own line so it unfurls');
+  assert.match(got[0], /tailored resume, cover letter and answers/);
+  assert.ok(!got[0].includes('% match'), 'the message does not imply hiring odds');
   // The offer names the gaps: never "2 things" without saying which.
-  assert.match(got[0], /can't show 2 things it asks for:\n• Built a consumer product\n• Shipped a browser extension/);
-  assert.match(got[0], /👍 or "yes" and i'll ask, one at a time, then redo the resume \(8 credits\)/);
+  assert.match(got[0], /can't yet show:\n• Built a consumer product\n• Shipped a browser extension/);
+  assert.match(got[0], /saving answers is free/);
   // The voice: lower case, and no sentence the eye has to work through.
   const caps = got[0].replace(/https?:\/\/\S+/g, '').replace(/[^A-Z]/g, '').length;
   assert.ok(caps <= 2, 'the reply is lower case, apart from anything the posting itself capitalises: ' + caps);
@@ -102,11 +102,13 @@ try {
   got = await send(page, 'Ran the Tallyhouse consumer app, 200k MAU.', '2 of 2');
   assert.match(got.at(-1), /2 of 2: Shipped a browser extension/);
   // The rewrite itself needs a real model key, which this server does not have.
-  got = await send(page, 'Built applyapply, in the Chrome Web Store.', 'answers|rewrite');
+  const balanceBeforeAnswers = (await db.getUser(email)).credits;
+  got = await send(page, 'Built applyapply, in the Chrome Web Store.', '8 credits');
   const saved = await db.getEvidence(email, { answeredOnly: true });
   assert.ok(saved.some(r => /200k MAU/.test(r.answer)) && saved.some(r => /Chrome Web Store/.test(r.answer)), 'Both answers saved');
-  assert.match(got.at(-1), /got 2 answers\.|couldn't rewrite it/, 'The last answer starts the rewrite: ' + JSON.stringify(got));
-  console.log('PASS: one question per text, each answered on its own, then the rewrite');
+  assert.match(got.at(-1), /saved 2 answers\./);
+  assert.equal((await db.getUser(email)).credits, balanceBeforeAnswers, 'saving the last answer never triggers a paid rewrite');
+  console.log('PASS: one question per text, answers saved, rewrite waits for consent');
 
   // A voice note (transcribed in the browser on this test line) arrives as text marked as voice.
   await page.evaluate(() => fetch('/imessage/send', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + localStorage.getItem('aa_session') }, body: JSON.stringify({ text: 'status', voice: true, seconds: 20 }) }));
@@ -127,12 +129,12 @@ try {
 
   // Each role is its own message with its own tracked link, so a reply can
   // land on one of them rather than describing which you meant.
-  got = await send(page, 'matches', "or 1, 2 or 3");
+  got = await send(page, 'matches', "pick its number");
   const roleMessages = got.filter(b => /^\d\) /.test(b));
   // A role you already have an application for is finished business: job1 was
   // written earlier in this test, so the queue does not offer it again.
   assert.equal(roleMessages.length, 1, 'only what is still to do: ' + JSON.stringify(got));
-  assert.match(roleMessages[0], /^1\) ChatCo2, Director of Product/);
+  assert.match(roleMessages[0], /^1\) chatco2, director of product/);
   assert.ok(!got.join('\n').includes('Head of Product'), 'the one already written is not re-offered');
   assert.match(roleMessages[0], /\/j\/[A-Za-z0-9_-]{6,}/, 'it carries a link we can see them open');
   // Tapping it is an event, and the employer's own page is where they land.

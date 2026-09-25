@@ -54,7 +54,7 @@ const VOICE = '# applyapply\nlower case, short.';
   // told what it was about instead of asking which one.
   const onOne = agent.situation({ credits: 5, repliedTo: 'Watershed, Head of Product', repliedToUrl: 'https://x/y' });
   assert.match(onOne, /replied to your message about Watershed, Head of Product/);
-  assert.match(onOne, /use that URL with write_kit rather than asking which one/);
+  assert.match(onOne, /not permission to spend credits/);
 
   // Every tool the line can perform is described for the model, and the ones
   // that spend say so.

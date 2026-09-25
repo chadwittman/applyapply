@@ -14,7 +14,7 @@
 const TOOLS = [
   { name: 'list_matches', description: 'Roles that fit this person right now, from their pipeline or the shared listings ledger. Free. Use this whenever they ask what is available, what fits them, or whether anything new has come up.',
     input_schema: { type: 'object', properties: {} } },
-  { name: 'write_kit', description: 'Write the whole application for one job: a resume tailored to that posting, a cover letter, and answers to the form\'s questions. Costs 10 credits and takes about 15 seconds. Use it when they send a job link, or when they choose one of the roles you listed.',
+  { name: 'write_kit', description: 'Offer to write the whole application for one job: a resume tailored to that posting, a cover letter, and answers to the form\'s questions. Costs 10 credits. This sends a priced confirmation and waits for the user. Use only when they want an application, not when they ask for advice about a role.',
     input_schema: { type: 'object', properties: {
       url: { type: 'string', description: 'The job posting URL, when they sent one' },
       choice: { type: 'integer', description: 'Which of the roles you last listed, counting from 1' },
@@ -42,7 +42,7 @@ const TOOLS = [
 // message, and a text line is supposed to be cheap.
 function situation({ credits, listed = [], openQuestion = null, lastKit = null, targeting = '', repliedTo = null, repliedToUrl = null }) {
   const lines = [];
-  if (repliedTo) lines.push(`They replied to your message about ${repliedTo}${repliedToUrl ? ` (${repliedToUrl})` : ''}. Whatever they said is about that role, so use that URL with write_kit rather than asking which one.`);
+  if (repliedTo) lines.push(`They replied to your message about ${repliedTo}${repliedToUrl ? ` (${repliedToUrl})` : ''}. This identifies the role, not permission to spend credits. Answer their actual question. Only offer writing if they ask for an application.`);
   lines.push(`They have ${credits ?? 'an unknown number of'} credits.`);
   if (targeting) lines.push(`They are looking for: ${targeting}.`);
   if (listed.length) lines.push(`Roles you listed last, in order:\n${listed.map((j, i) => `${i + 1}. ${j.company}: ${j.role}`).join('\n')}`);
@@ -67,9 +67,15 @@ ${situation(context)}
 ## How to work
 
 You have tools. Use them rather than describing what you would do. If they ask
-what fits them, call list_matches and tell them what came back. If they send a
-job link or choose a role, call write_kit. If they tell you something true
+what fits them, call list_matches and tell them what came back. Discussing a
+job or liking a role is not permission to write it. If they tell you something true
 about themselves, call remember_fact.
+
+Paid tools send a confirmation themselves. Never say the application was written,
+the resume updated, or a search started when the tool only offered it.
+Recent conversation is context, not fresh authorization. If a reply is ambiguous,
+ask which role or action they mean. Acknowledge discouragement before offering work.
+Never describe a match percentage as the chance of being hired.
 
 Never claim you have done something you have not done with a tool. Never
 promise to do something later: this is the only moment you have.
@@ -84,7 +90,7 @@ this on a phone, hours later, with no idea which job you mean.
 
 Reply with the message to send them and nothing else. No greeting, no sign-off.`;
 
-  const messages = [{ role: 'user', content: message }];
+  const messages = [...(context.history || []).slice(-12), { role: 'user', content: message }];
   for (let round = 0; round < MAX_ROUNDS; round++) {
     const reply = await callModel({ system, messages, tools: TOOLS });
     if (!reply) return null;
@@ -95,10 +101,13 @@ Reply with the message to send them and nothing else. No greeting, no sign-off.`
     messages.push({ role: 'assistant', content: reply.content });
     const results = [];
     for (const call of calls) {
-      log(`tool ${call.name} ${JSON.stringify(call.input || {}).slice(0, 120)}`);
+      log(`tool ${call.name}`);
       let output;
       try { output = await invoke(call.name, call.input || {}); }
       catch (e) { output = { error: e.message }; }
+      // A confirmation/result already delivered by code ends the turn. More
+      // model calls could bury the offer or falsely announce completion.
+      if (output?.already_sent === true) return null;
       results.push({ type: 'tool_result', tool_use_id: call.id, content: JSON.stringify(output ?? null).slice(0, 4000) });
     }
     messages.push({ role: 'user', content: results });

@@ -139,7 +139,7 @@ await hook({ from_number: '+15125550444', content: 'hello' });
 await new Promise(r => setTimeout(r, 1200));
 const greeting = (await getChatMessages(OWNER, 0)).slice(beforeHi).find(m => m.direction === 'out');
 assert.ok(greeting, 'a hello is answered');
-assert.match(greeting.body, /applyapply/);
+assert.match(greeting.body, /have a job in mind, or want me to find a few/);
 assert.ok(!/^Send me a job link/i.test(greeting.body), 'and does not open by asking for a link');
 // Lower case, and short enough to read on a lock screen.
 const letters = greeting.body.replace(/[^a-z]/gi, '');
@@ -188,5 +188,26 @@ assert.equal(found?.meta?.company, 'Watershed', 'a reply on that message finds t
 assert.equal(await db.chatMessageByHandle(OWNER, 'H-NOPE'), null);
 assert.equal(await db.chatMessageByHandle(OTHER, 'H-ROLE-1'), null, 'and only within their own conversation');
 console.log('PASS: a reply landing on one message resolves to that role');
+
+await db.linkPhone(MINE, OWNER);
+const replayMark = (await db.getChatMessages(OWNER, 0)).length;
+await hook({ from_number: MINE, content: 'credits', message_handle: 'INBOUND-ONCE' });
+await hook({ from_number: MINE, content: 'credits', message_handle: 'INBOUND-ONCE' });
+await settle();
+assert.equal((await db.getChatMessages(OWNER, 0)).slice(replayMark).filter(m => m.direction === 'in').length, 1);
+const mediaMark = (await db.getChatMessages(OWNER, 0)).length;
+await hook({ from_number: MINE, media_url: 'https://example.invalid/audio.caf', message_handle: 'MEDIA-ONCE' });
+await settle();
+assert.ok((await db.getChatMessages(OWNER, 0)).slice(mediaMark).some(m => /can't read that attachment/.test(m.body)));
+console.log('PASS: webhook retries are deduped and media-only messages get an honest response');
+
+const pendingUrl = 'https://jobs.lever.co/pending/original';
+const pendingClaim = await db.createPhoneClaim('+15125550888', pendingUrl);
+assert.equal((await connect(pendingClaim, OTHER)).status, 200);
+await settle();
+const pending = await db.lastChatMeta(OTHER, 'paid_offer');
+assert.equal(pending?.meta.url, pendingUrl, 'phone connection resumes the original posting');
+assert.equal((await db.getUser(OTHER)).credits, 0, 'connection does not buy anything');
+console.log('PASS: account connection preserves the posting without spending');
 
 await db.pool.end();

@@ -16,8 +16,8 @@ for credits.
 |---|---|
 | Site | https://applyapply.xyz |
 | Health | https://applyapply.xyz/health (reports `version`) |
-| Server version | 0.72.0 |
-| Extension | **1.21.0 in the working tree, 1.19.3 in the Chrome Web Store** |
+| Server version | 0.74.0 |
+| Extension | **1.21.2 in the working tree, 1.19.3 in the Chrome Web Store** |
 | Deploy | push to `main`, Railway builds and restarts. No other step. |
 | Repo | github.com/chadwittman/applyapply, local at `~/job-search` |
 
@@ -95,11 +95,44 @@ test/run.sh           the whole suite: throwaway Postgres, real server, real Chr
 
 ## Text line status
 
+### September 25 conversation release
+
+Production is Sendblue. `/imessage` is only the private browser test harness.
+New behavior, covered by `test/text-journeys.mjs` and the webhook/browser suites:
+
+- Bare links and numbered choices produce persistent priced offers. First use
+  requires a typed confirmation. Clear repeat writing requests can use the same
+  previously accepted price. Model tool calls can only propose paid work.
+- Reactions never authorize spending. A reply target identifies a role, not intent.
+- Phone claims preserve the original posting through connection. A missing resume
+  prompts for setup and keeps that posting for `ready`.
+- Gap answers are saved free, then a separate priced rewrite is offered.
+- `continue` resumes paused questions. Ambiguous yes replies do not buy old offers.
+- `did you finish?` retrieves the stored kit without generating or charging again.
+- Inbound message handles are deduped per account. Failed outbound delivery is
+  recorded in message metadata. Delivery remains best effort, not a durable outbox.
+- Role discussion uses the actual posting and profile. Recommendations respect
+  target roles, remote preferences, known weak-interest scores and prior decisions.
+- `only remote`, `too senior` on a role and `more like the second one` update
+  preferences (level/function changes ask for confirmation).
+- Free updates are explicitly opted into with e.g. `daily at 9am central`.
+  `weekdays` and `weekly` (Monday) are supported. Times are 8am to 8pm local.
+  At most three previously untexted matches, once per local date. No matches,
+  no message. `updates off` and carrier STOP are respected. No paid work runs.
+- Test runner disables Sendblue and TypeSafe credentials, including `.env` fallback.
+
+These tests do not establish real-phone delivery, tapbacks, or transcription.
+**Correction to the earlier handoff:** native audio attachment transcription was
+not implemented. Media-only messages now receive an honest keyboard-dictation
+fallback. Browser dictation and its charging tests are separate from real audio.
+Sendblue's current webhook docs document nested `reply_to.message_handle` (already
+supported); its real-phone behavior still needs observation.
+
 **Working and verified in production:** inbound webhook (`POST
 /sendblue/webhook`), outbound replies, phone verification both ways (a texted
 link, or a six-digit code from the profile page), STOP/START/HELP, kit writing
-from a texted job link, gap questions one at a time, voice notes with credit
-charging past two minutes, corrections, the agent answering in plain English.
+from a texted job link, gap questions one at a time, corrections, the agent
+answering in plain English. These refer to observations before the current release.
 
 **Built but never seen working against the real service:**
 
@@ -169,7 +202,7 @@ House rules, learned the hard way:
 
 ## Open, in rough priority order
 
-1. **Submit extension 1.21.0 to the Chrome Web Store.** It is downloadable from
+1. **Submit extension 1.21.2 to the Chrome Web Store.** It is downloadable from
    `/extension` today, but only the store updates existing installs silently.
 2. **Verify the three unverified Sendblue behaviours** above from a real phone.
 3. **Crawl ATS board tokens** for coverage.

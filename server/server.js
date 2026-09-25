@@ -70,7 +70,7 @@ for (const method of ['get','post','put','patch','delete']) {
     (req, res, next) => { try { Promise.resolve(handler(req,res,next)).catch(next); } catch (e) { next(e); } }));
 }
 const PORT = process.env.PORT || 5000;
-const VERSION = '0.73.0';
+const VERSION = '0.74.0';
 const IS_PRODUCTION = process.env.NODE_ENV === 'production';
 const APP_ORIGIN = process.env.APP_ORIGIN || 'http://localhost:5000';
 const ALLOWED_WEB_ORIGINS = new Set(
@@ -1064,6 +1064,8 @@ const chat = require('./conversation')({ db, port: PORT, origin: APP_ORIGIN.repl
   // Roles that fit, read straight from the shared ledger: no search, no
   // credits, so a first text can answer with real jobs.
   typeSafeKey: process.env.TYPESAFE_API_KEY || null,
+  readPosting: url => fetchJobPageText(url),
+  roleClassifier: async () => classifierFor(await titleClasses()),
   // Small and fast: this writes a sentence or two, never a kit.
   askModel: prompt => callClaude(prompt, 400, MODEL_ANTHROPIC),
   // Tool calling for the text line. Haiku: this decides and writes a sentence,
@@ -1344,9 +1346,9 @@ app.post('/sendblue/webhook', textLineLimiter, express.json({ limit: '256kb' }),
   // acknowledges first and works afterwards.
   res.status(200).json({ ok: true });
   try {
-    const { from, content, handle, isOutbound, reaction, replyTo } = sendblue.parseInbound(req.body);
+    const { from, content, media, handle, isOutbound, reaction, replyTo } = sendblue.parseInbound(req.body);
     if (isOutbound) return;
-    if (!from || (!content && !reaction)) {
+    if (!from || (!content && !reaction && !media)) {
       // The shape Sendblue sends for anything we do not read yet. Logged with
       // the keys only, so the next unknown kind is diagnosable and no message
       // text lands in a log.
@@ -1376,16 +1378,18 @@ app.post('/sendblue/webhook', textLineLimiter, express.json({ limit: '256kb' }),
     if (!email) {
       // One link, good for half an hour, spent in a browser where the person
       // is signed in. Until then this number is nobody.
-      const code = await db.createPhoneClaim(from);
-      const link = `${APP_ORIGIN.replace(/\/$/, '')}/text/connect?c=${encodeURIComponent(code)}`;
-      return void await sendblue.send(from, `Tap to connect this number to your applyapply account:\n${link}\n\nIt expires in 30 minutes. Reply STOP to stop.`).catch(() => {});
+      if (link?.stopped) return;
+      const pendingUrl = chat.findJobLink(content);
+      const code = await db.createPhoneClaim(from, pendingUrl);
+      const connectLink = `${APP_ORIGIN.replace(/\/$/, '')}/text/connect?c=${encodeURIComponent(code)}`;
+      return void await sendblue.send(from, `${pendingUrl ? 'i\'ve kept the posting. ' : ''}connect your account to get started:\n${connectLink}\n\nthis link expires in 30 minutes. reply STOP to stop.`).catch(() => {});
     }
 
     if (handle) lastInboundHandle.set(email, handle);
     // Replying to one message out of several is how a phone says "that one".
     const repliedTo = replyTo ? await db.chatMessageByHandle(email, replyTo).catch(() => null) : null;
     await chat.handle(email, content || (reaction?.emoji || reaction?.kind || ''),
-      { reaction, channel: 'sms', about: repliedTo?.meta?.url ? repliedTo.meta : null });
+      { reaction, media: !!media, channel: 'sms', handle, replyId: repliedTo?.id || null, about: repliedTo?.meta?.url ? repliedTo.meta : null });
   } catch (e) {
     console.error('[sendblue webhook]', e.message);
   }
@@ -1407,11 +1411,14 @@ ${line
 <table style="border-collapse:collapse;width:100%;font-size:15px">
 <tbody>
 ${[
-  ['a job link', 'the whole application comes back: resume, cover letter, the form\'s own questions'],
+  ['a job link', 'discuss the role or confirm an application for 10 credits'],
   ['matches', 'the roles that fit you right now'],
-  ['1, 2 or 3', 'write the application for that one'],
-  ['👍', 'a thumb on my last message means yes: no typing'],
-  ['a voice note', 'answer a question by talking; the first two minutes a day are free'],
+  ['1, 2 or 3', 'choose a role. confirm the price before writing'],
+  ['👍', 'acknowledge a message. reactions never spend credits'],
+  ['keyboard dictation', 'use the keyboard microphone to send your answer as text'],
+  ['continue', 'pick up a paused question'],
+  ['daily at 9am central', 'free new-match updates at your chosen time. weekdays and weekly also work'],
+  ['updates off', 'stop proactive job updates'],
   ['rewrite', 'redo the resume using the answers you have given me'],
   ['remember …', 'a correction i apply to everything i write about you'],
   ['skip 2 · applied 1', 'update a role in your pipeline'],
@@ -1434,7 +1441,7 @@ app.get('/text/connect', apiLimiter, async (req, res) => {
     desc: 'Connect a phone number to your applyapply account.',
     path: '/text/connect',
     body: `<h1>Connect this number</h1>
-<p>Texting applyapply from this number will write kits and spend credits on your account. Only connect a number you use.</p>
+<p>connect a number you use. writing an application costs 10 credits. the text line asks before your first purchase, and reactions never spend credits.</p>
 <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:22px">
   <button id="go" style="padding:13px 24px;background:#fff;color:#000;border:0;border-radius:8px;font-size:16px;font-weight:700;cursor:pointer;font-family:inherit">Connect my number</button>
 </div>
@@ -1450,7 +1457,7 @@ document.getElementById('go').addEventListener('click',function(){
     .then(function(r){return r.json().then(function(d){return {ok:r.ok,d:d};});})
     .then(function(x){
       if(!x.ok)throw new Error(x.d.error||'Could not connect that number');
-      st.textContent='Connected '+x.d.phone+'. Text a job link and I will write the kit.';
+      st.textContent='connected. head back to messages to pick up where you left off.';
     })
     .catch(function(e){st.textContent=e.message;document.getElementById('go').disabled=false;});
 });
@@ -1461,11 +1468,12 @@ document.getElementById('go').addEventListener('click',function(){
 app.post('/text/connect', apiLimiter, async (req, res) => {
   const email = reqUserEmail(req);
   if (!email) return res.status(401).json({ error: 'Sign in required' });
-  const phone = await db.spendPhoneClaim(req.body?.code);
-  if (!phone) return res.status(400).json({ error: 'That link has expired. Text the line again for a fresh one.' });
+  const claim = await db.spendPhoneClaim(req.body?.code, true);
+  if (!claim) return res.status(400).json({ error: 'That link has expired. Text the line again for a fresh one.' });
+  const phone = claim.phone;
   await db.linkPhone(phone, email);
   res.json({ ok: true, phone });
-  chat.welcome(email).catch(e => console.error('[welcome]', e.message));
+  (claim.pending_url ? chat.handle(email, claim.pending_url, { channel: 'sms' }) : chat.welcome(email)).catch(e => console.error('[welcome]', e.message));
 });
 
 // Verify a number by holding it, not by proving an email. The person types
@@ -7924,11 +7932,18 @@ if (require.main === module) {
         console.log(`AI: ${keys ? `enabled via ${keys.provider} (haiku)` : 'disabled: no API key found'}\n`);
         if (process.env.NODE_ENV !== 'test') {
           startCron();
+          let digestRunning = false;
+          setInterval(async () => {
+            if (digestRunning) return;
+            digestRunning = true;
+            try { await chat.sendDigests(); } catch { console.error('[text updates] delivery failed'); }
+            finally { digestRunning = false; }
+          }, 60_000).unref();
           const worker = require('./source-worker')(db, undefined, async op => {
             const complete = op.status === 'succeeded';
             const added = op.result?.added || 0;
             const kitsReady = complete && added ? await prepareKits(op.user_email, op.result?.run_id || op.id).catch(e => { console.error('[auto kits]', e.message); return 0; }) : 0;
-            if (complete) chat.notifySearchDone(op.user_email, added).catch(e => console.error('[chat notify]', e.message));
+            if (complete) chat.notifySearchDone(op.user_email, added, { scheduled: op.payload?.trigger === 'scheduled' }).catch(e => console.error('[chat notify]', e.message));
             const preferences = await db.getProfileByUserEmail(op.user_email);
             if (complete && added === 0 && preferences?.search_mode === 'selective') return;
             const scheduled = op.payload?.trigger === 'scheduled';
