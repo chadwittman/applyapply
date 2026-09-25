@@ -31,15 +31,22 @@ never commit either. Names only: `ANTHROPIC_API_KEY`, `TYPESAFE_API_KEY`,
 
 ### The extension does not deploy with the server
 
-This confuses everybody once. Pushing to `main` ships the server. The extension is
-a separate artifact that users install from the Chrome Web Store, which still
-serves **1.19.3**, tagged `store-1.19.3`. Loading `~/job-search/extension`
-unpacked is the only way to run anything newer, which is why recent extension
-work exists on one machine only. `test/run.sh` replays the extension suites
-against every `store-*` tag, so server changes must stay compatible with what is
-actually installed out there.
+There are two channels and they move at different speeds.
 
-**Unshipped extension work (1.19.3 → 1.21.0), six fixes:**
+`/extension.zip` is built from the deployed tree at request time, so pushing to
+`main` does publish the extension: the site serves the current version within a
+minute of a deploy, and `/extension` is a real distribution channel.
+
+The Chrome Web Store is the other one, and it still serves **1.19.3**, tagged
+`store-1.19.3`. It is the only channel that updates silently for people who
+already installed. A zip install is a snapshot: it does not update itself, so
+somebody who installed last week is running last week's extension until they
+download again. The sidebar tells them when that has happened.
+
+`test/run.sh` replays the extension suites against every `store-*` tag, so
+server changes must stay compatible with what is actually installed out there.
+
+**In 1.21.0, downloadable now, not yet in the Web Store:**
 
 1. Fills a form inside a cross-origin iframe (Comparably fronting Greenhouse: the
    top frame has zero inputs and all 30 fields are in the embed).
@@ -162,8 +169,8 @@ House rules, learned the hard way:
 
 ## Open, in rough priority order
 
-1. **Submit extension 1.21.0 to the Chrome Web Store.** Six real fixes reach
-   nobody until this happens.
+1. **Submit extension 1.21.0 to the Chrome Web Store.** It is downloadable from
+   `/extension` today, but only the store updates existing installs silently.
 2. **Verify the three unverified Sendblue behaviours** above from a real phone.
 3. **Crawl ATS board tokens** for coverage.
 4. Backups are unverified; resume PDFs live in Postgres (~90 users on a 500MB

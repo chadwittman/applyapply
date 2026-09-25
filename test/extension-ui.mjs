@@ -83,6 +83,27 @@ await page.addScriptTag({content:await readFile(extensionDir.replace(/\/?$/,'/')
   assert.equal(await page.evaluate(()=>window.INJECTED),undefined);
   assert.equal(await page.locator('#jaa-root .sh-company img').count(),0);
   console.log('PASS: cached kit does not auto-fill or execute model HTML');
+
+  // A zip install never updates itself, so being behind has to be visible.
+  if (!process.env.AA_EXTENSION_DIR) {
+    const compare = await page.evaluate(() => ({
+      behind: newerVersion('1.19.3', '1.21.0'),
+      ahead: newerVersion('1.21.0', '1.19.3'),
+      same: newerVersion('1.21.0', '1.21.0'),
+      minor: newerVersion('1.20.9', '1.21.0'),
+      junk: newerVersion('1.21.0', 'nightly'),
+    }));
+    assert.deepEqual(compare, { behind: true, ahead: false, same: false, minor: true, junk: false });
+    const notice = await page.evaluate(() => {
+      const bar = shadow.getElementById('jaa-stale');
+      bar.innerHTML = 'applyapply 9.9.9 is out. You have 1.0.0. <a href="#">Update</a>';
+      bar.hidden = false;
+      return { text: bar.textContent, shown: !bar.hidden };
+    });
+    assert.match(notice.text, /9\.9\.9 is out/);
+    assert.ok(notice.shown);
+    console.log('PASS: an out-of-date install can see that it is behind');
+  }
   await page.evaluate(()=>deterministicFill(currentApp));
   assert.equal(await page.locator('#name').inputValue(),'User typed this');
   assert.equal(await page.locator('#email').inputValue(),alice);

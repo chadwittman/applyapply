@@ -226,6 +226,34 @@ function finishBar(bar) {
 }
 
 const IN_FRAME = window.self !== window.top;
+
+// A zip install is a snapshot: it does not update itself the way a Web Store
+// install does. Somebody can be three fixes behind and have no way to know, so
+// the sidebar says so and links the download.
+function newerVersion(mine, theirs) {
+  const a = String(mine || '').split('.').map(Number), b = String(theirs || '').split('.').map(Number);
+  if (b.some(Number.isNaN) || a.some(Number.isNaN)) return false;
+  for (let i = 0; i < Math.max(a.length, b.length); i++) {
+    const x = a[i] || 0, y = b[i] || 0;
+    if (y > x) return true;
+    if (y < x) return false;
+  }
+  return false;
+}
+
+async function checkForUpdate() {
+  try {
+    const mine = chrome?.runtime?.getManifest?.()?.version;
+    if (!mine) return;
+    const res = await serverFetch('/health');
+    const theirs = res?.data?.extension;
+    if (!theirs || !newerVersion(mine, theirs)) return;
+    const bar = shadow?.getElementById('jaa-stale');
+    if (!bar) return;
+    bar.innerHTML = `applyapply ${theirs} is out. You have ${mine}. <a href="${SERVER}/extension" target="_blank" rel="noopener">Update</a>`;
+    bar.hidden = false;
+  } catch { /* an update notice is never worth an error */ }
+}
 let frameTopUrl = '';
 
 async function init() {
@@ -297,6 +325,7 @@ async function init() {
   injectWidget(serverDown);
   injectCopyButtons();
   observeFields();
+  checkForUpdate();
 
   finishBar(bar);
 }
@@ -385,6 +414,9 @@ function buildHTML(serverDown) {
 }
 .sh-info{flex:1;min-width:0;}
 .sh-eyebrow{font-size:9px;font-weight:700;letter-spacing:.14em;text-transform:uppercase;color:#444;margin-bottom:8px;}
+.stale{background:#1a1407;border-bottom:1px solid #3a2f10;color:#f5d90a;font-size:11px;padding:7px 12px;line-height:1.4;}
+.stale a{color:#fff;text-decoration:underline;}
+.stale[hidden]{display:none;}
 .sh-company{font-size:17px;font-weight:700;color:#fff;letter-spacing:-.02em;line-height:1.1;margin-bottom:3px;}
 .sh-role{font-size:11px;color:#777;line-height:1.4;}
 .sh-meta{font-size:10px;color:#555;margin-top:5px;}
@@ -479,6 +511,7 @@ function buildHTML(serverDown) {
 </style>
 
 <div class="sidebar open" id="jaa-sidebar">
+  <div class="stale" id="jaa-stale" hidden></div>
   <div class="sh">
     <div class="sh-info">
       <div class="sh-eyebrow">applyapply</div>
