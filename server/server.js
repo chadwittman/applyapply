@@ -70,7 +70,7 @@ for (const method of ['get','post','put','patch','delete']) {
     (req, res, next) => { try { Promise.resolve(handler(req,res,next)).catch(next); } catch (e) { next(e); } }));
 }
 const PORT = process.env.PORT || 5000;
-const VERSION = '0.75.0';
+const VERSION = '0.76.0';
 const IS_PRODUCTION = process.env.NODE_ENV === 'production';
 const APP_ORIGIN = process.env.APP_ORIGIN || 'http://localhost:5000';
 const ALLOWED_WEB_ORIGINS = new Set(
@@ -1118,7 +1118,7 @@ const chat = require('./conversation')({ db, port: PORT, origin: APP_ORIGIN.repl
     let handle = null;
     for (const row of await db.phonesForUser(email).catch(() => [])) {
       if (row.stopped) continue;
-      handle = sendblue.handleOf(await sendblue.send(row.phone, body, { mediaUrl: card.messageMedia(body, meta, APP_ORIGIN) })) || handle;
+      handle = sendblue.handleOf(await sendblue.send(row.phone, body)) || handle;
     }
     return handle;
   } });
@@ -1410,10 +1410,16 @@ app.post('/sendblue/webhook', textLineLimiter, express.json({ limit: '256kb' }),
     }
 
     if (handle) lastInboundHandle.set(email, handle);
+    // A visible acknowledgment lands before the slower role lookup. This is
+    // deliberately limited to the free "more" request, so it cannot imply
+    // that a paid action started or duplicate a response tapback.
+    if (handle && /^(?:do we have|are there|have you got|got|show me)\b.*\bmore\b|^more\b/i.test(content)) {
+      await sendblue.react(from, 'like').catch(() => {});
+    }
     // Replying to one message out of several is how a phone says "that one".
     const repliedTo = replyTo ? await db.chatMessageByHandle(email, replyTo).catch(() => null) : null;
     await chat.handle(email, content || (reaction?.emoji || reaction?.kind || ''),
-      { reaction, media: !!media, channel: 'sms', handle, replyId: repliedTo?.id || null, about: repliedTo?.meta?.url ? repliedTo.meta : null });
+      { reaction, media: !!media, channel: 'sms', handle, replyId: repliedTo?.id || null, about: repliedTo?.meta || null });
   } catch (e) {
     console.error('[sendblue webhook]', e.message);
   }

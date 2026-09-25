@@ -209,7 +209,7 @@ module.exports = function conversation({ db, port, signToken, origin, kitLink, r
       const link = token ? `${origin}/j/${token}` : j.url;
       const seen = j.wasOpened?.first_opened_at ? `\nyou opened this ${whenish(j.wasOpened.first_opened_at)}` : '';
       await say(email, `${i + 1}) ${j.company.toLowerCase()}, ${j.role.toLowerCase()}${j.location ? `\n${j.location.toLowerCase()}` : ''}${j.reason ? `\n${j.reason}` : ''}\n${link}${seen}`,
-        { kind: 'match_option', n: i + 1, url: j.url, link, company: j.company, role: j.role });
+        { kind: 'match_option', n: i + 1, url: j.url, link, company: j.company, role: j.role, fit_score: j.fit_score, location: j.location });
       await db.saveActivity(email, j.url, 'texted', { at: new Date().toISOString() }).catch(() => {});
     }
     await db.addChatMessage(email, 'out', '', { kind: 'matches', hidden: true,
@@ -252,7 +252,7 @@ module.exports = function conversation({ db, port, signToken, origin, kitLink, r
   // Order: never sent, then sent but not opened, then opened but not applied
   // for. Anything they applied to, skipped, or already have an application for
   // drops out entirely.
-  async function queue(email, limit = 3) {
+  async function queue(email, limit = 3, { fresh = false } = {}) {
     const [allJobs, opened, kits, profile, interest] = await Promise.all([
       db.getJobs(null, 1000, email).catch(() => []),
       db.openedJobs(email).catch(() => new Map()),
@@ -283,6 +283,7 @@ module.exports = function conversation({ db, port, signToken, origin, kitLink, r
       return true;
     });
     const sentAlready = new Set((await db.getActivity(email, 'texted').catch(() => [])).map(a => a.url));
+    if (fresh) rows = rows.filter(j => !sentAlready.has(j.url));
     const rank = j => (sentAlready.has(j.url) ? 1 : 0) + (opened.has(j.url) ? 1 : 0);
     return rows
       .map(j => ({ ...j, wasOpened: opened.get(j.url) || null, wasSent: sentAlready.has(j.url), reason: matcher.functions.length ? 'matches your target roles. check the posting for location eligibility.' : '' }))
@@ -303,6 +304,13 @@ module.exports = function conversation({ db, port, signToken, origin, kitLink, r
     if (!jobs.length) return say(email, 'nothing waiting that fits right now. text "search" and i\'ll go look.');
     await listRoles(email, jobs);
     await say(email, `reply to a role, or pick its number. writing an application costs ${kitCost} credits.`);
+  }
+
+  async function moreMatches(email) {
+    const jobs = await queue(email, 3, { fresh: true });
+    if (!jobs.length) return say(email, 'that is all i have queued right now. text "search" when you want me to look again.');
+    await listRoles(email, jobs);
+    await say(email, `more roles above. react 👍 to keep one high, or 👎 to see fewer like it. writing an application costs ${kitCost} credits.`);
   }
 
   // Two messages arriving together used to read the same state and both act on
@@ -417,6 +425,18 @@ module.exports = function conversation({ db, port, signToken, origin, kitLink, r
         if (meta.open.length) return askGap(email, { ...meta, answered: meta.answered || 0 });
         return say(email, 'no problem, the kit is ready. reply yes anytime to tune the resume.');
       }
+      // A role tapback is a useful preference signal, not applause. It never
+      // buys a kit, but it changes what appears next and makes the next step
+      // obvious without forcing the person to type a command.
+      if (about?.url && ['match_option', 'job'].includes(about.kind) && (yes || no)) {
+        await db.saveInterest(email, [{ url: about.url, score: yes ? 5 : 1 }]).catch(() => {});
+        const label = jobLabel(about) || 'that role';
+        return say(email, yes
+          ? `saved: interested in ${label}. text "write it" when you want the application. ${kitCost} credits.`
+          : `got it. i'll show fewer roles like ${label}.`);
+      }
+      // A reaction to the instruction after a list means "show me more".
+      if (about?.kind === 'matches' && yes) return moreMatches(email);
       // Anything else is applause, not an instruction.
       return;
     }
@@ -498,6 +518,7 @@ module.exports = function conversation({ db, port, signToken, origin, kitLink, r
       return welcome(email);
     }
     if (/^(help|\?)$/.test(lower)) return say(email, HELP);
+    if (/^(?:do we have|are there|have you got|got|show me)\b.*\bmore\b|^more\b/i.test(lower)) return moreMatches(email);
     if (/^(matches|jobs|new)\b|^(?:find a few|find me a few|anything good|show me (?:jobs|roles|matches))/i.test(lower)) return matches(email);
     const pick = lower.match(/^(\d)$/);
     if (pick) {

@@ -6,7 +6,8 @@ function page(job, token, origin) {
   const base = '/j/' + encodeURIComponent(token);
   const url = origin.replace(/\/$/, '') + base;
   const title = copy([job.role || 'explore this role', job.company].filter(Boolean).join(' at '));
-  const desc = copy([job.location, 'view the posting. you choose what happens next.'].filter(Boolean).join(' · '));
+  const fit = job.fit_score != null && job.fit_score !== '' ? `fit ${job.fit_score}/10` : null;
+  const desc = copy([fit, job.location, 'view the posting. you choose what happens next.'].filter(Boolean).join(' · '));
   return `<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="robots" content="noindex,nofollow"><meta name="referrer" content="same-origin">

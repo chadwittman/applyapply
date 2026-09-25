@@ -67,6 +67,21 @@ try {
   assert.equal(paid().length, 1, 'a reaction on a role cannot buy a kit');
   console.log('PASS: price before spending, persistent consent, duplicate and reaction protection');
 
+  // Reactions are useful preference controls, but never authorization to spend.
+  const reactionEmail = 'reaction-journey@test.local';
+  await db.getOrCreateUser(reactionEmail);
+  const reactionUrl = 'https://jobs.example.com/reaction-role';
+  await chat.handle(reactionEmail, '👍', { reaction: { kind: 'like' }, about: { kind: 'match_option', url: reactionUrl, company: 'Reaction Co', role: 'Product Lead' } });
+  assert.equal(paid().length, 1, 'liking a role still does not buy it');
+  assert.equal((await db.getInterest(reactionEmail)).get(reactionUrl), 5, 'like raises a role preference');
+  await chat.handle(reactionEmail, '👎', { reaction: { kind: 'dislike' }, about: { kind: 'match_option', url: reactionUrl, company: 'Reaction Co', role: 'Product Lead' } });
+  assert.equal((await db.getInterest(reactionEmail)).get(reactionUrl), 1, 'dislike lowers a role preference');
+  console.log('PASS: role reactions tune future matches without spending');
+
+  await chat.handle(reactionEmail, 'do we have more?');
+  assert.ok((await db.getChatMessages(reactionEmail, 0)).some(m => m.body.includes('text "search"') || m.body.includes('more roles above')), 'more is a deterministic free action');
+  console.log('PASS: natural more request lists more or gives a useful search next step');
+
   await chat.handle(email, 'yes');
   assert.equal((await last()).meta.kind, 'gap_question');
   await chat.handle(email, 'I managed six people directly.');

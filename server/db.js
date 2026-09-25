@@ -1007,6 +1007,7 @@ async function jobLinkToken(userEmail, url, job = {}) {
   // Public posting facts only. Never put a person's fit rationale or profile here.
   const preview = Object.fromEntries(['company', 'role', 'location'].filter(k => typeof job[k] === 'string' && job[k].trim())
     .map(k => [k, job[k].trim().slice(0, 300)]));
+  if (job.fit_score != null && Number.isFinite(Number(job.fit_score))) preview.fit_score = Math.max(0, Math.min(10, Number(job.fit_score)));
   // Short enough to sit in a text without wrapping the line.
   const token = require('crypto').randomBytes(6).toString('base64url');
   await q(`INSERT INTO job_links (token, user_email, url, preview) VALUES ($1,$2,$3,$4)
@@ -1021,7 +1022,7 @@ async function jobLinkPreview(token) {
   // Old texted links predate snapshots. Resolve them without recording an open.
   const job = await q1(`SELECT company, role, location FROM jobs WHERE user_email = $1 AND canonical_url = $2 LIMIT 1`, [row.user_email, row.url]);
   const listing = await q1(`SELECT company, role, location FROM listings WHERE url = $1`, [row.url]);
-  return { url: row.url, ...Object.fromEntries(['company', 'role', 'location'].map(k =>
+  return { url: row.url, ...Object.fromEntries(['company', 'role', 'location', 'fit_score'].map(k =>
     [k, row.preview?.[k] || job?.[k] || listing?.[k] || ''])) };
 }
 

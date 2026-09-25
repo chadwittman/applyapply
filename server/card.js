@@ -45,19 +45,23 @@ function wrap(text, size, maxWidth, maxLines) {
   return lines;
 }
 
-function kitSvg({ company, role, location, match, pieces = [], badge = 'application ready' }) {
+function kitSvg({ company, role, location, match, fit, pieces = [], badge = 'application ready' }) {
   const W = 1200, H = 630;
   const roleLines = wrap(String(role || 'your application kit').toLowerCase().replace(/[\u2014\u2013]/g, ', '), 68, 900, 2);
   const roleY = 250 - (roleLines.length - 1) * 40;
   const pct = match != null && match !== '' && Number.isFinite(Number(match)) ? Math.round(Number(match)) : null;
-  const sub = [company, location].filter(Boolean).join('  ·  ').toLowerCase().replace(/[\u2014\u2013]/g, ', ');
+  const companyLine = String(company || '').toLowerCase().replace(/[\u2014\u2013]/g, ', ');
+  const locationLine = String(location || '').toLowerCase().replace(/[\u2014\u2013]/g, ', ');
+  const fitNumber = fit != null && fit !== '' && Number.isFinite(Number(fit)) ? Math.max(0, Math.min(10, Number(fit))) : null;
   return `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">
   <rect width="${W}" height="${H}" fill="#000000"/>
   <rect x="0" y="0" width="${W}" height="6" fill="#ffffff"/>
   <text x="72" y="104" font-family="Inter" font-weight="700" font-size="30" fill="#ffffff" letter-spacing="-0.5">applyapply</text>
   <text x="1128" y="103" text-anchor="end" font-family="Inter" font-weight="700" font-size="24" fill="#4ade80">${esc(badge)}</text>
   ${roleLines.map((l, i) => `<text x="72" y="${roleY + i * 80}" font-family="Inter" font-weight="700" font-size="68" fill="#ffffff" letter-spacing="-2">${esc(l)}</text>`).join('\n  ')}
-  <text x="72" y="${roleY + roleLines.length * 80 + 18}" font-family="Inter" font-size="34" fill="#9a9a9a">${esc(wrap(sub, 34, 1000, 1)[0] || '')}</text>
+  <text x="72" y="${roleY + roleLines.length * 80 + 20}" font-family="Inter" font-weight="700" font-size="38" fill="#ffffff">${esc(wrap(companyLine, 38, 1000, 1)[0] || '')}</text>
+  <text x="72" y="${roleY + roleLines.length * 80 + 64}" font-family="Inter" font-size="28" fill="#9a9a9a">${esc(wrap(locationLine, 28, 1000, 1)[0] || '')}</text>
+  ${fitNumber !== null ? `<text x="${W - 72}" y="432" text-anchor="end" font-family="Inter" font-weight="700" font-size="28" fill="#4ade80">fit ${fitNumber}/10</text>` : ''}
   ${pct !== null ? `<text x="72" y="432" font-family="Inter" font-size="26" fill="#4ade80">${pct}% resume coverage</text>` : ''}
   <line x1="72" y1="486" x2="${W - 72}" y2="486" stroke="#1e1e1e" stroke-width="2"/>
   <text x="72" y="546" font-family="Inter" font-size="30" fill="#e5e5e5">${esc(pieces.slice(0, 4).join('   ·   ').slice(0, 74).toLowerCase())}</text>
@@ -97,18 +101,10 @@ function kitCard(kit) {
 
 function jobCard(job) {
   return available() ? render(kitSvg({ ...job, role: job.role || 'explore this role', badge: 'role to explore',
+    fit: job.fit_score,
     pieces: ['view posting', 'you choose what happens next'] })) : null;
 }
 
 // Attach the same useful card directly, independent of automatic link unfurling.
 // Only these explicit message kinds may expose their existing share-token image.
-function messageMedia(body, meta, origin) {
-  if (!['match_option', 'kit', 'resume_offer'].includes(meta?.kind) || !meta.link || !String(body).includes(meta.link)) return null;
-  try {
-    const url = new URL(meta.link), site = new URL(origin);
-    if (url.origin !== site.origin || url.protocol !== 'https:' || !/^\/(j|k)\/[A-Za-z0-9_-]+$/.test(url.pathname) || url.search || url.hash) return null;
-    return url.href + '/card.png';
-  } catch { return null; }
-}
-
-module.exports = { kitCard, jobCard, messageMedia, kitSvg, render, available, wrap, piecesFor };
+module.exports = { kitCard, jobCard, kitSvg, render, available, wrap, piecesFor };

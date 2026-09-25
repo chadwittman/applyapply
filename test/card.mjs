@@ -119,32 +119,7 @@ try {
 } finally { await browser.close(); }
 console.log('PASS: own-site job previews, no private facts, no phantom opens or charges');
 
-// Real sending is replaced by a local fetch stub. No message can leave this test.
-const sendblue = require('./sendblue');
-const liveOrigin = 'https://applyapply.xyz';
-const liveLink = liveOrigin + '/j/' + jobToken;
-const meta = { kind: 'match_option', link: liveLink };
-const media = card.messageMedia(liveLink, meta, liveOrigin);
-assert.equal(media, liveLink + '/card.png');
-assert.equal(card.messageMedia(liveLink, { ...meta, kind: 'gap_question' }, liveOrigin), null);
-assert.equal(card.messageMedia('not a link', meta, liveOrigin), null);
-assert.equal(card.messageMedia('https://evil.example/j/abc', { ...meta, link: 'https://evil.example/j/abc' }, liveOrigin), null);
-assert.equal(card.messageMedia(liveLink, meta, 'http://localhost:5000'), null);
-const realFetch = globalThis.fetch;
-const savedKey = process.env.SENDBLUE_API_KEY, savedSecret = process.env.SENDBLUE_API_SECRET;
-try {
-  process.env.SENDBLUE_API_KEY = 'fake'; process.env.SENDBLUE_API_SECRET = 'fake';
-  globalThis.fetch = async (_url, opts) => {
-    const payload = JSON.parse(opts.body);
-    assert.equal(payload.media_url, media);
-    assert.equal(payload.content, liveLink, 'keep a usable link alongside the image');
-    return new Response(JSON.stringify({ message_handle: 'test-card' }), { status: 200 });
-  };
-  assert.equal(sendblue.handleOf(await sendblue.send('+15125550123', liveLink, { mediaUrl: media })), 'test-card');
-} finally {
-  globalThis.fetch = realFetch;
-  if (savedKey === undefined) delete process.env.SENDBLUE_API_KEY; else process.env.SENDBLUE_API_KEY = savedKey;
-  if (savedSecret === undefined) delete process.env.SENDBLUE_API_SECRET; else process.env.SENDBLUE_API_SECRET = savedSecret;
-}
-console.log('PASS: card attachment and clickable text link share one Sendblue request');
+const roleCard = card.jobCard({ company: 'Preview Co', role: 'Product Lead', location: 'remote', fit_score: 8 });
+assert.equal(roleCard.subarray(1, 4).toString(), 'PNG');
+console.log('PASS: one role link carries the useful preview, without a duplicate image attachment');
 await db.pool.end();
