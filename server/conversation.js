@@ -304,6 +304,11 @@ module.exports = function conversation({ db, port, signToken, origin, kitLink, r
     if (!jobs.length) return say(email, 'nothing waiting that fits right now. text "search" and i\'ll go look.');
     await listRoles(email, jobs);
     await say(email, `reply to a role, or pick its number. writing an application costs ${kitCost} credits.`);
+    const prefs = await db.textPreferences(email).catch(() => null);
+    if (!prefs?.prompted) {
+      await db.markTextUpdatesPrompted(email).catch(() => {});
+      await say(email, 'want alerts for strong new matches? text "learn my timing" and i\'ll learn when you usually check messages.', { kind: 'adaptive_offer' });
+    }
   }
 
   async function moreMatches(email) {
@@ -353,11 +358,21 @@ module.exports = function conversation({ db, port, signToken, origin, kitLink, r
     }
     const updates = parseUpdates(message);
     if (updates && !options.reaction) {
-      await db.setTextUpdates(email, updates);
+      await db.setTextUpdates(email, { ...updates, adaptive: false, prompted: true });
       return say(email, `${updates.frequency === 'weekly' ? 'mondays' : updates.frequency} at ${updates.hour}:00 ${updates.timezone.toLowerCase()}. only new matches, up to three. no charge.\n\n"updates off" stops them.`);
     }
     if (/^(?:updates|daily updates|weekly updates|weekdays updates)\b/i.test(message)) {
       return say(email, 'pick a time and timezone, between 8am and 8pm. for example:\n"daily at 9am central"\n\nor weekly on mondays: "weekly at 9am central". no new matches, no message.');
+    }
+    if (latestOut?.meta?.kind === 'adaptive_offer' && !latestOut.meta.done && (isYes(message) || isNo(message))) {
+      await db.updateChatMeta(latestOut.id, { ...latestOut.meta, done: true });
+      if (isNo(message)) return say(email, 'okay. i won\'t send proactive job alerts.');
+      await db.setTextUpdates(email, { enabled: true, adaptive: true, prompted: true, frequency: 'daily', hour: 9, timezone: 'UTC' });
+      return say(email, 'i\'ll watch for strong new matches and learn when you tend to check messages. no kits or credits without your say so.');
+    }
+    if (/^(?:learn my timing|strong match alerts|alerts for strong matches)[.?!\s]*$/i.test(message)) {
+      await db.setTextUpdates(email, { enabled: true, adaptive: true, prompted: true, frequency: 'daily', hour: 9, timezone: 'UTC' });
+      return say(email, 'i\'ll watch for strong new matches and learn when you tend to check messages. no kits or credits without your say so.');
     }
     if (!options.reaction && latestOut?.meta?.kind === 'preference_offer' && !latestOut.meta.done && (isYes(message) || isNo(message))) {
       if (!await db.claimChatPrompt(latestOut.id)) return;
@@ -757,11 +772,13 @@ module.exports = function conversation({ db, port, signToken, origin, kitLink, r
     isTyping: email => typing.has(email),
     sendDigests: async (now = new Date()) => {
       for (const settings of await db.textSubscribers()) {
-        const date = digestWindow(settings, now);
+        const learnedHour = settings.adaptive ? await db.learnedContactHour(settings.user_email).catch(() => null) : null;
+        if (settings.adaptive && learnedHour == null) continue;
+        const date = digestWindow(settings.adaptive ? { ...settings, hour: learnedHour, timezone: 'UTC' } : settings, now);
         if (!date) continue;
         const recent = await db.recentChatMessages(settings.user_email, 1);
         if (recent.length && now - new Date(recent[0].created_at) < 3600000) continue;
-        const jobs = (await bestThree(settings.user_email)).filter(j => !j.wasSent);
+        const jobs = (await bestThree(settings.user_email)).filter(j => !j.wasSent && (!settings.adaptive || Number(j.fit_score) >= 8));
         if (!jobs.length || !await db.claimTextDigest(settings.user_email, date)) continue;
         await say(settings.user_email, 'a few new roles for you:');
         await listRoles(settings.user_email, jobs);

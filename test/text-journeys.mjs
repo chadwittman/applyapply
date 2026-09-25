@@ -175,6 +175,37 @@ try {
   assert.ok((await db.textSubscribers()).some(s => s.user_email === email));
   await chat.handle(email, 'updates off');
   assert.ok(!(await db.textSubscribers()).some(s => s.user_email === email));
+  const adaptive = 'journey-adaptive@test.local';
+  await db.getOrCreateUser(adaptive);
+  await db.setProfile(adaptive, { target_functions: 'product', target_seniority: 'director', location_pref: 'remote' }, true);
+  await db.linkPhone('+15125550995', adaptive);
+  let adaptiveFresh = false;
+  const adaptiveChat = conversation({ ...opts, ledgerMatches: async owner => owner === adaptive ? [
+    { company: adaptiveFresh ? 'New Strong' : 'Strong', role: 'Director of Product', url: `https://jobs.lever.co/adaptive/${adaptiveFresh ? 'new-strong' : 'strong'}`, location: 'Remote', fit_score: 9 },
+    { company: adaptiveFresh ? 'New Weak' : 'Weak', role: 'Director of Product', url: `https://jobs.lever.co/adaptive/${adaptiveFresh ? 'new-weak' : 'weak'}`, location: 'Remote', fit_score: 7 },
+  ] : [] });
+  await adaptiveChat.handle(adaptive, 'matches');
+  assert.ok((await db.getChatMessages(adaptive, 0)).some(m => /learn my timing/.test(m.body)), 'adaptive opt-in appears after value');
+  await adaptiveChat.handle(adaptive, 'learn my timing');
+  assert.equal((await db.textPreferences(adaptive)).adaptive, true);
+  adaptiveFresh = true;
+  const adaptiveBase = new Date();
+  for (let i = 0; i < 4; i++) await db.addChatMessage(adaptive, 'in', 'checking in', { test: true });
+  // The current messages establish enough history for the learned-hour gate.
+  const adaptivePrefs = await db.textPreferences(adaptive);
+  adaptivePrefs.last_sent = null;
+  const adaptiveStart = deliveries.length;
+  const adaptiveRun = new Date(adaptiveBase.getTime() + 2 * 60 * 60 * 1000);
+  adaptiveRun.setUTCMinutes(0, 0, 0);
+  const learned = await db.learnedContactHour(adaptive);
+  adaptiveRun.setUTCHours(learned);
+  adaptiveRun.setUTCDate(adaptiveRun.getUTCDate() + 1);
+  await adaptiveChat.sendDigests(adaptiveRun);
+  const adaptiveMessages = deliveries.slice(adaptiveStart);
+  assert.ok(adaptiveMessages.some(m => /strong/.test(m)), 'adaptive alerts include strong matches');
+  assert.ok(!adaptiveMessages.some(m => /weak/.test(m)), 'adaptive alerts exclude weaker matches');
+  await adaptiveChat.handle(adaptive, 'updates off');
+  assert.equal((await db.textPreferences(adaptive)).enabled, false);
   const sent = deliveries.length;
   await chat.notifySearchDone(email, 3, { scheduled: true });
   assert.equal(deliveries.length, sent, 'scheduled searches cannot bypass digest opt-in');

@@ -65,6 +65,10 @@ subscription, no expiry. New accounts get free credits to start.
   chooses daily, weekdays or weekly (Monday), a time from 8am to 8pm and a timezone,
   for example "daily at 9am central". "updates off" disables them. No matches
   means no message. Updates never start a paid search or write an application.
+- Strong-match alerts are also opt-in. "learn my timing" uses the hours the
+  person tends to message, after enough history exists, and sends at most one
+  short daily digest of roles scored 8/10 or higher. It never writes a kit or
+  spends credits. "updates off" disables it.
 
 ## Answering
 

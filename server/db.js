@@ -239,8 +239,12 @@ async function initSchema() {
   await q(`CREATE TABLE IF NOT EXISTS text_preferences (
     user_email TEXT PRIMARY KEY, enabled BOOLEAN NOT NULL DEFAULT false,
     frequency TEXT NOT NULL DEFAULT 'daily', hour INTEGER NOT NULL DEFAULT 9,
-    timezone TEXT NOT NULL DEFAULT 'UTC', last_sent TEXT
+    timezone TEXT NOT NULL DEFAULT 'UTC', last_sent TEXT,
+    adaptive BOOLEAN NOT NULL DEFAULT false,
+    prompted BOOLEAN NOT NULL DEFAULT false
   )`);
+  await q(`ALTER TABLE text_preferences ADD COLUMN IF NOT EXISTS adaptive BOOLEAN NOT NULL DEFAULT false`);
+  await q(`ALTER TABLE text_preferences ADD COLUMN IF NOT EXISTS prompted BOOLEAN NOT NULL DEFAULT false`);
 
   // Small key/value store for settings that must outlive a deploy. The sourcing
   // schedule lived in logs/schedule.json on the ephemeral disk, so every deploy
@@ -1143,8 +1147,27 @@ async function recentChatMessages(userEmail, limit = 16) {
 async function setTextUpdates(userEmail, settings) {
   await q(`INSERT INTO text_preferences (user_email, enabled, frequency, hour, timezone)
     VALUES ($1,$2,$3,$4,$5) ON CONFLICT (user_email) DO UPDATE SET enabled=EXCLUDED.enabled,
-    frequency=EXCLUDED.frequency, hour=EXCLUDED.hour, timezone=EXCLUDED.timezone`,
-  [requireOwner(userEmail), settings.enabled, settings.frequency || 'daily', settings.hour ?? 9, settings.timezone || 'UTC']);
+    frequency=EXCLUDED.frequency, hour=EXCLUDED.hour, timezone=EXCLUDED.timezone,
+    adaptive=COALESCE($6, text_preferences.adaptive), prompted=COALESCE($7, text_preferences.prompted)`,
+  [requireOwner(userEmail), settings.enabled, settings.frequency || 'daily', settings.hour ?? 9, settings.timezone || 'UTC',
+    settings.adaptive ?? null, settings.prompted ?? null]);
+}
+async function markTextUpdatesPrompted(userEmail) {
+  await q(`INSERT INTO text_preferences (user_email, prompted) VALUES ($1,true)
+    ON CONFLICT (user_email) DO UPDATE SET prompted=true`, [requireOwner(userEmail)]);
+}
+async function textPreferences(userEmail) {
+  return q1(`SELECT * FROM text_preferences WHERE user_email=$1`, [requireOwner(userEmail)]);
+}
+// The text line's timestamps are UTC. For adaptive delivery, matching the
+// hour they actually tend to message is more honest than guessing a timezone.
+async function learnedContactHour(userEmail) {
+  const rows = await q(`SELECT EXTRACT(HOUR FROM created_at AT TIME ZONE 'UTC')::int AS hour, COUNT(*)::int AS n
+    FROM chat_messages WHERE user_email=$1 AND direction='in' AND created_at > NOW() - INTERVAL '30 days'
+    GROUP BY 1 ORDER BY n DESC, hour`, [requireOwner(userEmail)]);
+  const total = rows.reduce((n, r) => n + r.n, 0);
+  if (total < 4 || !rows[0]) return null;
+  return Number(rows[0].hour);
 }
 async function textSubscribers() {
   return q(`SELECT t.* FROM text_preferences t WHERE enabled=true
@@ -1470,7 +1493,7 @@ async function getAccountExport(userEmail) {
     api_keys: await q('SELECT name,prefix,created_at,last_used_at,revoked_at FROM api_keys WHERE user_email=$1 ORDER BY created_at DESC', [owner]),
     resume_structure: (await q1('SELECT data,created_at FROM resume_structures WHERE user_email=$1', [owner])) || null,
     text_messages: await q('SELECT direction,body,created_at FROM chat_messages WHERE user_email=$1 ORDER BY id', [owner]),
-    text_preferences: await q1('SELECT enabled,frequency,hour,timezone FROM text_preferences WHERE user_email=$1', [owner]),
+    text_preferences: await q1('SELECT enabled,frequency,hour,timezone,adaptive,prompted FROM text_preferences WHERE user_email=$1', [owner]),
   };
 }
 
@@ -1570,6 +1593,7 @@ module.exports = {
   getEvidence, addEvidenceQuestions, addAnsweredEvidence, setEvidenceAnswer, deleteEvidence,
   getFacts, addFact, deleteFact,
   jobLinkToken, jobLinkPreview, openJobLink, openedJobs, getInterest, saveInterest, saveResumeEdits, getResumeEdits,
+  markTextUpdatesPrompted, textPreferences, learnedContactHour,
   accountForPhone, phoneLink, phonesForUser, createPhoneCode, checkPhoneCode, linkPhone, unlinkPhone, setPhoneStopped, createPhoneClaim, spendPhoneClaim,
   getSetting, setSetting,
   getSchedule, setSchedule, getDueSchedules, markScheduleRun, getAllEnabledSchedules,

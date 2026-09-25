@@ -70,7 +70,7 @@ for (const method of ['get','post','put','patch','delete']) {
     (req, res, next) => { try { Promise.resolve(handler(req,res,next)).catch(next); } catch (e) { next(e); } }));
 }
 const PORT = process.env.PORT || 5000;
-const VERSION = '0.76.0';
+const VERSION = '0.77.0';
 const IS_PRODUCTION = process.env.NODE_ENV === 'production';
 const APP_ORIGIN = process.env.APP_ORIGIN || 'http://localhost:5000';
 const ALLOWED_WEB_ORIGINS = new Set(
@@ -1448,6 +1448,7 @@ ${[
   ['keyboard dictation', 'use the keyboard microphone to send your answer as text'],
   ['continue', 'pick up a paused question'],
   ['daily at 9am central', 'free new-match updates at your chosen time. weekdays and weekly also work'],
+  ['learn my timing', 'opt into strong-match alerts timed to when you usually message'],
   ['updates off', 'stop proactive job updates'],
   ['rewrite', 'redo the resume using the answers you have given me'],
   ['remember …', 'a correction i apply to everything i write about you'],

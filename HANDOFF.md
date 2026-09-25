@@ -16,8 +16,8 @@ for credits.
 |---|---|
 | Site | https://applyapply.xyz |
 | Health | https://applyapply.xyz/health (reports `version`) |
-| Server version | 0.76.0 |
-| Extension | **1.21.4 in the working tree, 1.19.3 in the Chrome Web Store** |
+| Server version | 0.77.0 |
+| Extension | **1.21.5 in the working tree, 1.19.3 in the Chrome Web Store** |
 | Deploy | push to `main`, Railway builds and restarts. No other step. |
 | Repo | github.com/chadwittman/applyapply, local at `~/job-search` |
 
@@ -111,6 +111,18 @@ test/run.sh           the whole suite: throwaway Postgres, real server, real Chr
   read-only crawlers, mobile browser navigation and the mocked Sendblue payload.
   Real-phone attachment rendering and Apple's automatic preview behavior still
   need observation. An attachment is not an interactive tappable link card.
+
+### Adaptive strong-match alerts
+
+- After a person first sees matches, the text line offers `learn my timing`.
+  This is explicit opt-in. It does not alter existing fixed-time update users.
+- Adaptive delivery waits for at least four inbound messages, learns the most
+  common UTC message hour from the last 30 days, and sends at most one daily
+  digest at that hour. The source worker already provides the cached fit score,
+  so adaptive alerts include only roles at 8/10 or higher. No credits or kits
+  are spent. `updates off` disables both modes.
+- The clock is deterministic and cached from behavior. Jev remains for the
+  underlying role judgments rather than being called on every scheduler tick.
 
 ### September 25 conversation release
 
