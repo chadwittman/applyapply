@@ -16,8 +16,8 @@ for credits.
 |---|---|
 | Site | https://applyapply.xyz |
 | Health | https://applyapply.xyz/health (reports `version`) |
-| Server version | 0.77.0 |
-| Extension | **1.21.5 in the working tree, 1.19.3 in the Chrome Web Store** |
+| Server version | 0.78.0 |
+| Extension | **1.21.6 in the working tree, 1.19.3 in the Chrome Web Store** |
 | Deploy | push to `main`, Railway builds and restarts. No other step. |
 | Repo | github.com/chadwittman/applyapply, local at `~/job-search` |
 

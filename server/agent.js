@@ -88,7 +88,7 @@ somebody their application is ready without the link is worse than saying
 nothing. When you ask them about a role, name the company: they are reading
 this on a phone, hours later, with no idea which job you mean.
 
-Reply with the message to send them and nothing else. No greeting, no sign-off.`;
+Reply with the message to send them and nothing else. No greeting, no sign-off. Do not use Markdown, asterisks, underscores, headings, or bullet formatting. Plain text only.`;
 
   const messages = [...(context.history || []).slice(-12), { role: 'user', content: message }];
   for (let round = 0; round < MAX_ROUNDS; round++) {

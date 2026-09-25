@@ -57,6 +57,16 @@ const WHAT_I_AM = [
 // are being asked before they answer.
 const listGaps = gaps => gaps.map(g => '• ' + String(g).replace(/\s+/g, ' ').trim()).join('\n');
 
+// Sendblue text is plain iMessage text. Markdown markers are not formatting
+// there, so a model's **heading** would arrive as literal punctuation.
+function cleanMessageText(value) {
+  return String(value || '')
+    .replace(/\*\*([^*\n]+)\*\*/g, '$1')
+    .replace(/__([^_\n]+)__/g, '$1')
+    .replace(/(^|[\s(])\*([^*\n]+)\*(?=$|[\s).,!?:])/g, '$1$2')
+    .replace(/(^|[\s(])_([^_\n]+)_(?=$|[\s).,!?:])/g, '$1$2');
+}
+
 module.exports = function conversation({ db, port, signToken, origin, kitLink, resumeCost = 8, kitCost = 10, polish = null, deliver = null, ledgerMatches = null, react = null, typeSafeKey = null, askModel = null, callModel = null, readPosting = null, roleClassifier = null }) {
   const typing = new Map(); // email -> since (ms); the test page shows dots
 
@@ -83,7 +93,7 @@ module.exports = function conversation({ db, port, signToken, origin, kitLink, r
   // one of several messages can be traced to the thing it is about.
   async function say(email, bodies, meta = null) {
     for (const raw of [].concat(bodies).filter(Boolean)) {
-      const body = String(raw).split(/(https?:\/\/[^\s]+)/g).map(part => /^https?:\/\//.test(part) ? part : part.replace(/\u2014/g, ',')).join('');
+      const body = String(raw).split(/(https?:\/\/[^\s]+)/g).map(part => /^https?:\/\//.test(part) ? part : cleanMessageText(part).replace(/\u2014/g, ',')).join('');
       const row = await db.addChatMessage(email, 'out', body, meta);
       if (!deliver) continue;
       let failed = false;

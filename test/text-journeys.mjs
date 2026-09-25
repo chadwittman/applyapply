@@ -233,10 +233,11 @@ try {
   console.log('PASS: digest delivery is bounded, respects preferences and STOP, and never spends');
 
   const discussStart = paid().length;
-  const discussionChat = conversation({ ...opts, readPosting: async () => 'The role manages six people.', askModel: async () => 'your management experience fits. location eligibility still needs checking.' });
+  const discussionChat = conversation({ ...opts, readPosting: async () => 'The role manages six people.', askModel: async () => '**your management experience fits.** location eligibility still needs checking.' });
   await discussionChat.handle(email, 'what do you think of ' + url + '-discussion?');
   assert.equal(paid().length, discussStart);
   assert.match((await last()).body, /management experience fits/);
+  assert.ok(!deliveries.at(-1).includes('**'), 'plain iMessage does not receive markdown markers');
   assert.equal((await last()).meta.kind, 'role_context');
   console.log('PASS: asking about a posting gets a discussion without a purchase');
 
