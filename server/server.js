@@ -70,7 +70,7 @@ for (const method of ['get','post','put','patch','delete']) {
     (req, res, next) => { try { Promise.resolve(handler(req,res,next)).catch(next); } catch (e) { next(e); } }));
 }
 const PORT = process.env.PORT || 5000;
-const VERSION = '0.78.0';
+const VERSION = '0.79.0';
 const IS_PRODUCTION = process.env.NODE_ENV === 'production';
 const APP_ORIGIN = process.env.APP_ORIGIN || 'http://localhost:5000';
 const ALLOWED_WEB_ORIGINS = new Set(
@@ -274,12 +274,57 @@ ${LEGAL_STYLE}</head><body><div class="topbar"><a class="logo" href="/">applyapp
 <main class="wrap">${body}<div class="foot"><a href="/">applyapply.xyz</a> · <a href="/privacy">Privacy</a> · <a href="/terms">Terms</a> · <a href="/about">About</a> · <a href="/faq">FAQ</a> · <a href="/feedback">Make this better</a> · <a href="/agents">Agents &amp; API</a> · <a href="/demo">Demo</a> · <a href="/extension">Extension</a> · <a href="/login">Sign in</a> · <a href="/support">Support</a></div></main></body></html>`);
 }
 
+app.get('/jobs', (req, res) => legalPage(res, {
+  title: 'careers at applyapply',
+  desc: 'applyapply is hiring a founding engineer and a founding growth teammate. Full-time, remote US or Austin, Texas.',
+  path: '/jobs',
+  body: `<h1>careers at applyapply</h1>
+<p>applyapply finds matching roles and writes a tailored resume, cover note, and answers for each application. People review the work and submit it themselves. We are early, with a live product, and hiring two founding teammates.</p>
+<div class="limited">full-time · remote US or Austin, Texas<br>competitive cash + meaningful founding equity</div>
+<section id="founding-engineer">
+<h2>founding engineer</h2>
+<p>Own the product end to end: job sourcing, tailored applications, the Chrome extension, credits, API costs, and reliability.</p>
+<p>You will build across an Express and Postgres app on Railway, a browser extension, a text-message workflow, and an API for agents. You should be comfortable shipping full-stack software and working with language models and external APIs.</p>
+<p>Care about the details of the application itself: preserve the achievements that make a candidate stand out, ground every claim in their experience, and keep them in control of what gets submitted.</p>
+<p><a href="#apply">apply for founding engineer</a></p>
+</section>
+<section id="founding-growth">
+<h2>founding growth</h2>
+<p>Own how job seekers find applyapply: channels, content, experiments, and conversion. Work with engineering on product changes that help people discover and adopt it.</p>
+<p>You have grown a consumer or prosumer product, or built something that spread without a big brand budget. You should be comfortable trying a channel, measuring what happens, and deciding what to do next.</p>
+<p><a href="#apply">apply for founding growth</a></p>
+</section>
+<h2 id="apply">apply</h2>
+<p>Choose a role, tell us why you are interested, and share a link to something you are proud of. No account or purchase required.</p>
+<style>#application label{display:block;margin:16px 0 6px}#application input,#application select,#application textarea{width:100%;padding:12px;background:#111;color:#fff;border:1px solid #444;border-radius:6px;font:inherit}#application button{margin-top:20px;padding:12px 24px;font:inherit;cursor:pointer}#application .trap{display:none}</style>
+<form id="application">
+<label for="role">role</label><select id="role" name="role" required><option value="engineer">founding engineer</option><option value="growth">founding growth</option></select>
+<label for="name">name</label><input id="name" name="name" autocomplete="name" maxlength="120" required>
+<label for="email">your email</label><input id="email" name="email" type="email" autocomplete="email" maxlength="254" required>
+<label for="link">a link to your work</label><input id="link" name="link" type="url" maxlength="1000" required>
+<label for="note">why you are interested</label><textarea id="note" name="note" rows="6" minlength="20" maxlength="4000" required></textarea>
+<div class="trap" aria-hidden="true"><input name="website" tabindex="-1" autocomplete="off"></div>
+<p>We store your application to review it and contact you about these roles. <a href="/privacy">privacy policy</a></p>
+<button type="submit">send application</button><p id="application-status" role="status" aria-live="polite"></p>
+</form>
+<script>
+document.getElementById('application').addEventListener('submit',async function(e){
+  e.preventDefault();var form=e.currentTarget,button=form.querySelector('button'),status=document.getElementById('application-status');
+  button.disabled=true;status.textContent='sending';
+  try{var response=await fetch('/jobs/apply',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(Object.fromEntries(new FormData(form)))});
+    if(!response.ok)throw new Error('failed');form.reset();status.textContent='application received. we will contact you if there is a fit.';
+  }catch(error){status.textContent='your application did not send. please try again.';}finally{button.disabled=false;}
+});
+</script>`,
+}));
+
 app.get('/privacy', (req, res) => legalPage(res, {
   title: 'Privacy policy · applyapply',
   desc: 'How applyapply collects, uses and protects profile, resume and job-application data.',
   path: '/privacy',
-  body: `<h1>Privacy policy</h1><div class="updated">Last updated September 21, 2026</div>
+  body: `<h1>Privacy policy</h1><div class="updated">Last updated October 1, 2026</div>
 <p>applyapply helps people find jobs and prepare applications. It is operated by Pegasus Crypto Holdings, LLC. This policy explains what the applyapply website, server, and browser extension collect and how that information is used.</p>
+<p>If you apply for a role at applyapply, we store your name, contact email, selected role, work link, and application note to review your application and contact you about hiring. You do not need an account to apply. To request deletion of your application, use the support contact below.</p>
 <div class="limited"><b>Chrome Web Store Limited Use disclosure:</b> applyapply uses data received from the extension only to provide and improve its single purpose: helping a user review and complete job applications. We do not sell user data, use it for advertising, or transfer it for unrelated purposes.</div>
 <h2>Information we handle</h2>
 <ul><li>Account information, including your email address and magic-link sign-in token.</li><li>Profile and resume information that you choose to provide, such as name, contact details, work history, education, work authorization, target roles, and uploaded resume files.</li><li>Job information you ask us to process, including job URLs, descriptions, application questions, screenshots, and answers entered through the extension.</li><li>Generated application materials, saved answers, pipeline status, credit balance, and basic operational logs needed to run the service.</li><li>Payment and purchase records. Stripe processes card details; applyapply does not receive or store full card numbers.</li></ul>
@@ -391,7 +436,7 @@ app.get('/sitemap.xml', (req, res) => {
   res.type('application/xml').send(
     `<?xml version="1.0" encoding="UTF-8"?>\n` +
     `<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n` +
-    ['/', '/about', '/buy', '/extension', '/demo', '/faq', '/agents', '/support', '/feedback', '/privacy', '/terms'].map(u =>
+    ['/', '/about', '/jobs', '/buy', '/extension', '/demo', '/faq', '/agents', '/support', '/feedback', '/privacy', '/terms'].map(u =>
       `  <url><loc>${origin}${u}</loc><lastmod>${day}</lastmod></url>`).join('\n') +
     `\n</urlset>\n`);
 });
@@ -670,6 +715,26 @@ async function report({ kind, message, context = null, userEmail = null, fingerp
     await sendEmail(OPS_EMAIL, subject, `<div style="font-family:-apple-system,sans-serif;max-width:560px;line-height:1.6"><h2 style="font-size:16px">${escapeHtml(subject)}</h2><pre style="white-space:pre-wrap;font:inherit">${escapeHtml(lines.join('\n'))}</pre></div>`, lines.join('\n'));
   } catch (e) { console.error('[report]', e.message); }
 }
+
+const applicationLimiter = rateLimit({ windowMs: 60 * 60_000, max: 5, standardHeaders: true, legacyHeaders: false });
+app.post('/jobs/apply', applicationLimiter, async (req, res) => {
+  const body = req.body || {};
+  if (body.website) return res.json({ ok: true });
+  const { role, name, email, link, note } = body;
+  if (!['engineer', 'growth'].includes(role) || typeof name !== 'string' || !name.trim() || name.length > 120 ||
+      typeof email !== 'string' || email.length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) ||
+      typeof link !== 'string' || link.length > 1000 || typeof note !== 'string' || note.trim().length < 20 || note.length > 4000) {
+    return res.status(400).json({ error: 'Please complete all fields.' });
+  }
+  try { if (!['http:', 'https:'].includes(new URL(link).protocol)) throw new Error('invalid'); }
+  catch { return res.status(400).json({ error: 'Please use an http or https link.' }); }
+  try {
+    await db.addFeedback({ userEmail: email.trim().toLowerCase(), kind: 'job_application', message: note.trim(), context: { role, name: name.trim(), link } });
+    res.json({ ok: true });
+  } catch {
+    res.status(503).json({ error: 'Could not save your application. Please try again.' });
+  }
+});
 
 app.post('/feedback', apiLimiter, async (req, res) => {
   const message = String(req.body?.message || '').trim();
@@ -2053,6 +2118,7 @@ setTimeout(function() { var b = document.querySelector('.drole'); startDemo('pro
     <a href="/setup">Setup</a>
     <a href="/pipeline">Pipeline</a>
     <a href="/about">About</a>
+    <a href="/jobs">careers</a>
     <a href="/faq">FAQ</a>
     <a href="/privacy">Privacy</a>
     <a href="/terms">Terms</a>
@@ -2290,6 +2356,12 @@ app.get('/auth/me', async (req, res) => {
 app.get('/admin/storage', requireAdmin, async (req, res) => {
   res.setHeader('Cache-Control', 'no-store');
   res.json(await db.storageStats());
+});
+
+app.get('/admin/job-applications', requireAdmin, async (req, res) => {
+  res.setHeader('Cache-Control', 'no-store');
+  const result = await db.pool.query("SELECT id, user_email AS email, message AS note, context, created_at FROM feedback WHERE kind = 'job_application' ORDER BY id DESC LIMIT 200");
+  res.json(result.rows);
 });
 
 app.post('/admin/credits/add-by-email', requireAdmin, async (req, res) => {
