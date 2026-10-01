@@ -345,6 +345,17 @@ async function initSchema() {
     )
   `);
 
+  await q(`CREATE TABLE IF NOT EXISTS hiring_applications (
+    id BIGSERIAL PRIMARY KEY,
+    role TEXT NOT NULL,
+    email TEXT NOT NULL,
+    details JSONB NOT NULL,
+    resume_filename TEXT NOT NULL,
+    resume_mime TEXT NOT NULL,
+    resume_bytes BYTEA NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+  )`);
+
   // Private, expiring links to one kit (/k/<token>), sent to the kit's owner
   // by text so their phone can open the kit without signing in.
   await q(`

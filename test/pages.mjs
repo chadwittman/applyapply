@@ -14,7 +14,7 @@ const page = await ctx.newPage();
 
 let fails = 0;
 // Pages only — /interview and friends are JSON APIs, covered by isolation.mjs.
-for (const p of ['/', '/login', '/setup', '/sourcing', '/pipeline', '/buy', '/jobs']) {
+for (const p of ['/', '/login', '/setup', '/sourcing', '/pipeline', '/buy', '/jobs', '/jobs/founding-engineer', '/jobs/founding-growth']) {
   const errs = [], bad = [];
   const onErr = e => errs.push(e.message);
   const onResp = r => { if (new URL(r.url()).origin === B && r.status() >= 400) bad.push(`${r.status()} ${new URL(r.url()).pathname}`); };
@@ -32,7 +32,7 @@ console.log(`\n${fails ? fails + ' page(s) with errors' : 'all pages clean'}`);
 const phone = await browser.newContext({ viewport: { width: 390, height: 844 } });
 const small = await phone.newPage();
 let sloppy = 0;
-for (const p of ['/', '/text', '/about', '/demo', '/buy', '/extension', '/agents', '/faq', '/privacy', '/terms', '/jobs']) {
+for (const p of ['/', '/text', '/about', '/demo', '/buy', '/extension', '/agents', '/faq', '/privacy', '/terms', '/jobs', '/jobs/founding-engineer', '/jobs/founding-growth']) {
   const r = await small.goto(B + p, { waitUntil: 'networkidle' }).catch(() => null);
   if (!r || r.status() >= 400) continue;
   await small.waitForTimeout(400);

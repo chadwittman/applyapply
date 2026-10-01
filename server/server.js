@@ -70,7 +70,7 @@ for (const method of ['get','post','put','patch','delete']) {
     (req, res, next) => { try { Promise.resolve(handler(req,res,next)).catch(next); } catch (e) { next(e); } }));
 }
 const PORT = process.env.PORT || 5000;
-const VERSION = '0.79.0';
+const VERSION = '0.80.0';
 const IS_PRODUCTION = process.env.NODE_ENV === 'production';
 const APP_ORIGIN = process.env.APP_ORIGIN || 'http://localhost:5000';
 const ALLOWED_WEB_ORIGINS = new Set(
@@ -274,49 +274,78 @@ ${LEGAL_STYLE}</head><body><div class="topbar"><a class="logo" href="/">applyapp
 <main class="wrap">${body}<div class="foot"><a href="/">applyapply.xyz</a> · <a href="/privacy">Privacy</a> · <a href="/terms">Terms</a> · <a href="/about">About</a> · <a href="/faq">FAQ</a> · <a href="/feedback">Make this better</a> · <a href="/agents">Agents &amp; API</a> · <a href="/demo">Demo</a> · <a href="/extension">Extension</a> · <a href="/login">Sign in</a> · <a href="/support">Support</a></div></main></body></html>`);
 }
 
+const HIRING_ROLES = {
+  'founding-engineer': {
+    key: 'engineer', title: 'founding engineer',
+    intro: 'Build and own the product end to end, from job sourcing to the application a candidate reviews and sends.',
+    responsibilities: ['Ship across our Express and Postgres app on Railway, Chrome extension, text-message workflow, and API for agents.', 'Improve job sourcing, tailored resumes, cover letters, and answers to application questions.', 'Own reliability, credits, and API costs as the product grows.', 'Preserve candidate achievements and keep every generated claim grounded in their experience.'],
+    qualifications: ['Experience building and shipping full-stack software.', 'Comfort working with language models, external APIs, and browser behavior.', 'Good judgment about what to build, how to measure it, and when to simplify.', 'Care for the quality of the application and the person using it.'],
+    question: 'Tell us about something you built and the technical decisions you owned.',
+  },
+  'founding-growth': {
+    key: 'growth', title: 'founding growth',
+    intro: 'Own how job seekers discover applyapply, start using it, and come back as their search progresses.',
+    responsibilities: ['Build and test acquisition channels, content, and distribution partnerships.', 'Measure activation, conversion, and retention, and use those results to choose the next experiment.', 'Work with engineering on product changes that help people discover and adopt applyapply.', 'Talk to job seekers and turn what you learn into clearer messaging and a better product.'],
+    qualifications: ['Experience growing a consumer or prosumer product, or building something that spread without a large brand budget.', 'Comfort running experiments and explaining what the results mean.', 'Strong writing and an ability to understand what a job seeker needs.', 'Willingness to do the work directly, from publishing content to analyzing a funnel.'],
+    question: 'Tell us about something you grew, what you tried, and what happened.',
+  },
+};
+
 app.get('/jobs', (req, res) => legalPage(res, {
   title: 'careers at applyapply',
-  desc: 'applyapply is hiring a founding engineer and a founding growth teammate. Full-time, remote US or Austin, Texas.',
+  desc: 'Explore founding engineer and founding growth openings at applyapply.',
   path: '/jobs',
   body: `<h1>careers at applyapply</h1>
 <p>applyapply finds matching roles and writes a tailored resume, cover note, and answers for each application. People review the work and submit it themselves. We are early, with a live product, and hiring two founding teammates.</p>
+<h2>open roles</h2>
+${Object.entries(HIRING_ROLES).map(([slug, role]) => `<section class="limited"><h2 style="margin-top:0"><a href="/jobs/${slug}">${role.title}</a></h2><p>${role.intro}</p><p>full-time · remote US or Austin, Texas</p><a href="/jobs/${slug}">view role and apply</a></section>`).join('')}`,
+}));
+
+app.get('/jobs/:slug', (req, res) => {
+  const role = HIRING_ROLES[req.params.slug];
+  if (!role) return res.status(404).send('role not found');
+  legalPage(res, {
+    title: `${role.title} at applyapply`, desc: role.intro, path: `/jobs/${req.params.slug}`,
+    body: `<p><a href="/jobs">all open roles</a></p><h1>${role.title}</h1>
 <div class="limited">full-time · remote US or Austin, Texas<br>competitive cash + meaningful founding equity</div>
-<section id="founding-engineer">
-<h2>founding engineer</h2>
-<p>Own the product end to end: job sourcing, tailored applications, the Chrome extension, credits, API costs, and reliability.</p>
-<p>You will build across an Express and Postgres app on Railway, a browser extension, a text-message workflow, and an API for agents. You should be comfortable shipping full-stack software and working with language models and external APIs.</p>
-<p>Care about the details of the application itself: preserve the achievements that make a candidate stand out, ground every claim in their experience, and keep them in control of what gets submitted.</p>
-<p><a href="#apply">apply for founding engineer</a></p>
-</section>
-<section id="founding-growth">
-<h2>founding growth</h2>
-<p>Own how job seekers find applyapply: channels, content, experiments, and conversion. Work with engineering on product changes that help people discover and adopt it.</p>
-<p>You have grown a consumer or prosumer product, or built something that spread without a big brand budget. You should be comfortable trying a channel, measuring what happens, and deciding what to do next.</p>
-<p><a href="#apply">apply for founding growth</a></p>
-</section>
-<h2 id="apply">apply</h2>
-<p>Choose a role, tell us why you are interested, and share a link to something you are proud of. No account or purchase required.</p>
-<style>#application label{display:block;margin:16px 0 6px}#application input,#application select,#application textarea{width:100%;padding:12px;background:#111;color:#fff;border:1px solid #444;border-radius:6px;font:inherit}#application button{margin-top:20px;padding:12px 24px;font:inherit;cursor:pointer}#application .trap{display:none}</style>
-<form id="application">
-<label for="role">role</label><select id="role" name="role" required><option value="engineer">founding engineer</option><option value="growth">founding growth</option></select>
-<label for="name">name</label><input id="name" name="name" autocomplete="name" maxlength="120" required>
-<label for="email">your email</label><input id="email" name="email" type="email" autocomplete="email" maxlength="254" required>
-<label for="link">a link to your work</label><input id="link" name="link" type="url" maxlength="1000" required>
-<label for="note">why you are interested</label><textarea id="note" name="note" rows="6" minlength="20" maxlength="4000" required></textarea>
+<p>applyapply finds matching roles and writes tailored applications. Candidates review the work and submit it themselves. We are hiring a ${role.title} to help build the company.</p>
+<p>${role.intro}</p>
+<h2>what you will do</h2><ul>${role.responsibilities.map(t => `<li>${t}</li>`).join('')}</ul>
+<h2>what you bring</h2><ul>${role.qualifications.map(t => `<li>${t}</li>`).join('')}</ul>
+<h2 id="apply">apply for ${role.title}</h2>
+<p>Fields marked * are required. No account or purchase required.</p>
+<style>#application label{display:block;margin:16px 0 6px}#application input,#application select,#application textarea{width:100%;min-width:0;padding:12px;background:#111;color:#fff;border:1px solid #444;border-radius:6px;font:inherit}#application button{margin-top:20px;padding:12px 24px;font:inherit;cursor:pointer}#application .trap{display:none}</style>
+<form id="application" enctype="multipart/form-data">
+<label for="first_name">first name *</label><input id="first_name" name="first_name" autocomplete="given-name" maxlength="80" required>
+<label for="last_name">last name *</label><input id="last_name" name="last_name" autocomplete="family-name" maxlength="80" required>
+<label for="email">email *</label><input id="email" name="email" type="email" autocomplete="email" maxlength="254" required>
+<label for="phone">phone</label><input id="phone" name="phone" type="tel" autocomplete="tel" maxlength="50">
+<label for="location">current location *</label><input id="location" name="location" autocomplete="address-level2" placeholder="city, state or region, country" maxlength="200" required>
+<label for="resume">resume *</label><input id="resume" name="resume" type="file" accept=".pdf,.doc,.docx" aria-describedby="resume-help" required><p id="resume-help">PDF, DOC, or DOCX. Up to 5 MB.</p>
+<label for="linkedin">LinkedIn profile</label><input id="linkedin" name="linkedin" type="url" maxlength="1000">
+<label for="portfolio">${role.key === 'engineer' ? 'GitHub, portfolio, or website' : 'portfolio or website'}</label><input id="portfolio" name="portfolio" type="url" maxlength="1000">
+<label for="work_authorization">are you authorized to work in the US? *</label><select id="work_authorization" name="work_authorization" required><option value="">select an answer</option><option value="yes">yes</option><option value="no">no</option></select>
+<label for="sponsorship">will you require visa sponsorship now or in the future? *</label><select id="sponsorship" name="sponsorship" required><option value="">select an answer</option><option value="yes">yes</option><option value="no">no</option></select>
+<label for="start_date">when could you start?</label><input id="start_date" name="start_date" maxlength="200" placeholder="availability or notice period">
+<label for="note">${role.question} *</label><textarea id="note" name="note" rows="6" minlength="20" maxlength="4000" required></textarea>
+<label for="additional">anything else you would like us to know?</label><textarea id="additional" name="additional" rows="4" maxlength="4000"></textarea>
 <div class="trap" aria-hidden="true"><input name="website" tabindex="-1" autocomplete="off"></div>
-<p>We store your application to review it and contact you about these roles. <a href="/privacy">privacy policy</a></p>
-<button type="submit">send application</button><p id="application-status" role="status" aria-live="polite"></p>
+<p>We store your resume and application to review it and contact you about this role. <a href="/privacy">privacy policy</a></p>
+<button type="submit">submit application</button><p id="application-status" role="status" aria-live="polite"></p>
 </form>
 <script>
 document.getElementById('application').addEventListener('submit',async function(e){
   e.preventDefault();var form=e.currentTarget,button=form.querySelector('button'),status=document.getElementById('application-status');
-  button.disabled=true;status.textContent='sending';
-  try{var response=await fetch('/jobs/apply',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(Object.fromEntries(new FormData(form)))});
-    if(!response.ok)throw new Error('failed');form.reset();status.textContent='application received. we will contact you if there is a fit.';
-  }catch(error){status.textContent='your application did not send. please try again.';}finally{button.disabled=false;}
+  if(form.elements.resume.files[0].size>5*1024*1024){status.textContent='please choose a resume under 5 MB.';return;}
+  button.disabled=true;status.textContent='submitting';
+  try{var response=await fetch('/jobs/${req.params.slug}/apply',{method:'POST',body:new FormData(form)}),result=await response.json();
+    if(!response.ok)throw new Error(result.error||'your application did not send. please try again.');
+    form.reset();form.hidden=true;status.textContent='application received for ${role.title}. we will contact you if there is a fit.';form.after(status);
+  }catch(error){status.textContent=error.message;}finally{button.disabled=false;}
 });
 </script>`,
-}));
+  });
+});
 
 app.get('/privacy', (req, res) => legalPage(res, {
   title: 'Privacy policy · applyapply',
@@ -324,7 +353,7 @@ app.get('/privacy', (req, res) => legalPage(res, {
   path: '/privacy',
   body: `<h1>Privacy policy</h1><div class="updated">Last updated October 1, 2026</div>
 <p>applyapply helps people find jobs and prepare applications. It is operated by Pegasus Crypto Holdings, LLC. This policy explains what the applyapply website, server, and browser extension collect and how that information is used.</p>
-<p>If you apply for a role at applyapply, we store your name, contact email, selected role, work link, and application note to review your application and contact you about hiring. You do not need an account to apply. To request deletion of your application, use the support contact below.</p>
+<p>If you apply for a role at applyapply, we store your name, contact details, location, selected role, resume, profile and work links, availability, work authorization and sponsorship answers, and application notes to review your application and contact you about hiring. You do not need an account to apply. To request deletion of your application, use the support contact below.</p>
 <div class="limited"><b>Chrome Web Store Limited Use disclosure:</b> applyapply uses data received from the extension only to provide and improve its single purpose: helping a user review and complete job applications. We do not sell user data, use it for advertising, or transfer it for unrelated purposes.</div>
 <h2>Information we handle</h2>
 <ul><li>Account information, including your email address and magic-link sign-in token.</li><li>Profile and resume information that you choose to provide, such as name, contact details, work history, education, work authorization, target roles, and uploaded resume files.</li><li>Job information you ask us to process, including job URLs, descriptions, application questions, screenshots, and answers entered through the extension.</li><li>Generated application materials, saved answers, pipeline status, credit balance, and basic operational logs needed to run the service.</li><li>Payment and purchase records. Stripe processes card details; applyapply does not receive or store full card numbers.</li></ul>
@@ -436,7 +465,7 @@ app.get('/sitemap.xml', (req, res) => {
   res.type('application/xml').send(
     `<?xml version="1.0" encoding="UTF-8"?>\n` +
     `<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n` +
-    ['/', '/about', '/jobs', '/buy', '/extension', '/demo', '/faq', '/agents', '/support', '/feedback', '/privacy', '/terms'].map(u =>
+    ['/', '/about', '/jobs', '/jobs/founding-engineer', '/jobs/founding-growth', '/buy', '/extension', '/demo', '/faq', '/agents', '/support', '/feedback', '/privacy', '/terms'].map(u =>
       `  <url><loc>${origin}${u}</loc><lastmod>${day}</lastmod></url>`).join('\n') +
     `\n</urlset>\n`);
 });
@@ -716,24 +745,45 @@ async function report({ kind, message, context = null, userEmail = null, fingerp
   } catch (e) { console.error('[report]', e.message); }
 }
 
-const applicationLimiter = rateLimit({ windowMs: 60 * 60_000, max: 5, standardHeaders: true, legacyHeaders: false });
-app.post('/jobs/apply', applicationLimiter, async (req, res) => {
-  const body = req.body || {};
-  if (body.website) return res.json({ ok: true });
-  const { role, name, email, link, note } = body;
-  if (!['engineer', 'growth'].includes(role) || typeof name !== 'string' || !name.trim() || name.length > 120 ||
-      typeof email !== 'string' || email.length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) ||
-      typeof link !== 'string' || link.length > 1000 || typeof note !== 'string' || note.trim().length < 20 || note.length > 4000) {
-    return res.status(400).json({ error: 'Please complete all fields.' });
-  }
-  try { if (!['http:', 'https:'].includes(new URL(link).protocol)) throw new Error('invalid'); }
-  catch { return res.status(400).json({ error: 'Please use an http or https link.' }); }
-  try {
-    await db.addFeedback({ userEmail: email.trim().toLowerCase(), kind: 'job_application', message: note.trim(), context: { role, name: name.trim(), link } });
-    res.json({ ok: true });
-  } catch {
-    res.status(503).json({ error: 'Could not save your application. Please try again.' });
-  }
+const applicationLimiter = rateLimit({ windowMs: 60 * 60_000, max: 10, standardHeaders: true, legacyHeaders: false });
+const hiringUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 5 * 1024 * 1024, files: 1, fields: 16, fieldSize: 16 * 1024, parts: 17 } });
+app.post('/jobs/:slug/apply', applicationLimiter, (req, res) => {
+  const role = HIRING_ROLES[req.params.slug];
+  if (!role) return res.status(404).json({ error: 'role not found' });
+  hiringUpload.single('resume')(req, res, async error => {
+    if (error) return res.status(400).json({ error: error.code === 'LIMIT_FILE_SIZE' ? 'please choose a resume under 5 MB.' : 'could not upload the resume. please check the file and try again.' });
+    const body = req.body || {};
+    if (body.website) return res.json({ ok: true });
+    const required = { first_name: 80, last_name: 80, email: 254, location: 200, note: 4000 };
+    const optional = { phone: 50, linkedin: 1000, portfolio: 1000, start_date: 200, additional: 4000 };
+    for (const [key, max] of Object.entries(required)) {
+      if (typeof body[key] !== 'string' || !body[key].trim() || body[key].length > max) return res.status(400).json({ error: 'please complete the required fields.' });
+    }
+    for (const [key, max] of Object.entries(optional)) {
+      if (body[key] !== undefined && (typeof body[key] !== 'string' || body[key].length > max)) return res.status(400).json({ error: 'please check your application fields.' });
+    }
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(body.email.trim()) || body.note.trim().length < 20 ||
+        !['yes', 'no'].includes(body.work_authorization) || !['yes', 'no'].includes(body.sponsorship)) return res.status(400).json({ error: 'please check your email and required answers.' });
+    for (const key of ['linkedin', 'portfolio']) {
+      if (!body[key]?.trim()) continue;
+      try { if (!['http:', 'https:'].includes(new URL(body[key].trim()).protocol)) throw new Error('invalid'); }
+      catch { return res.status(400).json({ error: 'please use http or https links.' }); }
+    }
+    const file = req.file;
+    if (!file || !file.size) return res.status(400).json({ error: 'please upload your resume.' });
+    const ext = path.extname(file.originalname).toLowerCase();
+    const types = { '.pdf': 'application/pdf', '.doc': 'application/msword', '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' };
+    const validFile = (ext === '.pdf' && file.buffer.subarray(0, 5).toString() === '%PDF-') ||
+      (ext === '.doc' && file.buffer.subarray(0, 8).equals(Buffer.from('d0cf11e0a1b11ae1', 'hex'))) ||
+      (ext === '.docx' && file.buffer.subarray(0, 4).equals(Buffer.from('504b0304', 'hex')) && file.buffer.includes(Buffer.from('word/document.xml')));
+    if (!validFile) return res.status(400).json({ error: 'please upload a PDF, DOC, or DOCX resume.' });
+    const details = Object.fromEntries([...Object.keys(required), ...Object.keys(optional), 'work_authorization', 'sponsorship'].map(key => [key, String(body[key] || '').trim()]));
+    try {
+      await db.pool.query('INSERT INTO hiring_applications (role, email, details, resume_filename, resume_mime, resume_bytes) VALUES ($1,$2,$3,$4,$5,$6)',
+        [role.key, details.email.toLowerCase(), details, path.basename(file.originalname).replace(/[\x00-\x1f\x7f]/g, '').slice(0, 200), types[ext], file.buffer]);
+      res.json({ ok: true });
+    } catch { res.status(503).json({ error: 'could not save your application. please try again.' }); }
+  });
 });
 
 app.post('/feedback', apiLimiter, async (req, res) => {
@@ -2360,8 +2410,19 @@ app.get('/admin/storage', requireAdmin, async (req, res) => {
 
 app.get('/admin/job-applications', requireAdmin, async (req, res) => {
   res.setHeader('Cache-Control', 'no-store');
-  const result = await db.pool.query("SELECT id, user_email AS email, message AS note, context, created_at FROM feedback WHERE kind = 'job_application' ORDER BY id DESC LIMIT 200");
-  res.json(result.rows);
+  const result = await db.pool.query("SELECT id, role, email, details, resume_filename, created_at FROM hiring_applications ORDER BY id DESC LIMIT 200");
+  const legacy = await db.pool.query("SELECT id, user_email AS email, message AS note, context, created_at FROM feedback WHERE kind = 'job_application' ORDER BY id DESC LIMIT 200");
+  res.json({ applications: result.rows, legacy: legacy.rows });
+});
+
+app.get('/admin/job-applications/:id/resume', requireAdmin, async (req, res) => {
+  if (!/^[1-9][0-9]{0,14}$/.test(req.params.id)) return res.status(404).send('not found');
+  const result = await db.pool.query('SELECT resume_filename, resume_mime, resume_bytes FROM hiring_applications WHERE id=$1', [req.params.id]);
+  const file = result.rows[0];
+  if (!file) return res.status(404).send('not found');
+  res.setHeader('Cache-Control', 'no-store');
+  res.setHeader('Content-Disposition', `attachment; filename="resume${path.extname(file.resume_filename).toLowerCase()}"`);
+  res.type(file.resume_mime).send(file.resume_bytes);
 });
 
 app.post('/admin/credits/add-by-email', requireAdmin, async (req, res) => {
