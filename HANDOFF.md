@@ -1,6 +1,6 @@
 # applyapply: model handoff
 
-Updated: 2026-09-25
+Updated: 2026-10-01
 
 applyapply writes job applications. It finds postings that fit a person, writes a
 resume tailored to each posting plus a cover letter and answers to the form's own
@@ -16,7 +16,7 @@ for credits.
 |---|---|
 | Site | https://applyapply.xyz |
 | Health | https://applyapply.xyz/health (reports `version`) |
-| Server version | 0.78.0 |
+| Server version | 0.80.0 |
 | Extension | **1.21.6 in the working tree, 1.19.3 in the Chrome Web Store** |
 | Deploy | push to `main`, Railway builds and restarts. No other step. |
 | Repo | github.com/chadwittman/applyapply, local at `~/job-search` |
@@ -240,3 +240,16 @@ House rules, learned the hard way:
    tested end to end.
 5. `/about` still has unknowns: HQ city, social links, whether to publish the
    founder backstory.
+
+## October 1 hiring checkpoint
+
+Live release: `5d6a55a`, Railway deployment `790e176b-712a-42d4-aa41-ba46f40bb13b` observed SUCCESS.
+
+- `/jobs` lists two separate postings: `/jobs/founding-engineer` and `/jobs/founding-growth`. Each has its own description and multipart application form.
+- Fields: first/last name, email, optional phone, location, required resume (PDF/DOC/DOCX, 5 MB maximum), optional LinkedIn/work links, work authorization, sponsorship, availability, role-specific answer, optional additional note. No account or payment required.
+- `hiring_applications` stores details and resume bytes privately in Postgres. Upload validation checks required fields, URLs, file signatures, and size. Rate limiting and a honeypot protect submission.
+- Admin-secret-protected `/admin/job-applications` lists new and legacy submissions; `/admin/job-applications/:id/resume` downloads a resume. Legacy submissions remain in `feedback`.
+- Both pages are linked through the homepage careers link and included in the sitemap. Privacy copy includes hiring data.
+- `npm run check` and `AA_TEST_SUITES="test/hiring.mjs test/pages.mjs" bash test/run.sh` passed, including browser submission and mobile layout. Live role pages verified HTTP 200.
+- HN draft: `/Users/chaztyler/Downloads/applyapply-hn-job-post.md`. User posts to HN personally. No hiring email exists or is advertised. One HN comment includes both roles. Brand is always `applyapply`.
+- User is returning to TRYOUT, renamed SHOWCASE.
