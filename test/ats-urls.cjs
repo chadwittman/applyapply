@@ -8,7 +8,9 @@ require.cache[require.resolve(path.resolve(__dirname, '../server/public-fetch'))
   ...requireServer('./public-fetch'),
   publicFetch: async (url) => {
     asked.push(url);
-    const body = /wday\/cxs/.test(url)
+    const body = url === 'https://jobs.gem.com/citydetect/am9icG9zdDr5AWjF1AZ1UgSdc0I0OllI'
+      ? '<html><head><meta property="og:title" content="Full Stack Product Engineer (Design &amp; Geospatial Focus)"><meta name="description" content="Role Summary: build intuitive user interfaces and interactive maps. Requirements: React and TypeScript, Python, FastAPI, PostgreSQL and PostGIS. Responsibilities: develop geospatial data pipelines and responsive interfaces. Fully remote position."></head><body><div id="root"></div></body></html>'
+      : /wday\/cxs/.test(url)
       ? JSON.stringify({ jobPostingInfo: { title: 'Product Leader', location: 'Remote USA', jobDescription: '<p>About the role: own the product. Responsibilities: ship. Qualifications: experience.</p>' } })
       : /boards-api\.greenhouse\.io/.test(url) && /\/pinterest\//.test(url)
         ? JSON.stringify({ title: 'Sr. Ads Product Marketing Manager', location: { name: 'SF' }, content: '&lt;p&gt;About the role: ads.&lt;/p&gt;' })
@@ -37,8 +39,14 @@ const { fetchATSJobText, fetchATSFormQuestions, greenhouseTokenGuesses } = requi
   const lever = await fetchATSJobText('https://jobs.lever.co/acme/head-of-product');
   assert.match(lever, /Head of Product[\s\S]*About the role: lever/);
 
+  const gem = await fetchATSJobText('https://jobs.gem.com/citydetect/am9icG9zdDr5AWjF1AZ1UgSdc0I0OllI');
+  assert.match(gem, /Full Stack Product Engineer \(Design & Geospatial Focus\)/);
+  assert.match(gem, /PostgreSQL and PostGIS/);
+  assert.match(gem, /Fully remote position/);
+  assert.equal(await fetchATSJobText('https://jobs.gem.com/citydetect/removed'), null, 'a missing Gem posting remains unreadable');
+
   assert.equal(await fetchATSJobText('https://careers.example.com/jobs/123'), null, 'Unknown sites fall back to the page');
-  console.log('PASS: Workday, embedded Greenhouse and Lever links reach the posting itself');
+  console.log('PASS: Gem, Workday, embedded Greenhouse and Lever links reach the posting itself');
 
   // The employer's board token is not always in the host. Contentstack serves
   // its Greenhouse board from ats.comparably.com, where guessing from the host

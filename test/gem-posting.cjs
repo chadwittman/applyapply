@@ -1,0 +1,16 @@
+const assert = require('node:assert/strict');
+const { gemPostingText } = require('../server/gem-posting');
+const description = 'Role Summary\nYou&#39;ll build React interfaces, interactive maps, and geospatial data visualizations. Requirements: Python, FastAPI and PostgreSQL. Responsibilities: design accessible interfaces and develop reliable data pipelines. Fully remote. '.repeat(2);
+const html = `<head><META CONTENT='Full Stack Engineer &amp; Designer' PROPERTY='og:title'><meta content="${description}" name="description"></head><body><div id="root"></div></body>`;
+const text = gemPostingText(html);
+assert.match(text, /Job title: Full Stack Engineer & Designer/);
+assert.match(text, /You'll build React/);
+assert.match(text, /PostgreSQL/);
+assert.ok(!text.includes('root') && !text.includes('<meta'));
+assert.equal(gemPostingText('<meta name="description" content="This posting is no longer available.">'), null);
+assert.equal(gemPostingText(`<meta name="description" content="${'Find your next career with us. '.repeat(20)}">`), null);
+assert.equal(gemPostingText('<body>JavaScript shell</body>'), null);
+assert.match(gemPostingText(`<meta property="og:description" content="${description}">`), /Requirements/);
+assert.match(gemPostingText(`<meta name="description" content="${description} &#x1F5FA; &#99999999;">`), /🗺.*&#99999999;/);
+assert.ok(gemPostingText(`<meta name="description" content="${description.repeat(100)}">`).length <= 12000);
+console.log('PASS: Gem metadata preserves the posting and refuses empty, short or generic pages');

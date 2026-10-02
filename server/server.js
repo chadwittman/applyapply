@@ -70,7 +70,8 @@ for (const method of ['get','post','put','patch','delete']) {
     (req, res, next) => { try { Promise.resolve(handler(req,res,next)).catch(next); } catch (e) { next(e); } }));
 }
 const PORT = process.env.PORT || 5000;
-const VERSION = '0.80.0';
+const VERSION = '0.81.0';
+const CHROME_STORE_URL = 'https://chromewebstore.google.com/detail/applyapply/ppdfmcmhiiplklenppnnffbacnheheil';
 const IS_PRODUCTION = process.env.NODE_ENV === 'production';
 const APP_ORIGIN = process.env.APP_ORIGIN || 'http://localhost:5000';
 const ALLOWED_WEB_ORIGINS = new Set(
@@ -185,9 +186,8 @@ ${noindex ? '<meta name="robots" content="noindex,nofollow">' : '<meta name="rob
 
 // Only the marketing surface should be crawled; everything else is a signed-in
 // app page and is marked noindex in its head as well.
-// The extension is not on the Web Store yet, so this is how it reaches a
-// second machine or an early user: a zip built from the same folder that is
-// deployed, so it can never drift from what is running.
+// Keep a direct download of the deployed extension for users who want the
+// latest build while its Chrome Web Store update is under review.
 let extZipCache = null;
 function extensionZip() {
   if (extZipCache) return extZipCache;
@@ -243,19 +243,29 @@ code{background:#111;border:1px solid #1e1e1e;padding:2px 7px;font-size:13px;fon
   <h1>Install the extension</h1>
   <div class="sub">It opens on a job posting, fills the form from your apply kit, and attaches your tailored resume.</div>
 
-  <a class="dl" href="/extension.zip" download>Download for Chrome</a>
-  <div class="ver">Version ${escapeHtml(version)} &middot; works in Chrome, Edge, Brave and Arc</div>
+  <a class="dl" href="${CHROME_STORE_URL}" target="_blank" rel="noopener">add to chrome</a>
+  <div class="ver">available in the chrome web store &middot; works in Chrome, Edge, Brave and Arc</div>
   <div class="note" style="margin-top:14px">Not installing today? Put <b>applyapply.xyz/</b> in front of any job posting's link and your kit is written there, no extension needed.</div>
 
   <ol>
-    <li>Unzip the download, then move the unzipped folder somewhere permanent &mdash; your home folder is fine. Chrome loads the extension from that folder every time it starts, so moving or deleting it later uninstalls the extension.</li>
-    <li>Open <code>chrome://extensions</code> in a new tab.</li>
-    <li>Turn on <b>Developer mode</b> using the switch in the top right.</li>
-    <li>Click <b>Load unpacked</b> and pick that folder &mdash; the one with <code>manifest.json</code> directly inside it.</li>
-    <li>Open a job page, click the applyapply toolbar icon, and <b>Sign in</b>. Your existing account and credits carry over.</li>
+    <li>open the store listing, click <b>Add to Chrome</b>, then confirm <b>Add extension</b>.</li>
+    <li>pin applyapply from Chrome's extensions menu so it is easy to find.</li>
+    <li>open a job page, click the applyapply toolbar icon, and <b>sign in</b>. your existing account and credits carry over.</li>
   </ol>
+  <div class="note">Chrome keeps store installs updated automatically after each release is approved.</div>
+  <div class="note">installed from a zip before? remove that copy from <code>chrome://extensions</code>, then install from the store and sign in again. your profile, kits and credits stay in your account.</div>
 
-  <div class="note">Developer mode is only needed because applyapply is not in the Chrome Web Store yet. Once it is listed, installing is one click and Chrome keeps it updated and synced across your machines on its own.</div>
+  <details class="note">
+    <summary>get the latest build directly, version ${escapeHtml(version)}</summary>
+    <p style="margin-top:14px">the direct download may include fixes still awaiting store review. zip installs need to be updated manually.</p>
+    <p style="margin-top:14px"><a href="/extension.zip" download><u>download version ${escapeHtml(version)}</u></a></p>
+    <ol>
+      <li>unzip the download and keep the folder somewhere permanent.</li>
+      <li>open <code>chrome://extensions</code> and turn on <b>Developer mode</b>.</li>
+      <li>remove your previous applyapply copy, then click <b>Load unpacked</b> and choose the folder containing <code>manifest.json</code>.</li>
+      <li>open a job page and sign in. your account and credits carry over.</li>
+    </ol>
+  </details>
 </div>
 </body></html>`);
 });
@@ -3874,6 +3884,10 @@ function greenhouseTokenGuesses(u, parts) {
 async function fetchATSJobText(url) {
   const u = new URL(url);
   const parts = u.pathname.split('/').filter(Boolean);
+  if (u.hostname === 'jobs.gem.com' && parts.length === 2) {
+    const response = await publicFetch(url, { timeout: 15000 });
+    return response.ok ? require('./gem-posting').gemPostingText(await response.text()) : null;
+  }
   const plain = html => String(html || '').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&').replace(/&quot;/g, '"').replace(/&#39;/g, "'")
     .replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
   // A whole Ashby board (every posting's description) can run to several MB.
@@ -5273,7 +5287,7 @@ app.get('/about', (req, res) => {
     ['Speed', 'A complete kit in about 10 to 15 seconds'],
     ['Communication', `Email <a href="mailto:wittman.c@gmail.com">wittman.c@gmail.com</a>, answered by the founder. Product reports go to <a href="/feedback">Make this better</a>.`],
     ['Competitors', 'Auto-apply tools such as LazyApply, which submit applications in bulk on annual plans; application trackers and AI resume builders that stop short of writing the application'],
-    ['Status', 'Live at applyapply.xyz. The Chrome extension is in review for the Chrome Web Store and installs directly in the meantime.'],
+    ['Status', `Live at applyapply.xyz. The Chrome extension is available in the <a href="${CHROME_STORE_URL}" target="_blank" rel="noopener">Chrome Web Store</a>.`],
   ];
   legalPage(res, {
     title: 'About applyapply: what it is, what it costs, and who built it',

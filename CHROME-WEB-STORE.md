@@ -1,5 +1,29 @@
 # Chrome Web Store submission
 
+## October 2 update
+
+Approved public listing: https://chromewebstore.google.com/detail/applyapply/ppdfmcmhiiplklenppnnffbacnheheil
+
+Currently live: **1.19.3**. Prepared update: **1.21.7**.
+
+Upload `/Users/chaztyler/Desktop/applyapply-extension-1.21.7.zip` to the existing
+item in the Chrome Web Store developer dashboard, rather than creating a new
+listing. The archive has `manifest.json` at its root. Permissions are unchanged
+from the approved 1.19.3 build.
+
+Reviewer summary:
+
+> This update improves form filling inside embedded application forms, supports
+> full-name fields and matches unfamiliar field labels by meaning. It adds clearer
+> messages when an embedded form cannot be reached, opens the sidebar for jobs
+> explicitly opened from applyapply, supports editing a tailored resume, and
+> shows when an installed build is behind. It never submits applications and
+> adds no permissions compared with approved version 1.19.3.
+
+After uploading, tag the submitted commit `store-1.21.7` so compatibility tests
+continue to cover it. After approval, verify the public listing's version.
+Website deployment alone does not update the Chrome Web Store.
+
 ## Listing copy
 
 **Store title**

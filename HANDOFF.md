@@ -1,6 +1,6 @@
 # applyapply: model handoff
 
-Updated: 2026-10-01
+Updated: 2026-10-02
 
 applyapply writes job applications. It finds postings that fit a person, writes a
 resume tailored to each posting plus a cover letter and answers to the form's own
@@ -16,8 +16,9 @@ for credits.
 |---|---|
 | Site | https://applyapply.xyz |
 | Health | https://applyapply.xyz/health (reports `version`) |
-| Server version | 0.80.0 |
-| Extension | **1.21.6 in the working tree, 1.19.3 in the Chrome Web Store** |
+| Server version | 0.81.0 |
+| Extension | **1.21.7 prepared for upload, 1.19.3 approved and live in the Chrome Web Store** |
+| Store listing | https://chromewebstore.google.com/detail/applyapply/ppdfmcmhiiplklenppnnffbacnheheil |
 | Deploy | push to `main`, Railway builds and restarts. No other step. |
 | Repo | github.com/chadwittman/applyapply, local at `~/job-search` |
 
@@ -231,13 +232,13 @@ House rules, learned the hard way:
 
 ## Open, in rough priority order
 
-1. **Submit extension 1.21.4 to the Chrome Web Store.** It is downloadable from
+1. **Submit extension 1.21.7 to the Chrome Web Store.** It is downloadable from
    `/extension` today, but only the store updates existing installs silently.
 2. **Verify the three unverified Sendblue behaviours** above from a real phone.
 3. **Crawl ATS board tokens** for coverage.
 4. Backups are unverified; resume PDFs live in Postgres (~90 users on a 500MB
-   volume); there is no error tracking; a live Stripe purchase has never been
-   tested end to end.
+   volume); there is no error tracking. A real Stripe purchase and credit
+   fulfillment were verified October 2; owner email notifications remain unverified.
 5. `/about` still has unknowns: HQ city, social links, whether to publish the
    founder backstory.
 
@@ -253,3 +254,32 @@ Live release: `5d6a55a`, Railway deployment `790e176b-712a-42d4-aa41-ba46f40bb13
 - `npm run check` and `AA_TEST_SUITES="test/hiring.mjs test/pages.mjs" bash test/run.sh` passed, including browser submission and mobile layout. Live role pages verified HTTP 200.
 - HN draft: `/Users/chaztyler/Downloads/applyapply-hn-job-post.md`. User posts to HN personally. No hiring email exists or is advertised. One HN comment includes both roles. Brand is always `applyapply`.
 - User is returning to TRYOUT, renamed SHOWCASE.
+
+## October 2 store and posting checkpoint
+
+- Chrome Web Store 1.19.3 is approved and publicly installable. `/extension` now
+  makes the store install primary, explains moving from an unpacked install,
+  and keeps the newest zip under a secondary expandable section. `/about`
+  no longer says the store listing is in review.
+- Extension 1.21.7 packages the latest fixes since 1.19.3. The manifest's
+  permissions are unchanged from the approved build. Upload and review are
+  separate from the website deploy; do not call 1.21.7 store-live until verified.
+- Gem postings now use their full description metadata, rather than the empty
+  JavaScript-rendered body. The reported CityDetect Full Stack Product Engineer
+  link yielded 4,271 characters including requirements and benefits. Missing,
+  short and generic metadata is refused. Fetches retain the public-fetch guards.
+- October 1 (Central time) production records: three new accounts and three
+  distinct people taking product actions, one manual sourcing run (one role),
+  one interview operation, two failed/refunded Gem generation attempts, zero
+  new kits, no text messages. Fifty engineering applications were recorded;
+  their authenticity has not been reviewed.
+- Stripe API confirmed a live USD 10 paid checkout at 2026-10-01 22:03 Central,
+  a succeeded charge, and fulfilled 1,000 credits. This is evidence of live
+  purchase fulfillment. It does not establish receipt or owner-email delivery.
+  Purchase confirmation goes to the buyer via Resend. No app owner alert exists.
+- Release checks passed on Node 22.23.3: `npm run check`, the seven server unit
+  tests, and the complete `npm test` suite including approved store-1.19.3
+  compatibility. The actual guarded Gem fetch returned HTTP 200 and the full
+  description. Installation and about-page store links were checked over HTTP;
+  mobile page tests passed. The 1.21.7 archive was checked for integrity, exact
+  source-file matches and unchanged permissions.
