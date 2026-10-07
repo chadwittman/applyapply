@@ -16,7 +16,7 @@ for credits.
 |---|---|
 | Site | https://applyapply.xyz |
 | Health | https://applyapply.xyz/health (reports `version`) |
-| Server version | 0.81.0 |
+| Server version | 0.82.0 |
 | Extension | **1.21.7 prepared for upload, 1.19.3 approved and live in the Chrome Web Store** |
 | Store listing | https://chromewebstore.google.com/detail/applyapply/ppdfmcmhiiplklenppnnffbacnheheil |
 | Deploy | push to `main`, Railway builds and restarts. No other step. |
@@ -268,6 +268,12 @@ Live release: `5d6a55a`, Railway deployment `790e176b-712a-42d4-aa41-ba46f40bb13
   JavaScript-rendered body. The reported CityDetect Full Stack Product Engineer
   link yielded 4,271 characters including requirements and benefits. Missing,
   short and generic metadata is refused. Fetches retain the public-fetch guards.
+- Any page that publishes a schema.org `JobPosting` in JSON-LD is now read from
+  that block before falling back to scraping text (`server/jsonld-posting.js`).
+  Reported case: careers.docusign.com (iCIMS Jibe) gave 452 chars of navigation;
+  the live Lead SRE posting now reads 8,949 chars with title, company, location,
+  responsibilities and qualifications. UNAVAILABLE placeholders, broken JSON and
+  thin postings fall through to the old path. Server 0.82.0.
 - October 1 (Central time) production records: three new accounts and three
   distinct people taking product actions, one manual sourcing run (one role),
   one interview operation, two failed/refunded Gem generation attempts, zero

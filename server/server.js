@@ -70,7 +70,7 @@ for (const method of ['get','post','put','patch','delete']) {
     (req, res, next) => { try { Promise.resolve(handler(req,res,next)).catch(next); } catch (e) { next(e); } }));
 }
 const PORT = process.env.PORT || 5000;
-const VERSION = '0.81.0';
+const VERSION = '0.82.0';
 const CHROME_STORE_URL = 'https://chromewebstore.google.com/detail/applyapply/ppdfmcmhiiplklenppnnffbacnheheil';
 const IS_PRODUCTION = process.env.NODE_ENV === 'production';
 const APP_ORIGIN = process.env.APP_ORIGIN || 'http://localhost:5000';
@@ -3944,6 +3944,8 @@ const r = await publicFetch(url, {
     });
     if (!r.ok) return null;
     const html = await r.text();
+    const fromJsonLd = require('./jsonld-posting').jsonLdPostingText(html);
+    if (fromJsonLd) return fromJsonLd;
     const text = html
       .replace(/<script[\s\S]*?<\/script>/gi, '')
       .replace(/<style[\s\S]*?<\/style>/gi, '')
@@ -8139,4 +8141,4 @@ if (require.main === module) {
     });
 }
 
-module.exports = { app, runScheduledSourcing, prepareKits, fetchATSJobText, fetchATSFormQuestions, greenhouseTokenGuesses };
+module.exports = { app, runScheduledSourcing, prepareKits, fetchATSJobText, fetchJobPageText, fetchATSFormQuestions, greenhouseTokenGuesses };

@@ -26,4 +26,4 @@ function gemPostingText(html) {
   return `${title ? `Job title: ${title}\n\n` : ''}${body}`.slice(0, 12000);
 }
 
-module.exports = { gemPostingText };
+module.exports = { gemPostingText, decodeEntities };
