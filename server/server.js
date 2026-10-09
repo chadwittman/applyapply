@@ -70,8 +70,10 @@ for (const method of ['get','post','put','patch','delete']) {
     (req, res, next) => { try { Promise.resolve(handler(req,res,next)).catch(next); } catch (e) { next(e); } }));
 }
 const PORT = process.env.PORT || 5000;
-const VERSION = '0.82.0';
+const VERSION = '0.83.0';
 const CHROME_STORE_URL = 'https://chromewebstore.google.com/detail/applyapply/ppdfmcmhiiplklenppnnffbacnheheil';
+// The app icon, shown beside every wordmark so the site carries the same mark as the tab and the extension.
+const LOGO = '<img src="/brand/icon-64.png" alt="" width="20" height="20" style="width:1.55em;height:1.55em;vertical-align:-.45em;margin-right:.5em;border-radius:22%;box-shadow:0 0 0 1px #2a2a2a">';
 const IS_PRODUCTION = process.env.NODE_ENV === 'production';
 const APP_ORIGIN = process.env.APP_ORIGIN || 'http://localhost:5000';
 const ALLOWED_WEB_ORIGINS = new Set(
@@ -238,7 +240,7 @@ li b{font-weight:700}
 code{background:#111;border:1px solid #1e1e1e;padding:2px 7px;font-size:13px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
 .note{margin-top:34px;padding:18px;border:1px solid #1e1e1e;background:#080808;font-size:13px;line-height:1.65}
 </style></head><body>
-<div class="topbar"><a href="/" class="logo">applyapply</a><div class="nav">${navHTML('/extension')}</div></div>
+<div class="topbar"><a href="/" class="logo">${LOGO}applyapply</a><div class="nav">${navHTML('/extension')}</div></div>
 <div class="wrap">
   <h1>Install the extension</h1>
   <div class="sub">It opens on a job posting, fills the form from your apply kit, and attaches your tailored resume.</div>
@@ -280,7 +282,7 @@ function legalPage(res, { title, desc, path: urlPath, body }) {
   res.send(`<!DOCTYPE html><html><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 ${metaHead({ title, desc, path: urlPath })}
-${LEGAL_STYLE}</head><body><div class="topbar"><a class="logo" href="/">applyapply</a><div class="nav"><a href="/extension">Extension</a><a href="/buy">Credits</a></div></div>
+${LEGAL_STYLE}</head><body><div class="topbar"><a class="logo" href="/">${LOGO}applyapply</a><div class="nav"><a href="/extension">Extension</a><a href="/buy">Credits</a></div></div>
 <main class="wrap">${body}<div class="foot"><a href="/">applyapply.xyz</a> · <a href="/privacy">Privacy</a> · <a href="/terms">Terms</a> · <a href="/about">About</a> · <a href="/faq">FAQ</a> · <a href="/feedback">Make this better</a> · <a href="/agents">Agents &amp; API</a> · <a href="/demo">Demo</a> · <a href="/extension">Extension</a> · <a href="/login">Sign in</a> · <a href="/support">Support</a></div></main></body></html>`);
 }
 
@@ -343,6 +345,11 @@ app.get('/jobs/:slug', (req, res) => {
 <p>We store your resume and application to review it and contact you about this role. <a href="/privacy">privacy policy</a></p>
 <button type="submit">submit application</button><p id="application-status" role="status" aria-live="polite"></p>
 </form>
+<style>#application-done{border:1px solid #2f6b3f;background:#07130b;padding:28px 24px;margin:24px 0;outline:none}#application-done h2{margin:0 0 10px;font-size:22px;color:#fff}#application-done .check{display:inline-flex;align-items:center;justify-content:center;width:28px;height:28px;border-radius:50%;background:#2fbf5b;color:#000;font-weight:800;margin-right:10px;vertical-align:-4px}#application-done p{color:#ddd}</style>
+<section id="application-done" tabindex="-1" hidden><h2><span class="check">&#10003;</span>application submitted</h2>
+<p>we have your application for ${role.title}. a confirmation is on its way to <b id="done-email"></b>.</p>
+<p>we read every application ourselves. if there is a fit, we will email you at that address.</p>
+<p><a href="/jobs">see all open roles</a></p></section>
 <script>
 document.getElementById('application').addEventListener('submit',async function(e){
   e.preventDefault();var form=e.currentTarget,button=form.querySelector('button'),status=document.getElementById('application-status');
@@ -350,7 +357,9 @@ document.getElementById('application').addEventListener('submit',async function(
   button.disabled=true;status.textContent='submitting';
   try{var response=await fetch('/jobs/${req.params.slug}/apply',{method:'POST',body:new FormData(form)}),result=await response.json();
     if(!response.ok)throw new Error(result.error||'your application did not send. please try again.');
-    form.reset();form.hidden=true;status.textContent='application received for ${role.title}. we will contact you if there is a fit.';form.after(status);
+    var email=form.elements.email.value.trim(),done=document.getElementById('application-done');
+    form.reset();form.hidden=true;status.textContent='';
+    document.getElementById('done-email').textContent=email;done.hidden=false;done.scrollIntoView({behavior:'smooth',block:'center'});done.focus();
   }catch(error){status.textContent=error.message;}finally{button.disabled=false;}
 });
 </script>`,
@@ -755,6 +764,28 @@ async function report({ kind, message, context = null, userEmail = null, fingerp
   } catch (e) { console.error('[report]', e.message); }
 }
 
+// A copy of what the candidate sent, for their records. Sent after the row is
+// saved, so a failed email never loses an application.
+async function sendApplicationReceipt(role, details, resumeName) {
+  const rows = [
+    ['role', role.title], ['name', `${details.first_name} ${details.last_name}`], ['email', details.email],
+    ['phone', details.phone], ['location', details.location], ['resume', resumeName],
+    ['LinkedIn', details.linkedin], ['links', details.portfolio],
+    ['authorized to work in the US', details.work_authorization], ['needs sponsorship', details.sponsorship],
+    ['start', details.start_date], ['your answer', details.note], ['anything else', details.additional],
+  ].filter(([, v]) => v);
+  const subject = `applyapply: we received your application for ${role.title}`;
+  const intro = `hi ${details.first_name}, thanks for applying for ${role.title} at applyapply. your application is in and we read every one ourselves. if there is a fit, we will email you at this address.`;
+  const text = [intro, '', 'what you sent:', ...rows.map(([k, v]) => `${k}: ${v}`), '', 'questions? write to wittman.c@gmail.com', 'applyapply.xyz/jobs'].join('\n');
+  const html = `<div style="font-family:-apple-system,sans-serif;max-width:560px;line-height:1.6;color:#111">
+<p><img src="${APP_ORIGIN.replace(/\/$/, '')}/brand/icon-64.png" alt="applyapply" width="40" height="40" style="border-radius:9px"></p>
+<h2 style="font-size:18px;margin:0 0 12px">application received</h2><p>${escapeHtml(intro)}</p>
+<p style="margin:22px 0 6px;font-weight:700">what you sent</p>
+<table style="border-collapse:collapse;font-size:14px">${rows.map(([k, v]) => `<tr><td style="padding:6px 14px 6px 0;color:#555;vertical-align:top;white-space:nowrap">${escapeHtml(k)}</td><td style="padding:6px 0;white-space:pre-wrap">${escapeHtml(v)}</td></tr>`).join('')}</table>
+<p style="margin-top:22px">questions? write to <a href="mailto:wittman.c@gmail.com">wittman.c@gmail.com</a>.</p></div>`;
+  await sendEmail(details.email, subject, html, text);
+}
+
 const applicationLimiter = rateLimit({ windowMs: 60 * 60_000, max: 10, standardHeaders: true, legacyHeaders: false });
 const hiringUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 5 * 1024 * 1024, files: 1, fields: 16, fieldSize: 16 * 1024, parts: 17 } });
 app.post('/jobs/:slug/apply', applicationLimiter, (req, res) => {
@@ -792,6 +823,7 @@ app.post('/jobs/:slug/apply', applicationLimiter, (req, res) => {
       await db.pool.query('INSERT INTO hiring_applications (role, email, details, resume_filename, resume_mime, resume_bytes) VALUES ($1,$2,$3,$4,$5,$6)',
         [role.key, details.email.toLowerCase(), details, path.basename(file.originalname).replace(/[\x00-\x1f\x7f]/g, '').slice(0, 200), types[ext], file.buffer]);
       res.json({ ok: true });
+      sendApplicationReceipt(role, details, path.basename(file.originalname)).catch(e => console.error('[hiring receipt]', e.message));
     } catch { res.status(503).json({ error: 'could not save your application. please try again.' }); }
   });
 });
@@ -1047,7 +1079,7 @@ h2{font-size:12px;letter-spacing:.1em;text-transform:uppercase;margin:30px 0 10p
 .rewrite:disabled{background:#555;color:#ddd}
 .left li{font-size:16px;line-height:1.6}.foot{margin-top:30px;font-size:13px;line-height:1.5}
 </style></head><body><div class="wrap">
-<div class="brand">applyapply</div>
+<div class="brand">${LOGO}applyapply</div>
 <h1>${escapeHtml(kit.company || '')}</h1><div class="role">${escapeHtml(kit.role || '')}</div>
 <a class="open" href="${escapeHtml(kit.url)}" target="_blank" rel="noopener">Open application ↗</a>
 <div class="files">
@@ -1357,7 +1389,7 @@ input:focus,select:focus{border-color:#555}
 .empty{padding:40px 0;color:#c4c4c4}
 .count{font-size:13px;color:#8f8f8f;margin-bottom:10px}
 </style></head><body>
-<nav class="nav"><a href="/"><b>applyapply</b></a><span><a href="/pipeline">Pipeline</a><a href="/sourcing">Sourcing</a><a href="/setup">Profile</a></span></nav>
+<nav class="nav"><a href="/"><b>${LOGO}applyapply</b></a><span><a href="/pipeline">Pipeline</a><a href="/sourcing">Sourcing</a><a href="/setup">Profile</a></span></nav>
 <div class="wrap">
 <h1>Every listing we hold</h1>
 <p class="sub">${collapse(seen).length.toLocaleString()} jobs across ${Object.keys(bySource).length} sources, refreshed every few hours${seen.length !== collapse(seen).length ? ` (${seen.length.toLocaleString()} postings, since boards list one job once per location)` : ''}. ${
@@ -1835,7 +1867,7 @@ footer{padding:24px 32px;border-top:1px solid #111;display:flex;justify-content:
 <body>
 
 <nav class="nav">
-  <div class="nav-logo">applyapply</div>
+  <div class="nav-logo">${LOGO}applyapply</div>
   <div class="nav-right">
     <a href="/login" class="nav-link">Sign in</a>
     <a href="/buy" class="nav-cta">Get started →</a>
@@ -2241,7 +2273,7 @@ input::placeholder{color:#a8a8a8}
 </style>
 </head>
 <body>
-<a href="/" class="mark">applyapply</a>
+<a href="/" class="mark">${LOGO}applyapply</a>
 <h1>Sign in</h1>
 <p class="sub">We'll email you a link. No password.</p>
 <div class="form">
@@ -2369,7 +2401,7 @@ h1{font-size:22px;font-weight:700;letter-spacing:-.03em;margin-bottom:8px}
 </style>
 </head>
 <body>
-<a href="/" class="mark">applyapply</a>
+<a href="/" class="mark">${LOGO}applyapply</a>
 <h1>You're in.</h1>
 <p class="em">${escapeHtml(email)}</p>
 ${returnTo ? `<a href="${escapeHtml(returnTo)}" class="btn" id="continue">Continue to your application →</a>` : '<a href="/setup" class="btn">Set up your profile →</a>'}
@@ -2487,7 +2519,7 @@ button:disabled{opacity:.3;cursor:default}
 </style>
 </head>
 <body>
-<a href="/" class="mark">applyapply</a>
+<a href="/" class="mark">${LOGO}applyapply</a>
 <div style="position:fixed;top:16px;right:20px;display:flex;gap:14px">
   <a href="/pipeline" style="font-size:12px;color:#b9b9b9;text-decoration:none">Pipeline</a>
   <a href="/sourcing" style="font-size:12px;color:#b9b9b9;text-decoration:none">Sourcing</a>
@@ -2926,7 +2958,7 @@ textarea{min-height:170px;resize:vertical;line-height:1.65}
 </head>
 <body>
 <nav class="nav">
-  <a href="/" class="nav-logo">applyapply</a>
+  <a href="/" class="nav-logo">${LOGO}applyapply</a>
   <div class="nav-right">
     <a href="/pipeline" class="nav-link">Pipeline</a>
     <a href="/sourcing" class="nav-link">Sourcing</a>
@@ -6104,7 +6136,7 @@ button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible{ou
 <body>
 <div class="topbar">
   <span class="sdot" id="sdot"></span>
-  <span class="topbar-title">applyapply</span>
+  <span class="topbar-title">${LOGO}applyapply</span>
   <span style="margin-left:14px">${navHTML('/sourcing')}</span>
   <span class="topbar-meta" id="topbar-meta">${runMeta}</span>
   <span id="balance-display" style="font-size:10px;color:#8f8f8f"></span>
@@ -7038,7 +7070,7 @@ a{text-decoration:none;color:inherit}
 .toast.on{opacity:1}
 </style></head><body>
 <div class="topbar">
-  <span class="topbar-title">applyapply</span>
+  <span class="topbar-title">${LOGO}applyapply</span>
   ${navHTML('/pipeline')}
   <div class="tbar-r">
     <span id="balance-display"></span>
@@ -7542,7 +7574,7 @@ a{text-decoration:none;color:inherit}
 </head>
 <body>
 <div class="topbar">
-  <a href="/" class="logo">applyapply</a>
+  <a href="/" class="logo">${LOGO}applyapply</a>
   <div class="topbar-r">
     <a href="/pipeline">pipeline</a>
     <a href="/setup">profile</a>

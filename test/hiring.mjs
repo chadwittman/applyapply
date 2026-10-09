@@ -5,6 +5,7 @@ const db = require('./db');
 const {chromium} = require('playwright-core');
 const origin = process.env.APP_ORIGIN;
 const index = await fetch(origin+'/jobs').then(r=>r.text());
+assert.match(index,/<img src="\/brand\/icon-64\.png"/);assert.doesNotMatch(index,/\$\{LOGO\}/);
 assert.match(index,/\/jobs\/founding-engineer/);assert.match(index,/\/jobs\/founding-growth/);
 assert.doesNotMatch(index,/id="application"/);
 for (const slug of ['founding-engineer','founding-growth']) {
@@ -45,9 +46,11 @@ for(const [k,v] of Object.entries(valid)){
 }
 await page.setInputFiles('[name="resume"]',{name:'resume.pdf',mimeType:'application/pdf',buffer:pdf});
 await page.click('button[type="submit"]');
-await page.waitForFunction(()=>document.getElementById('application-status').textContent.includes('application received'));
+await page.waitForSelector('#application-done',{state:'visible'});
 assert.equal(await page.locator('#application').isVisible(),false);
-assert.equal(await page.locator('#application-status').isVisible(),true);
+assert.equal(await page.locator('#application-done').isVisible(),true);
+assert.match(await page.locator('#application-done').textContent(),/application submitted[\s\S]*candidate@example\.com/);
+assert.equal(await page.locator('.topbar img[src="/brand/icon-64.png"]').count(),1);
 assert.deepEqual(errors,[]);
 assert.equal((await db.pool.query('SELECT count(*) FROM hiring_applications')).rows[0].count,'3');
 await browser.close();await db.pool.end();
